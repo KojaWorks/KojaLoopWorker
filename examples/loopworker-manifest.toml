@@ -1,0 +1,46 @@
+# Copy this to `<your-project>/.loopworker/manifest.toml`.
+# A repo is LoopWorker-compatible iff it ships a valid `.loopworker/` directory:
+# this manifest plus provision.sh / reset.sh / verify.sh / teardown.sh.
+# The Manager owns git/worktree mechanics; these scripts own your stack.
+
+[project]
+name = "myproject"
+
+[backlog]
+# Where the roadmap lives and how the Manager reads it.
+adapter = "patch"                 # patch | notion | github   (only `patch` in v1)
+portal  = "https://patch.d.nevyn.dev/app/projects-myproject-roadmap-00000000-0000-0000-0000-000000000000"
+
+[backlog.patch]
+# Adapter-specific resolution. The Manager hits PostgREST directly with a service
+# token (set PATCH_SERVICE_TOKEN in the Manager's .env), NOT the MCP.
+api_base      = "https://api.patch.d.nevyn.dev"
+roadmap_table = "roadmap"
+workers_table = "loop_workers"
+# Columns the adapter expects on the roadmap: status, priority, area (multiselect),
+# blocked_by (self-relation), assignee (relation -> workers_table), solved_in_pr.
+
+[brief]
+# The worker brief / loop instructions. Pick whatever suits the project.
+source = "patch-page"             # patch-page | repo-file | url
+ref    = "https://patch.d.nevyn.dev/app/loop-runner-instructions-00000000-0000-0000-0000-000000000000"
+# repo-file example:
+#   source = "repo-file"
+#   ref    = ".loopworker/BRIEF.md"
+
+[worker]
+# Required MCP servers for the spawned `claude`. The project ships its own .mcp.json;
+# the Manager injects secrets via env.
+mcp                   = ["patch", "chrome-devtools"]
+wallclock_cap_minutes = 90        # Manager reaps a Worker after this regardless of state
+
+[slots]
+count = 3                         # warm-stack pool size; RAM-bound on the host (miquon ~3)
+
+# --- Lifecycle scripts (paths relative to .loopworker/). Defaults shown; override if needed. ---
+# Each receives LOOPWORKER_SLOT_DIR and LOOPWORKER_PORT in its environment.
+[scripts]
+provision = "provision.sh"        # FIRST time per slot: heavy, idempotent. Brings the stack up.
+reset     = "reset.sh"            # per-acquire: cheap. DB reset + project clean. Isolation gate.
+verify    = "verify.sh"           # merge gate: typecheck + tests. Nonzero exit = do not ship.
+teardown  = "teardown.sh"         # slot retirement: stop stack, free ports.
