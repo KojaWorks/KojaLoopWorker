@@ -227,6 +227,10 @@ CLI and survives unchanged.
   do one card, verify, PR, self-review, report, survey, stop) belongs to LoopWorker; project
   specifics (stack quirks, verify recipes, gotchas) belong to the project's brief. The spawn prompt
   composes both. Exact seam TBD when we write the brief.
+- **Poison-card protection.** A card that crashes its Worker is reclaimed to Backlog and
+  re-picked on the next fill with no backoff or attempt cap — so a reliably-crashing card
+  would spin forever. Add a per-card attempt counter that quarantines to Needs refinement
+  after N crashes.
 - Notion / GitHub backlog adapters.
 - Whether the Env-feedback table auto-files recurring requests as LoopWorker backlog cards.
 - launchd packaging for the Manager.
