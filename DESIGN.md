@@ -136,9 +136,11 @@ warm-stack optimization. Port handshake: the Manager injects `LOOPWORKER_SLOT_DI
 `LOOPWORKER_PORT` into the script + Worker environment; scripts read them.
 
 The **loop instructions / worker brief** are pointed to by the manifest and can be whatever suits the
-project: a Markdown file in the repo, a URL to a Patch page (the live, canonical form today), or a
-document in some other service. The Manager fetches it and weaves the per-card specifics into the
-spawn prompt.
+project: a Markdown file in the repo, a URL, or a Patch page (the live, canonical form today). For
+repo-file/url sources the Manager inlines the text into the spawn prompt; for a `patch-page` it hands
+the Worker a *pointer* and lets the Worker read it via the Patch MCP (`get_page`) — the Manager stays
+out of brief-parsing, which keeps it free of the blocks-table API. Either way the Manager wraps the
+brief with the per-card preamble (you're pre-claimed, do this one card, report, then stop).
 
 ### `manifest.toml` (schema sketch)
 
@@ -200,7 +202,8 @@ The working copy's `manifest.toml` is the source of truth; CLI flags are overrid
 the only required argument.
 
 Credentials on the host:
-- Manager needs a **Patch service token** (REST, not MCP) in `.env`.
+- Manager needs a **Patch service token** — the Supabase `service_role` key, read from
+  `PATCH_SECRET_KEY` in `.env` (REST, not MCP). It bypasses RLS; never commit it.
 - The Workers' `claude` CLI must be **logged in on the host once** — interactive `claude` inherits
   that auth; there is no per-Worker login.
 - Worker `.mcp.json` (Patch + Chrome DevTools) ships in the project repo; the Manager injects secrets

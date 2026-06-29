@@ -1,0 +1,18 @@
+[project]
+name = "loopworker"
+version = "0.1.0"
+description = "An outer Manager that polls a project backlog and spawns disposable one-card Workers."
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27",
+]
+
+[project.scripts]
+loopworker = "loopworker.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["loopworker"]

@@ -1,0 +1,28 @@
+# Example manifest for pointing LoopWorker at the Patch project itself.
+# Drop this (and the sibling scripts) into KojaPatch/.loopworker/ and adjust.
+
+[project]
+name = "patch"
+
+[backlog]
+adapter = "patch"
+portal  = "https://patch.d.nevyn.dev/app/efc002a2-0af5-4205-8217-5960996b49a7"  # Roadmap page
+
+[backlog.patch]
+api_base      = "https://api.patch.d.nevyn.dev"
+roadmap_table = "roadmap"
+workers_table = "loop_workers"
+
+[brief]
+# The live, canonical loop instructions. The Manager hands this pointer to the Worker,
+# which reads it via the Patch MCP get_page tool. (To be forked to a one-card brief —
+# see DESIGN "Open questions".)
+source = "patch-page"
+ref    = "https://patch.d.nevyn.dev/app/cfacaea7-59e9-4f40-8bba-44c10137a48e"
+
+[worker]
+mcp                   = ["patch", "chrome-devtools"]
+wallclock_cap_minutes = 90
+
+[slots]
+count = 3

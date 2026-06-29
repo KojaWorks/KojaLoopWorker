@@ -1,0 +1,59 @@
+"""CLI entrypoint: `loopworker --project ~/Dev/myproject` (or `python -m loopworker`).
+
+The working copy's .loopworker/manifest.toml is the source of truth; flags override.
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+from . import dashboard
+from .config import Manifest
+from .manager import Manager
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(prog="loopworker", description=__doc__)
+    p.add_argument("--project", required=True, help="path to the LoopWorker-compatible working copy")
+    p.add_argument("--poll-interval", type=int, default=300, help="seconds between ticks (default 300)")
+    p.add_argument("--grace", type=int, default=120, help="seconds to wait before reaping a finished worker")
+    p.add_argument("--slots", type=int, default=None, help="override manifest slot count")
+    p.add_argument("--base-port", type=int, default=54400, help="first slot's stack port")
+    p.add_argument("--dashboard-port", type=int, default=8787)
+    p.add_argument("--no-dashboard", action="store_true")
+    p.add_argument("--state-dir", type=Path, default=None)
+    p.add_argument("--once", action="store_true", help="run a single tick then exit (after building the pool)")
+    args = p.parse_args(argv)
+
+    try:
+        manifest = Manifest.load(args.project)
+    except (FileNotFoundError, ValueError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    if args.slots is not None:
+        manifest.slots = args.slots
+
+    manager = Manager(
+        manifest,
+        poll_interval=args.poll_interval,
+        grace_seconds=args.grace,
+        base_port=args.base_port,
+        state_dir=args.state_dir,
+    )
+
+    if not args.no_dashboard:
+        dashboard.serve(manager.snapshot, port=args.dashboard_port)
+        manager.log(f"dashboard at http://127.0.0.1:{args.dashboard_port}")
+
+    if args.once:
+        manager.pool.build()
+        manager.tick()
+        return 0
+
+    manager.run()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
