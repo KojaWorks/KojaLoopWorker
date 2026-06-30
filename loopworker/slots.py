@@ -24,6 +24,24 @@ from .models import Slot, SlotState
 
 _PORT_LINE = re.compile(r"^LOOPWORKER_PORT=(\d+)\s*$", re.MULTILINE)
 
+# Provision/reset scripts print stack secrets (supabase start dumps anon/service-role
+# JWTs, the JWT secret, S3 keys, the DB URL). We STREAM that output to the log + tmux +
+# dashboard, so redact secret-shaped tokens first. Over-redaction (e.g. a git SHA) is a
+# harmless cosmetic; leaking a service_role key is not.
+_REDACT = [
+    re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}"),  # JWTs (anon/service-role)
+    re.compile(r"sb_(?:secret|publishable)_[A-Za-z0-9]+"),                        # newer supabase keys
+    re.compile(r"\b[0-9a-f]{32,}\b"),                                             # hex secrets (S3 access/secret keys)
+]
+_DB_URL_PW = re.compile(r"(postgres(?:ql)?://[^:@/\s]+:)[^@/\s]+(@)")
+
+
+def _redact(line: str) -> str:
+    line = _DB_URL_PW.sub(r"\1[redacted]\2", line)
+    for pat in _REDACT:
+        line = pat.sub("[redacted]", line)
+    return line
+
 
 class SlotError(RuntimeError):
     pass
@@ -154,11 +172,11 @@ class SlotPool:
             line = line.rstrip("\n")
             lines.append(line)
             if line.strip():
-                self.log(f"  [slot {slot.index} {which}] {line}")
+                self.log(f"  [slot {slot.index} {which}] {_redact(line)}")
         rc = proc.wait()
         out = "\n".join(lines)
         if check and rc != 0:
-            tail = lines[-1] if lines else "(no output)"
+            tail = _redact(lines[-1]) if lines else "(no output)"
             raise SlotError(f"{which} script failed (rc={rc}): {tail}")
         return rc, out
 
