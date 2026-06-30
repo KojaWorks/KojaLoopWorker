@@ -49,11 +49,15 @@ class SlotError(RuntimeError):
 
 class SlotPool:
     def __init__(self, manifest: Manifest, base_port: int = 54400, port_step: int = 100,
-                 log: Callable[[str], None] = lambda _m: None, hot: bool = True):
+                 log: Callable[[str], None] = lambda _m: None, hot: bool = True,
+                 base_ref: str = "origin/main"):
         self.manifest = manifest
         self.base_port = base_port
         self.port_step = port_step
         self.log = log
+        # the upstream ref worktrees branch off and reset to (a project's default branch);
+        # "origin/main" for most, "origin/master" etc. for others.
+        self.base_ref = base_ref
         # hot: keep warm stacks (provision once, reuse). cold: provision a slot per card
         # and tear it down after, so an occasional project leaves no lingering stack.
         self.hot = hot
@@ -118,9 +122,9 @@ class SlotPool:
         self.log(f"slot {slot.index}: resetting worktree to origin/main, branch claude/{branch_slug}")
         wt = Path(slot.dir)
         self._git(self.manifest.project_dir, "fetch", "origin", "-q")
-        self._git(wt, "reset", "--hard", "origin/main")
+        self._git(wt, "reset", "--hard", self.base_ref)
         self._git(wt, "clean", "-fd")
-        self._git(wt, "checkout", "-B", f"claude/{branch_slug}", "origin/main")
+        self._git(wt, "checkout", "-B", f"claude/{branch_slug}", self.base_ref)
         rc, out = self._run_script("reset", slot, check=False)
         if rc != 0:
             raise SlotError(f"reset.sh failed for slot {slot.index} (rc={rc})")
@@ -174,7 +178,7 @@ class SlotPool:
         # "loopworker" (the obvious name for this work) — git then can't create the ref.
         self._git(
             self.manifest.project_dir,
-            "worktree", "add", "-B", f"loopworker-slot-{slot.index}", slot.dir, "origin/main",
+            "worktree", "add", "-B", f"loopworker-slot-{slot.index}", slot.dir, self.base_ref,
         )
 
     def _provision(self, slot: Slot) -> None:

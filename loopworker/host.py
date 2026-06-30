@@ -20,7 +20,7 @@ from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .backlog.patch import PatchAdapter
+from .backlog.patch import PatchAdapter, brief_pointer
 from .config import HostConfig, Manifest
 from .manager import Manager, _pid_alive, _slug
 from .models import ProjectRow
@@ -59,6 +59,9 @@ class HostManager:
         logged and skipped (not fatal — the others still run)."""
         rows = self.adapter.list_projects()
         self.log(f"serving {len(rows)} project(s) as worker_manager={self.host.worker_manager!r}")
+        if not self.host.brief_page:
+            self.log("WARNING: no brief_page in host config — workers get no generic loop protocol; "
+                     "set [backlog].brief_page to the Managed Agent Loop page")
         self.managers = []
         for idx, row in enumerate(rows):
             try:
@@ -86,20 +89,28 @@ class HostManager:
         return dest
 
     def _build_manager(self, row: ProjectRow, manifest: Manifest, idx: int) -> Manager:
-        # Each project gets its own port band (1000 apart) so slots never collide, a
-        # name prefix so its workers are distinct in the shared loop_workers table, and
-        # its own state dir for the per-project killswitch.
+        # Each project gets its own port band — wide enough for the whole host budget so
+        # two projects' slot ports can never overlap — a name prefix so its workers are
+        # distinct in the shared loop_workers table, and its own state dir (killswitch).
+        band = self.host.port_step * max(self.host.max_slots, 1)
+        # the generic loop protocol is shared (host brief_page); a project may override its
+        # own brief with a Patch page (brief_ref), else its repo's BRIEF.md is used.
+        project_brief = brief_pointer(row.brief_ref) if row.brief_ref else None
         return Manager(
             manifest,
             poll_interval=self.poll_interval,
             reconcile_interval=self.reconcile_interval,
             grace_seconds=self.grace_seconds,
-            base_port=self.host.base_port + idx * 1000,
+            base_port=self.host.base_port + idx * band,
+            port_step=self.host.port_step,
             state_dir=self.state_dir / _slug(row.name),
             adapter=self.adapter,
             project_id=row.id,
             name_prefix=f"{_slug(row.name)}-",
             hot=row.hot,
+            base_ref=f"origin/{row.default_branch}",
+            brief=brief_pointer(self.host.brief_page),
+            project_brief=project_brief,
         )
 
     # --- lifecycle ---------------------------------------------------------

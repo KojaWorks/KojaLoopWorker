@@ -42,6 +42,10 @@ class Manager:
         project_id: str | None = None,
         name_prefix: str = "",
         hot: bool = True,
+        brief: str | None = None,
+        project_brief: str | None = None,
+        port_step: int = 100,
+        base_ref: str = "origin/main",
     ):
         self.manifest = manifest
         self.poll_interval = poll_interval
@@ -56,7 +60,13 @@ class Manager:
         self.adapter = adapter if adapter is not None else build_adapter(manifest)
         self.project_id = project_id
         self.name_prefix = name_prefix
-        self.pool = SlotPool(manifest, base_port=base_port, log=self.log, hot=hot)
+        # host mode injects the brief (generic loop pointer + per-project override) since
+        # the shared adapter has no per-project manifest to resolve them from; single mode
+        # leaves them None and resolves via the manifest at spawn time.
+        self._brief = brief
+        self._project_brief = project_brief
+        self.pool = SlotPool(manifest, base_port=base_port, port_step=port_step,
+                             log=self.log, hot=hot, base_ref=base_ref)
         self.state_dir = (state_dir or Path("state") / manifest.project_name).resolve()
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.lockfile = self.state_dir / "manager.lock"
@@ -205,6 +215,10 @@ class Manager:
             self.pool.acquire(slot, _slug(f"{card.num}-{card.title}"))
         except SlotError as e:
             self.log(f"slot {slot.index} acquire failed: {e!r} — releasing ~{card.num}")
+            # a cold slot may already have provisioned a stack before the failure — tear it
+            # down so a failed acquire never leaks a running stack (hot keeps its warm one).
+            if not self.pool.hot:
+                self.pool.teardown_slot(slot)
             slot.state = SlotState.BROKEN
             try:
                 self.adapter.release(card)
@@ -277,8 +291,10 @@ class Manager:
                 self.pool.recycle(slot)  # tear down a cold slot's stack so shutdown leaves none running
 
     def _build_prompt(self, slot: Slot, card, worker) -> str:
-        brief = self.adapter.get_brief()              # generic loop protocol (a Patch page pointer)
-        project_brief = self.manifest.project_brief()  # this project's deltas (verify/merge/gotchas)
+        # generic loop protocol (a Patch page pointer); this project's deltas. Host mode
+        # injects both (shared adapter has no manifest); single mode resolves via manifest.
+        brief = self._brief if self._brief is not None else self.adapter.get_brief()
+        project_brief = self._project_brief if self._project_brief is not None else self.manifest.project_brief()
         project_section = (
             f"--- PROJECT BRIEF ({self.manifest.project_name}) ---\n{project_brief}\n\n"
             if project_brief else ""

@@ -15,6 +15,7 @@ def _host(tmp_path, **kw):
     cfg = HostConfig(
         worker_manager="miquon", api_base="https://api", anon_key="anon",
         clones_dir=tmp_path / "clones", max_slots=kw.get("max_slots", 4),
+        brief_page=kw.get("brief_page", ""),
     )
     # Don't build a real (network) adapter in __init__.
     import loopworker.host as host_mod
@@ -102,9 +103,10 @@ def test_discover_builds_managers_and_applies_row(tmp_path, monkeypatch):
     monkeypatch.setattr(host_mod.Manifest, "load", staticmethod(fake_manifest))
     monkeypatch.setattr(HostManager, "_ensure_clone", lambda self, row: tmp_path / "clone")
 
-    h = _host(tmp_path, projects=[
+    h = _host(tmp_path, brief_page="https://patch/app/loop-abc", projects=[
         ProjectRow(id="p1", name="Patch", repo="git@x", hot=True, slots=3),
-        ProjectRow(id="p2", name="GitZ", repo="git@y", hot=False),
+        ProjectRow(id="p2", name="GitZ", repo="git@y", hot=False,
+                   default_branch="master", brief_ref="https://patch/app/gitz-brief"),
     ])
     h.discover()
     assert len(h.managers) == 2
@@ -113,6 +115,43 @@ def test_discover_builds_managers_and_applies_row(tmp_path, monkeypatch):
     assert a.name_prefix == "patch-"
     assert b.project_id == "p2" and b.pool.hot is False
     assert a.adapter is h.adapter                                                  # shared adapter injected
+    # generic loop brief injected (no manifest on the shared adapter to resolve it from)
+    assert "loop-abc" in a._brief and a._project_brief is None                     # Patch uses repo BRIEF.md
+    assert "gitz-brief" in b._project_brief                                        # GitZ overrides via brief_ref
+    assert b.pool.base_ref == "origin/master"                                      # default_branch wired
+    # distinct port bands wide enough for the host budget — no overlap
+    assert b.pool.base_port - a.pool.base_port >= h.host.max_slots * h.host.port_step
+
+
+def test_host_mode_build_prompt_uses_injected_brief(tmp_path):
+    # Regression: the shared adapter has no manifest in host mode, so the Manager must use
+    # the INJECTED brief/project_brief and never call adapter.get_brief() (which would crash
+    # and strand the already-claimed card).
+    from loopworker.config import (BacklogConfig, BriefConfig, Manifest,
+                                   ScriptsConfig, WorkerConfig)
+    from loopworker.manager import Manager
+    from loopworker.models import Card, CardStatus, Slot, Worker
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    manifest = Manifest(
+        project_name="demo", project_dir=proj,
+        backlog=BacklogConfig("patch", "", {}), brief=BriefConfig("repo-file", "B.md"),
+        worker=WorkerConfig(), slots=1, scripts=ScriptsConfig(),
+    )
+
+    class BadAdapter:
+        def get_brief(self):
+            raise AssertionError("host mode must not call adapter.get_brief()")
+
+    m = Manager(manifest, adapter=BadAdapter(), project_id="p1",
+                brief="GENERIC LOOP", project_brief="PROJECT DELTA", state_dir=tmp_path / "s")
+    prompt = m._build_prompt(
+        Slot(index=0, dir=str(proj), port=1),
+        Card("u1", 5, "do x", CardStatus.BACKLOG, 1, project="p1"),
+        Worker("w1", "ada"),
+    )
+    assert "GENERIC LOOP" in prompt and "PROJECT DELTA" in prompt
 
 
 def test_discover_skips_project_without_contract(tmp_path, monkeypatch):

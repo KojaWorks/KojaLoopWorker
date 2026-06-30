@@ -33,6 +33,19 @@ from .base import BacklogAdapter
 _UUID_TAIL = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", re.I)
 
 
+def brief_pointer(ref: str) -> str:
+    """A worker-facing pointer to a Patch-page brief: tell the worker to read it via the
+    MCP rather than fetching it ourselves. Empty ref → empty string (no pointer)."""
+    if not ref:
+        return ""
+    m = _UUID_TAIL.search(ref)
+    page = m.group(1) if m else ref
+    return (
+        f"Your loop instructions are Patch page {page} ({ref}). "
+        f"Read it with the Patch MCP `get_page` tool before starting."
+    )
+
+
 class PatchAdapter(BacklogAdapter):
     def __init__(
         self,
@@ -194,12 +207,7 @@ class PatchAdapter(BacklogAdapter):
         if inline is not None:
             return inline
         if brief.source == "patch-page":
-            m = _UUID_TAIL.search(brief.ref)
-            page = m.group(1) if m else brief.ref
-            return (
-                f"Your loop instructions are Patch page {page} ({brief.ref}). "
-                f"Read it with the Patch MCP `get_page` tool before starting."
-            )
+            return brief_pointer(brief.ref)
         raise ValueError(f"unsupported brief source: {brief.source!r}")
 
     # --- internals ---------------------------------------------------------
