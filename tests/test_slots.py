@@ -7,7 +7,7 @@ import pytest
 from loopworker.config import (BacklogConfig, BriefConfig, Manifest,
                                ScriptsConfig, WorkerConfig)
 from loopworker.models import Slot
-from loopworker.slots import SlotError, SlotPool
+from loopworker.slots import SlotError, SlotPool, _redact
 
 
 def _pool(tmp_path, script: str, logs: list[str]) -> SlotPool:
@@ -31,6 +31,16 @@ def test_run_script_streams_and_captures_port(tmp_path):
     assert any("doing-a-thing" in line for line in logs)      # streamed live
     pool._capture_port(slot, out)
     assert slot.port == 31999                                 # handshake parsed from captured output
+
+
+def test_redact_scrubs_stack_secrets():
+    jwt = "eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIn0.abcdef123456"
+    assert _redact(f"service_role key {jwt}") == "service_role key [redacted]"
+    assert _redact("Access Key 625729a08b95bf1b7ff351a663f3a23c") == "Access Key [redacted]"
+    assert _redact("URL postgresql://postgres:supersecret@127.0.0.1:30402/postgres") \
+        == "URL postgresql://postgres:[redacted]@127.0.0.1:30402/postgres"
+    assert _redact("Applying migration 0101_personal_access_tokens.sql") \
+        == "Applying migration 0101_personal_access_tokens.sql"   # ordinary lines untouched
 
 
 def test_run_script_raises_with_tail_on_failure(tmp_path):

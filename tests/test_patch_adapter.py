@@ -110,6 +110,20 @@ def test_exchange_sets_bearer_and_caches(monkeypatch):
     assert len(posts) == 1
 
 
+def test_card_status_parse_tolerates_unknown():
+    assert CardStatus.parse("Backlog") == CardStatus.BACKLOG
+    assert CardStatus.parse("In progress") == CardStatus.IN_PROGRESS
+    assert CardStatus.parse(None) == CardStatus.BACKLOG
+    assert CardStatus.parse("Epic") == CardStatus.OTHER       # unknown -> bucketed, not a crash
+    assert CardStatus.parse("Next") == CardStatus.OTHER
+
+
+def test_unknown_status_card_is_skipped_not_crashing(adapter, monkeypatch):
+    rows = [_row(1, priority=10), _row(2, priority=99, status="Epic")]
+    monkeypatch.setattr(adapter, "_get", lambda table, params: rows)
+    assert [c.num for c in adapter.list_workable()] == [1]    # Epic card ignored, no ValueError
+
+
 def test_name_for_slot_is_stable_and_wraps():
     from loopworker.names import name_for_slot, _NAMES
     assert name_for_slot(0) == "ada"

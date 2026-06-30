@@ -168,7 +168,7 @@ class PatchAdapter(BacklogAdapter):
             id=r["id"],
             num=r["id_2"],
             title=r.get("title") or "",
-            status=CardStatus(r["status"]) if r.get("status") else CardStatus.BACKLOG,
+            status=CardStatus.parse(r.get("status")),
             priority=float(r.get("priority") or 0),
             area=list(r.get("area") or []),
             epic=self._rel_one(r.get("epic")),

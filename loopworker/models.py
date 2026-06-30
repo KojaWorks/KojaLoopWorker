@@ -17,6 +17,19 @@ class CardStatus(str, Enum):
     IN_PROGRESS = "In progress"
     SHIPPED = "Shipped"
     INVALID_CLOSED = "Invalid/Closed"
+    OTHER = "__other__"  # any status the roadmap has that we don't model (Epic, Next, …):
+    #                      never workable / in-progress / shipped, so the Manager ignores it
+
+    @classmethod
+    def parse(cls, value: object) -> "CardStatus":
+        """Map a raw status string to a member, bucketing anything unknown as OTHER so
+        one oddly-statused card can't crash a whole tick."""
+        if not value:
+            return cls.BACKLOG
+        try:
+            return cls(value)
+        except ValueError:
+            return cls.OTHER
 
 
 @dataclass
