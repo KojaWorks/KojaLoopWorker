@@ -18,7 +18,7 @@ from . import tmux
 from .backlog import build_adapter
 from .config import Manifest
 from .models import CardStatus, Slot, SlotState
-from .names import pick_name
+from .names import name_for_slot
 from .reconciler import SlotAction, classify
 from .slots import SlotError, SlotPool
 
@@ -50,7 +50,9 @@ class Manager:
         self.killswitch = self.state_dir / "PAUSED"
         self.started_at = datetime.now(timezone.utc)
         self.log_lines: deque[str] = deque(maxlen=200)
-        self._stop = False
+        self._stop = False          # exit the loop; finally reaps any live workers
+        self._draining = False      # finish current workers, start no new ones
+        self._sigint_count = 0      # ⌃C escalation: 1=drain, 2=force, 3=hard exit
 
     # --- lifecycle ---------------------------------------------------------
     def run(self) -> None:
@@ -67,7 +69,14 @@ class Manager:
                     self.tick()
                 except Exception as e:  # one bad tick must not kill the Manager
                     self.log(f"ERROR in tick: {e!r}")
-                self._sleep(self.poll_interval)
+                if self._draining:
+                    if not self._busy_count():
+                        self.log("drain complete — all workers finished; shutting down")
+                        break
+                    # poll fast while draining so we exit promptly once the last finishes
+                    self._sleep(min(self.poll_interval, 5))
+                else:
+                    self._sleep(self.poll_interval)
         finally:
             # A worker without its Manager has no reconciler/reaper, so don't leave
             # orphans behind when we exit (Ctrl-C, SIGTERM, or a fatal error).
@@ -78,6 +87,8 @@ class Manager:
     def tick(self) -> None:
         now = datetime.now(timezone.utc)
         self._reconcile_busy(now)
+        if self._draining:
+            return  # draining: keep reconciling/reaping current workers, start nothing new
         if self.killswitch.exists():
             self.log("killswitch present (PAUSED) — not spawning new workers")
             return
@@ -132,7 +143,7 @@ class Manager:
             self._spawn_worker(slot, card, now)
 
     def _spawn_worker(self, slot: Slot, card, now: datetime) -> None:
-        name = pick_name(taken=set())  # cosmetic; collisions are harmless
+        name = name_for_slot(slot.index)  # stable per slot; reuses one worker row
         try:
             worker = self.adapter.register_worker(
                 name, role="generic", notes=f"~{card.num}: {card.title}"
@@ -296,9 +307,34 @@ class Manager:
         while not self._stop and time.monotonic() < deadline:
             time.sleep(min(2.0, deadline - time.monotonic()))
 
-    def _on_signal(self, *_args) -> None:
-        self.log("signal received — stopping after this tick")
-        self._stop = True
+    def _busy_count(self) -> int:
+        return sum(1 for s in self.pool.slots if s.state == SlotState.BUSY)
+
+    def _dump_state(self) -> None:
+        """Lightweight state dump for a hard exit — no tmux/network, safe in a handler."""
+        self.log(f"state dump: {self._busy_count()} busy slot(s)")
+        for s in self.pool.slots:
+            self.log(f"  slot {s.index}: {s.state.value} | {s.activity} | card={s.card_num} | session={s.session}")
+
+    def _on_signal(self, signum, _frame) -> None:
+        # SIGTERM (a supervisor stopping us) goes straight to a clean force-stop.
+        if signum == signal.SIGTERM:
+            self.log("SIGTERM — force-stopping: reaping workers and releasing their cards")
+            self._stop = True
+            return
+        # SIGINT (⌃C) escalates: drain -> force -> hard exit.
+        self._sigint_count += 1
+        if self._sigint_count == 1:
+            self._draining = True
+            self.log(f"⌃C — draining: letting {self._busy_count()} worker(s) finish, starting no new work. "
+                     "⌃C again to force-stop them now.")
+        elif self._sigint_count == 2:
+            self._stop = True
+            self.log("⌃C⌃C — force-stopping: killing workers and releasing their cards. ⌃C again for hard exit.")
+        else:
+            self.log("⌃C⌃C⌃C — hard exit (state dump below; resources may leak).")
+            self._dump_state()
+            os._exit(130)
 
     def _acquire_lock(self) -> None:
         if self.lockfile.exists():

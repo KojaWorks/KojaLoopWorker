@@ -110,6 +110,30 @@ def test_exchange_sets_bearer_and_caches(monkeypatch):
     assert len(posts) == 1
 
 
+def test_name_for_slot_is_stable_and_wraps():
+    from loopworker.names import name_for_slot, _NAMES
+    assert name_for_slot(0) == "ada"
+    assert name_for_slot(1) == "babbage"
+    assert name_for_slot(len(_NAMES)) == "ada2"        # wraps with a cycle suffix
+    assert name_for_slot(0) == name_for_slot(0)         # deterministic
+
+
+def test_register_worker_reuses_existing_row(adapter, monkeypatch):
+    calls = {"post": 0, "patch": 0}
+    monkeypatch.setattr(adapter, "_get", lambda t, p: [{"id": "w-ada"}])  # row exists
+    monkeypatch.setattr(adapter, "_patch", lambda t, p, b: calls.__setitem__("patch", calls["patch"] + 1) or [{}])
+    monkeypatch.setattr(adapter, "_post", lambda t, b: calls.__setitem__("post", calls["post"] + 1) or [{"id": "new"}])
+    w = adapter.register_worker("ada", notes="~423: x")
+    assert w.id == "w-ada" and calls == {"post": 0, "patch": 1}   # reused, not inserted
+
+
+def test_register_worker_inserts_when_absent(adapter, monkeypatch):
+    monkeypatch.setattr(adapter, "_get", lambda t, p: [])          # no row yet
+    monkeypatch.setattr(adapter, "_post", lambda t, b: [{"id": "w-new"}])
+    w = adapter.register_worker("babbage")
+    assert w.id == "w-new"
+
+
 def test_request_retries_once_on_401(monkeypatch):
     # An expired/revoked JWT surfaces as a 401; _request re-exchanges and retries.
     monkeypatch.setenv("PATCH_PAT", "pat_abc")

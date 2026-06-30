@@ -93,13 +93,19 @@ class PatchAdapter(BacklogAdapter):
 
     # --- writes ------------------------------------------------------------
     def register_worker(self, name: str, role: str = "generic", notes: str = "") -> Worker:
+        """Upsert the worker row for this (stable, per-slot) name: reuse it if it
+        exists, else create it. Keeps loop_workers to one row per slot rather than one
+        per card. Safe without a DB unique constraint — the single Manager (lockfile)
+        spawns sequentially, so there's no concurrent insert race on a name."""
         now = datetime.now(timezone.utc)
-        rows = self._post(
-            self.workers,
-            {"name": name, "role": role, "notes": notes, "last_active": now.isoformat()},
-        )
-        row = rows[0]
-        return Worker(id=row["id"], name=name, role=role, notes=notes, last_active=now)
+        fields = {"role": role, "notes": notes, "last_active": now.isoformat()}
+        existing = self._get(self.workers, {"name": f"eq.{name}", "select": "id", "limit": "1"})
+        if existing:
+            wid = existing[0]["id"]
+            self._patch(self.workers, {"id": f"eq.{wid}"}, fields)
+        else:
+            wid = self._post(self.workers, {"name": name, **fields})[0]["id"]
+        return Worker(id=wid, name=name, role=role, notes=notes, last_active=now)
 
     def claim(self, card: Card, worker: Worker) -> bool:
         """Atomic claim: the assignee=is.null filter makes the PATCH match zero rows if

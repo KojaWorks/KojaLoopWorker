@@ -37,6 +37,11 @@ it. Useful flags: `--slots N`, `--poll-interval S`, `--once` (single tick), `--n
 Pause spawning at any time by creating the killswitch file the Manager prints on start
 (`state/<project>/PAUSED`); delete it to resume. Dashboard: http://127.0.0.1:8787.
 
+**Stopping (⌃C escalates):** one `⌃C` *drains* — current workers finish, no new ones
+start, then it exits. A second `⌃C` *force-stops* — kills the workers and releases their
+cards back to Backlog. A third `⌃C` hard-exits immediately (dumps state; may leak). A
+`SIGTERM` (e.g. from a supervisor) goes straight to force-stop.
+
 ## Making a project compatible
 
 Add a `.loopworker/` directory to the project repo: a `manifest.toml` plus four lifecycle
