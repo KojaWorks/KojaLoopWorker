@@ -1,6 +1,7 @@
 """Integration test for the Manager tick: a full spawn -> keep -> reap cycle and a
 crash-reclaim, driven through real manager.py logic with a fake backlog and stubbed
 tmux/pool (no network, no supabase, no real tmux)."""
+import signal
 from pathlib import Path
 
 import pytest
@@ -123,6 +124,39 @@ def test_reap_workers_on_shutdown(mgr, monkeypatch):
     m._reap_workers("shutting down")
     assert killed == [sess]
     assert m.adapter.releases == [1]           # the unfinished card was released
+
+
+def test_sigint_escalates_drain_then_force(mgr):
+    # 1st ⌃C: drain (finish current, no new). 2nd ⌃C: force-stop.
+    m, *_ = mgr
+    m._on_signal(signal.SIGINT, None)
+    assert m._draining and not m._stop
+    m._on_signal(signal.SIGINT, None)
+    assert m._stop
+
+
+def test_sigterm_force_stops_immediately(mgr):
+    m, *_ = mgr
+    m._on_signal(signal.SIGTERM, None)
+    assert m._stop and not m._draining
+
+
+def test_third_sigint_hard_exits(mgr, monkeypatch):
+    m, *_ = mgr
+    m._sigint_count = 2                      # two already happened
+    exits = []
+    monkeypatch.setattr(manager_mod.os, "_exit", lambda code: exits.append(code))
+    m._on_signal(signal.SIGINT, None)
+    assert exits == [130]
+
+
+def test_draining_starts_no_new_workers(mgr):
+    # While draining, a tick reconciles but spawns nothing, even with a workable card.
+    m, _state, spawned, _killed = mgr
+    m._draining = True
+    m.tick()
+    assert spawned == []
+    assert m.pool.slots[0].state == SlotState.IDLE
 
 
 def test_reap_orphans_at_startup(mgr, monkeypatch):

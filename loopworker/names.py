@@ -1,8 +1,9 @@
-"""Worker name generation. The Manager names each Worker (the old in-session loop had
-workers name themselves). Names are cosmetic — the claim's identity is the worker row id."""
-from __future__ import annotations
+"""Worker names. Names are cosmetic — the claim's identity is the worker row id.
 
-import random
+One STABLE name per slot (slot 0 = ada, slot 1 = babbage, …), reused across cards:
+the worker row is upserted per name, so the loop_workers table stays N rows (one per
+slot) instead of growing by one every card."""
+from __future__ import annotations
 
 _NAMES = [
     "ada", "babbage", "turing", "hopper", "lovelace", "dijkstra", "knuth", "ritchie",
@@ -11,13 +12,8 @@ _NAMES = [
 ]
 
 
-def pick_name(taken: set[str]) -> str:
-    free = [n for n in _NAMES if n not in taken]
-    if free:
-        return random.choice(free)
-    # pool exhausted — suffix a number
-    base = random.choice(_NAMES)
-    i = 2
-    while f"{base}{i}" in taken:
-        i += 1
-    return f"{base}{i}"
+def name_for_slot(index: int) -> str:
+    """The stable Worker name for a slot. Wraps the pool for pools larger than it."""
+    base = _NAMES[index % len(_NAMES)]
+    cycle = index // len(_NAMES)
+    return base if cycle == 0 else f"{base}{cycle + 1}"

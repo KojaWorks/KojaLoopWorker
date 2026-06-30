@@ -37,7 +37,9 @@ class BacklogAdapter(ABC):
     # --- writes (claim lifecycle) -----------------------------------------
     @abstractmethod
     def register_worker(self, name: str, role: str = "generic", notes: str = "") -> Worker:
-        """Create a worker row and return it (the Manager owns registration)."""
+        """Upsert the worker row for `name` and return it — reuse the existing row if
+        present, else create one. Names are stable per slot, so this keeps the worker
+        registry to one row per slot instead of one per card."""
 
     @abstractmethod
     def claim(self, card: Card, worker: Worker) -> bool:
