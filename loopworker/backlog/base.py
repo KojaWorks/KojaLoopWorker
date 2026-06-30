@@ -16,7 +16,8 @@ from ..models import Card, CardStatus, Worker
 
 
 class BacklogAdapter(ABC):
-    def __init__(self, manifest: Manifest) -> None:
+    def __init__(self, manifest: Manifest | None = None) -> None:
+        # None in host mode: the connection comes from HostConfig, not a project manifest.
         self.manifest = manifest
 
     # --- reads -------------------------------------------------------------

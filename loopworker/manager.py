@@ -38,6 +38,14 @@ class Manager:
         base_port: int = 54400,
         state_dir: Path | None = None,
         reconcile_interval: int = 15,
+        adapter=None,
+        project_id: str | None = None,
+        name_prefix: str = "",
+        hot: bool = True,
+        brief: str | None = None,
+        project_brief: str | None = None,
+        port_step: int = 100,
+        base_ref: str = "origin/main",
     ):
         self.manifest = manifest
         self.poll_interval = poll_interval
@@ -47,8 +55,18 @@ class Manager:
         self.reconcile_interval = min(reconcile_interval, poll_interval)
         self.grace = timedelta(seconds=grace_seconds)
         self.wallclock_cap = timedelta(minutes=manifest.worker.wallclock_cap_minutes)
-        self.adapter = build_adapter(manifest)
-        self.pool = SlotPool(manifest, base_port=base_port, log=self.log)
+        # host mode injects a SHARED adapter and scopes this Manager to one project;
+        # single-project mode builds its own adapter from the manifest (project_id None).
+        self.adapter = adapter if adapter is not None else build_adapter(manifest)
+        self.project_id = project_id
+        self.name_prefix = name_prefix
+        # host mode injects the brief (generic loop pointer + per-project override) since
+        # the shared adapter has no per-project manifest to resolve them from; single mode
+        # leaves them None and resolves via the manifest at spawn time.
+        self._brief = brief
+        self._project_brief = project_brief
+        self.pool = SlotPool(manifest, base_port=base_port, port_step=port_step,
+                             log=self.log, hot=hot, base_ref=base_ref)
         self.state_dir = (state_dir or Path("state") / manifest.project_name).resolve()
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.lockfile = self.state_dir / "manager.lock"
@@ -103,6 +121,21 @@ class Manager:
             return
         self._fill_idle(now)
 
+    # --- host-driven steps (host mode calls these instead of run()) --------
+    def reconcile(self, now: datetime | None = None) -> None:
+        """Reap finished/crashed workers, refresh state. Safe to call frequently."""
+        self._reconcile_busy(now or datetime.now(timezone.utc))
+
+    def fill(self, now: datetime | None = None, max_new: int | None = None) -> None:
+        """Spawn up to max_new workers into available slots (the host's per-project share
+        of the host slot budget). Respects this project's own PAUSED killswitch."""
+        if self.killswitch.exists():
+            return
+        self._fill_idle(now or datetime.now(timezone.utc), max_new)
+
+    def busy_count(self) -> int:
+        return self._busy_count()
+
     # --- reconcile ---------------------------------------------------------
     def _reconcile_busy(self, now: datetime) -> None:
         for slot in self.pool.slots:
@@ -138,25 +171,34 @@ class Manager:
         self.log(f"reaping slot {slot.index} (session {slot.session}): {reason}")
         if slot.session:
             tmux.kill(slot.session)
-        self.pool.free(slot)
+        self.pool.recycle(slot)  # hot: back to warm IDLE; cold: teardown stack + worktree
 
     # --- fill --------------------------------------------------------------
-    def _fill_idle(self, now: datetime) -> None:
-        idle = self.pool.idle_slots()
-        if not idle:
+    def _fill_idle(self, now: datetime, max_new: int | None = None) -> None:
+        """Spawn workers into available slots. max_new caps how many we may start this
+        pass (the host's per-project share of the host-wide slot budget); None = no cap."""
+        if max_new is not None and max_new <= 0:
+            return
+        available = self.pool.available_slots()
+        if not available:
             return
         workable = self.adapter.list_workable()
+        if self.project_id is not None:  # host mode: only this Manager's project
+            workable = [c for c in workable if c.project == self.project_id]
         if not workable:
             return
-        taken = {s.session for s in self.pool.slots if s.session}  # avoid duplicate sessions
-        for slot in idle:
-            if not workable:
+        for slot in available:
+            if not workable or (max_new is not None and max_new <= 0):
                 break
             card = workable.pop(0)
             self._spawn_worker(slot, card, now)
+            if max_new is not None:
+                max_new -= 1
 
     def _spawn_worker(self, slot: Slot, card, now: datetime) -> None:
-        name = name_for_slot(slot.index)  # stable per slot; reuses one worker row
+        # stable per slot; reuses one worker row. name_prefix namespaces it per project
+        # in host mode (so two projects' slot-0 aren't both "ada" in shared loop_workers).
+        name = f"{self.name_prefix}{name_for_slot(slot.index)}"
         try:
             worker = self.adapter.register_worker(
                 name, role="generic", notes=f"~{card.num}: {card.title}"
@@ -173,6 +215,10 @@ class Manager:
             self.pool.acquire(slot, _slug(f"{card.num}-{card.title}"))
         except SlotError as e:
             self.log(f"slot {slot.index} acquire failed: {e!r} — releasing ~{card.num}")
+            # a cold slot may already have provisioned a stack before the failure — tear it
+            # down so a failed acquire never leaks a running stack (hot keeps its warm one).
+            if not self.pool.hot:
+                self.pool.teardown_slot(slot)
             slot.state = SlotState.BROKEN
             try:
                 self.adapter.release(card)
@@ -186,7 +232,7 @@ class Manager:
             tmux.spawn(session, slot.dir, ["bash", str(launch)])
         except RuntimeError as e:
             self.log(f"tmux spawn failed for ~{card.num}: {e!r} — releasing")
-            self.pool.free(slot)
+            self.pool.recycle(slot)
             try:
                 self.adapter.release(card)
             except Exception:
@@ -242,10 +288,13 @@ class Manager:
             if slot.session and tmux.has_session(slot.session):
                 self.log(f"reaping worker {slot.session} ({reason})")
                 self._reap_session(slot.session, reason)
+                self.pool.recycle(slot)  # tear down a cold slot's stack so shutdown leaves none running
 
     def _build_prompt(self, slot: Slot, card, worker) -> str:
-        brief = self.adapter.get_brief()              # generic loop protocol (a Patch page pointer)
-        project_brief = self.manifest.project_brief()  # this project's deltas (verify/merge/gotchas)
+        # generic loop protocol (a Patch page pointer); this project's deltas. Host mode
+        # injects both (shared adapter has no manifest); single mode resolves via manifest.
+        brief = self._brief if self._brief is not None else self.adapter.get_brief()
+        project_brief = self._project_brief if self._project_brief is not None else self.manifest.project_brief()
         project_section = (
             f"--- PROJECT BRIEF ({self.manifest.project_name}) ---\n{project_brief}\n\n"
             if project_brief else ""
@@ -298,6 +347,7 @@ class Manager:
     def snapshot(self) -> dict:
         return {
             "project": self.manifest.project_name,
+            "hot": self.pool.hot,
             "started_at": self.started_at.isoformat(),
             "paused": self.killswitch.exists(),
             "poll_interval": self.poll_interval,

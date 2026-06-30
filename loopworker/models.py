@@ -53,6 +53,18 @@ class Card:
 
 
 @dataclass
+class ProjectRow:
+    """A row in the shared `projects` registry: a project this host may serve."""
+    id: str
+    name: str
+    repo: str | None = None              # git URL to clone
+    default_branch: str = "main"
+    slots: int | None = None             # override the manifest's slot count
+    hot: bool = False                    # keep a warm pool vs cold-provision per card
+    brief_ref: str | None = None         # optional Patch-page brief (alt to the repo BRIEF.md)
+
+
+@dataclass
 class Worker:
     """A row in the backlog's worker registry (Patch `loop_workers`)."""
     id: str
@@ -63,6 +75,7 @@ class Worker:
 
 
 class SlotState(str, Enum):
+    COLD = "cold"        # exists but not provisioned; a cold pool provisions on demand
     IDLE = "idle"        # provisioned, no worker
     BUSY = "busy"        # a worker is running in it
     BROKEN = "broken"    # provision/reset failed; needs attention

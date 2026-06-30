@@ -1,38 +1,54 @@
 # LoopWorker
 
-An outer **Manager** that polls a project's backlog and spawns disposable **Workers** —
+An outer **Manager** that polls a shared backlog and spawns disposable **Workers** —
 each implements exactly one card in its own tmux `claude` session, then exits. It moves
 the build loop *out* of the Claude session (which was the fragile part) and into a small,
 deterministic, non-AI orchestrator.
+
+One Manager runs **per host** and serves every project in the shared backlog whose
+`worker_manager` is this host's — cloning each repo on demand. A teammate runs their own
+Manager on their own box (their compute, their `claude` login) against the same backlog,
+scoped to their projects. Adding a project is: ship a `.loopworker/` contract in its repo,
+add a row to the **projects** table.
 
 See [DESIGN.md](DESIGN.md) for the full architecture and the decisions behind it.
 
 ## Status
 
-v1 skeleton, built and unit-tested:
+Running in production (autonomously shipping Patch cards), built and unit-tested:
 
-- `loopworker/manager.py` — the long-lived poll → reconcile → spawn → reap loop
-- `loopworker/backlog/patch.py` — Patch backlog adapter over PostgREST (atomic claims)
-- `loopworker/slots.py` — warm (worktree, port, stack) pool with reset-on-acquire
+- `loopworker/host.py` — the per-host Manager: discover projects, clone on demand,
+  hot/cold slot pools under a host-wide budget
+- `loopworker/manager.py` — the per-project poll → reconcile → spawn → reap loop
+- `loopworker/backlog/patch.py` — Patch backlog adapter over PostgREST (atomic claims,
+  project-scoped to this host's `worker_manager`)
+- `loopworker/slots.py` — (worktree, port, stack) pool: warm for hot projects, on-demand
+  for cold, with reset-on-acquire
 - `loopworker/tmux.py` — Worker session spawn / liveness / reap
 - `loopworker/reconciler.py` — pure, tested decision logic
 - `loopworker/dashboard.py` — local HTTP status page
-
-Not yet wired for a live run — see "What's left" below.
 
 ## Quickstart
 
 ```bash
 python3.13 -m venv .venv
 ./.venv/bin/pip install -e .
-cp .env.example .env            # set PATCH_PAT (mint in Patch → Settings → Tokens)
+cp .env.example .env                       # set PATCH_PAT (mint in Patch → Settings → Tokens)
+cp config.toml.example ~/.loopworker/config.toml   # set worker_manager, backlog, clones_dir, max_slots
 
-# the target project must ship a .loopworker/ contract (see examples/)
-./.venv/bin/loopworker --project ~/Dev/myproject
+./.venv/bin/loopworker                     # host mode: serve every project assigned to this host
 ```
 
-The working copy's `.loopworker/manifest.toml` is the source of truth; CLI flags override
-it. Useful flags: `--slots N`, `--poll-interval S`, `--once` (single tick), `--no-dashboard`.
+**Host mode (default).** `~/.loopworker/config.toml` is the source of truth: the backlog
+connection, this host's `worker_manager` id, where to clone projects, and `max_slots` (the
+host-wide cap on live stacks). The Manager reads the **projects** table for rows whose
+`worker_manager` is yours, clones each repo under `clones_dir`, and runs them: `hot`
+projects keep a warm pool, `cold` projects provision a slot per card and tear it down after,
+all within `max_slots`.
+
+**Single-project mode.** `loopworker --project ~/Dev/myproject` serves just that one working
+copy (its `.loopworker/manifest.toml` is the source of truth) — handy for local testing.
+Useful flags: `--slots N`, `--poll-interval S`, `--once` (single tick), `--no-dashboard`.
 
 Pause spawning at any time by creating the killswitch file the Manager prints on start
 (`state/<project>/PAUSED`); delete it to resume. Dashboard: http://127.0.0.1:8787.
@@ -56,8 +72,12 @@ project's stack.
 ./.venv/bin/python -m pytest tests/ -q
 ```
 
-## What's left (needs you)
+## Host setup (needs you)
 
-- **Credentials / host:** a `PATCH_PAT` (mint in Patch → Settings → Tokens), `claude` logged
-  in on the host, and the `patch` + `chrome-devtools` MCPs configured at user scope so each
+- **Credentials:** a `PATCH_PAT` in `.env` (mint in Patch → Settings → Tokens) — backlog
+  access only, never the owner's LLM budget.
+- **`claude` logged in** on the host (Workers spend this host's compute, not the owner's
+  tokens), with the `patch` + `chrome-devtools` MCPs configured at user scope so each
   spawned Worker inherits them.
+- **A projects-table row** per project this host serves, with `worker_manager` set to your
+  host's id and a `repo` to clone.

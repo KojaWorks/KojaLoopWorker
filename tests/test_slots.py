@@ -6,7 +6,7 @@ import pytest
 
 from loopworker.config import (BacklogConfig, BriefConfig, Manifest,
                                ScriptsConfig, WorkerConfig)
-from loopworker.models import Slot
+from loopworker.models import Slot, SlotState
 from loopworker.slots import SlotError, SlotPool, _redact
 
 
@@ -50,3 +50,43 @@ def test_run_script_raises_with_tail_on_failure(tmp_path):
     with pytest.raises(SlotError) as e:
         pool._run_script("provision", slot)
     assert "rc=3" in str(e.value) and "about-to-fail" in str(e.value)
+
+
+def _cold_pool(tmp_path):
+    lw = tmp_path / ".loopworker"
+    lw.mkdir()
+    (lw / "provision.sh").write_text("#!/usr/bin/env bash\ntrue\n")
+    m = Manifest(
+        project_name="demo", project_dir=tmp_path,
+        backlog=BacklogConfig("patch", "", {}), brief=BriefConfig("repo-file", "B.md"),
+        worker=WorkerConfig(), slots=1, scripts=ScriptsConfig(),
+    )
+    return SlotPool(m, hot=False, log=lambda *_: None)
+
+
+def test_cold_pool_build_provisions_nothing(tmp_path, monkeypatch):
+    pool = _cold_pool(tmp_path)
+    monkeypatch.setattr(pool, "_provision",
+                        lambda s: (_ for _ in ()).throw(AssertionError("cold build must not provision")))
+    pool.build()
+    assert all(s.state == SlotState.COLD for s in pool.slots)
+    assert pool.available_slots() == pool.slots          # COLD slots are available for work
+
+
+def test_cold_pool_provisions_on_acquire_then_tears_down(tmp_path, monkeypatch):
+    pool = _cold_pool(tmp_path)
+    slot = pool.slots[0]
+    calls: list = []
+    monkeypatch.setattr(pool, "_ensure_worktree", lambda s: calls.append("worktree"))
+    monkeypatch.setattr(pool, "_provision", lambda s: calls.append("provision"))
+    monkeypatch.setattr(pool, "_git", lambda *a, **k: calls.append(("git", a[1])))
+    monkeypatch.setattr(pool, "_run_script", lambda which, s, **k: (calls.append(which) or (0, "")))
+
+    pool.acquire(slot, "card-x")
+    assert calls[:2] == ["worktree", "provision"]        # cold provisions before reset
+    assert "reset" in calls                              # then the normal reset.sh
+
+    calls.clear()
+    pool.recycle(slot)
+    assert "teardown" in calls                           # cold teardown runs teardown.sh
+    assert slot.state == SlotState.COLD                  # returned to cold (no lingering stack)

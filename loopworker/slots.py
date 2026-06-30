@@ -49,16 +49,24 @@ class SlotError(RuntimeError):
 
 class SlotPool:
     def __init__(self, manifest: Manifest, base_port: int = 54400, port_step: int = 100,
-                 log: Callable[[str], None] = lambda _m: None):
+                 log: Callable[[str], None] = lambda _m: None, hot: bool = True,
+                 base_ref: str = "origin/main"):
         self.manifest = manifest
         self.base_port = base_port
         self.port_step = port_step
         self.log = log
+        # the upstream ref worktrees branch off and reset to (a project's default branch);
+        # "origin/main" for most, "origin/master" etc. for others.
+        self.base_ref = base_ref
+        # hot: keep warm stacks (provision once, reuse). cold: provision a slot per card
+        # and tear it down after, so an occasional project leaves no lingering stack.
+        self.hot = hot
         # Slot worktrees live OUTSIDE the main working copy (a worktree nested inside
         # its own repo is an anti-pattern) — as a sibling directory.
         self.root = manifest.project_dir.parent / f"{manifest.project_dir.name}.loopworker-slots"
         self.slots: list[Slot] = [
-            Slot(index=i, dir=str(self.root / f"slot-{i}"), port=base_port + i * port_step)
+            Slot(index=i, dir=str(self.root / f"slot-{i}"), port=base_port + i * port_step,
+                 state=SlotState.IDLE if hot else SlotState.COLD)
             for i in range(manifest.slots)
         ]
 
@@ -67,7 +75,14 @@ class SlotPool:
         """Create every slot's worktree and provision its stack. Idempotent: safe to
         call on every Manager start; existing worktrees/stacks are reused. A slot that
         fails to provision is marked BROKEN and skipped — one bad stack must not crash
-        the whole Manager; the healthy slots still run."""
+        the whole Manager; the healthy slots still run.
+
+        Cold pools provision nothing here — their slots stay COLD until a card arrives,
+        then acquire() provisions on demand and recycle() tears down after."""
+        if not self.hot:
+            self.log(f"cold pool: {len(self.slots)} slot(s) provision on demand (no warm stacks)")
+            self.root.mkdir(parents=True, exist_ok=True)
+            return
         self.log(f"building warm pool: {len(self.slots)} slot(s) — first run provisions a Supabase stack each (slow)")
         self.root.mkdir(parents=True, exist_ok=True)
         for slot in self.slots:
@@ -95,14 +110,21 @@ class SlotPool:
     def acquire(self, slot: Slot, branch_slug: str) -> None:
         """Reset the slot to a clean tree on a fresh branch off origin/main and run the
         project's reset.sh (e.g. db reset). Raises SlotError on failure; the caller
-        should mark the slot BROKEN and skip it."""
+        should mark the slot BROKEN and skip it.
+
+        A COLD slot (cold pool) is provisioned first — worktree created and provision.sh
+        run — so a cold project gets a live stack only while it has a card to work."""
+        if slot.state == SlotState.COLD:
+            self.log(f"slot {slot.index}: cold — provisioning on demand")
+            self._ensure_worktree(slot)
+            self._provision(slot)
         slot.activity = f"resetting (branch claude/{branch_slug})"
         self.log(f"slot {slot.index}: resetting worktree to origin/main, branch claude/{branch_slug}")
         wt = Path(slot.dir)
         self._git(self.manifest.project_dir, "fetch", "origin", "-q")
-        self._git(wt, "reset", "--hard", "origin/main")
+        self._git(wt, "reset", "--hard", self.base_ref)
         self._git(wt, "clean", "-fd")
-        self._git(wt, "checkout", "-B", f"claude/{branch_slug}", "origin/main")
+        self._git(wt, "checkout", "-B", f"claude/{branch_slug}", self.base_ref)
         rc, out = self._run_script("reset", slot, check=False)
         if rc != 0:
             raise SlotError(f"reset.sh failed for slot {slot.index} (rc={rc})")
@@ -116,6 +138,29 @@ class SlotPool:
         slot.worker_id = None
         slot.started_at = None
         slot.done_since = None
+
+    def recycle(self, slot: Slot) -> None:
+        """Release a slot after a worker is reaped. Hot → back to warm IDLE (stack kept).
+        Cold → tear the stack + worktree down and return to COLD, so an idle cold project
+        leaves nothing running."""
+        if self.hot:
+            self.free(slot)
+            return
+        slot.activity = "tearing down (cold)"
+        self.log(f"slot {slot.index}: cold teardown (stack down, worktree removed)")
+        self.teardown_slot(slot)
+        self.free(slot)
+        slot.state = SlotState.COLD
+        slot.activity = "cold"
+
+    def teardown_slot(self, slot: Slot) -> None:
+        """Stop one slot's stack and remove its worktree (best-effort)."""
+        self._run_script("teardown", slot, check=False)
+        self._git(self.manifest.project_dir, "worktree", "remove", "--force", slot.dir, check=False)
+
+    def available_slots(self) -> list[Slot]:
+        """Slots that can take a card now: warm IDLE, or COLD (provisioned on acquire)."""
+        return [s for s in self.slots if s.state in (SlotState.IDLE, SlotState.COLD)]
 
     def idle_slots(self) -> list[Slot]:
         return [s for s in self.slots if s.state == SlotState.IDLE]
@@ -133,7 +178,7 @@ class SlotPool:
         # "loopworker" (the obvious name for this work) — git then can't create the ref.
         self._git(
             self.manifest.project_dir,
-            "worktree", "add", "-B", f"loopworker-slot-{slot.index}", slot.dir, "origin/main",
+            "worktree", "add", "-B", f"loopworker-slot-{slot.index}", slot.dir, self.base_ref,
         )
 
     def _provision(self, slot: Slot) -> None:
