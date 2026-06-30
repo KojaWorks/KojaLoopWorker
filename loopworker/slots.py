@@ -86,9 +86,12 @@ class SlotPool:
         if (Path(slot.dir) / ".git").exists():
             return
         self._git(self.manifest.project_dir, "fetch", "origin", "-q")
+        # Flat branch name (hyphen, not "loopworker/slot-N"): a slash makes git treat
+        # "loopworker" as a directory, which collides with a plain branch named
+        # "loopworker" (the obvious name for this work) — git then can't create the ref.
         self._git(
             self.manifest.project_dir,
-            "worktree", "add", "-B", f"loopworker/slot-{slot.index}", slot.dir, "origin/main",
+            "worktree", "add", "-B", f"loopworker-slot-{slot.index}", slot.dir, "origin/main",
         )
 
     def _provision(self, slot: Slot) -> None:
