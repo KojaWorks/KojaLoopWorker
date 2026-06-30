@@ -36,7 +36,8 @@ def main(argv: list[str] | None = None) -> int:
     load_dotenv()
     p = argparse.ArgumentParser(prog="loopworker", description=__doc__)
     p.add_argument("--project", required=True, help="path to the LoopWorker-compatible working copy")
-    p.add_argument("--poll-interval", type=int, default=300, help="seconds between ticks (default 300)")
+    p.add_argument("--poll-interval", type=int, default=300, help="seconds between spawning new workers (default 300)")
+    p.add_argument("--reconcile-interval", type=int, default=15, help="seconds between reconciles — reap/dashboard freshness (default 15)")
     p.add_argument("--grace", type=int, default=120, help="seconds to wait before reaping a finished worker")
     p.add_argument("--slots", type=int, default=None, help="override manifest slot count")
     p.add_argument("--base-port", type=int, default=54400, help="first slot's stack port")
@@ -57,6 +58,7 @@ def main(argv: list[str] | None = None) -> int:
     manager = Manager(
         manifest,
         poll_interval=args.poll_interval,
+        reconcile_interval=args.reconcile_interval,
         grace_seconds=args.grace,
         base_port=args.base_port,
         state_dir=args.state_dir,
