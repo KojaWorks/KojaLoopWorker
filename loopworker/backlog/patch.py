@@ -55,6 +55,8 @@ class PatchAdapter(BacklogAdapter):
             )
         self.roadmap = opts.get("roadmap_table", "roadmap")
         self.workers = opts.get("workers_table", "loop_workers")
+        self.projects = opts.get("projects_table", "projects")
+        self.worker_manager = manifest.worker_manager  # "" = serve every project (back-compat)
         self._pat = pat
         self._anon = anon
         self._exchange_url = f"{api_base}/functions/v1/pat-exchange"
@@ -73,15 +75,34 @@ class PatchAdapter(BacklogAdapter):
     def list_workable(self) -> list[Card]:
         cards = [self._to_card(r) for r in self._get(self.roadmap, {"select": "*"})]
         by_id = {c.id: c for c in cards}
+        served = self._served_project_ids()
         workable = [
             c for c in cards
             if c.status == CardStatus.BACKLOG
             and c.assignee is None
             and not c.is_epic
             and self._unblocked(c, by_id)
+            and self._in_scope(c, served)
         ]
         workable.sort(key=lambda c: c.priority, reverse=True)
         return workable
+
+    def _served_project_ids(self) -> set[str] | None:
+        """The projects this Manager serves: rows in `projects` whose worker_manager is
+        ours. None = no filtering (worker_manager unset → serve every project, the old
+        single-project behaviour)."""
+        if not self.worker_manager:
+            return None
+        rows = self._get(self.projects, {"worker_manager": f"eq.{self.worker_manager}", "select": "id"})
+        return {r["id"] for r in rows}
+
+    @staticmethod
+    def _in_scope(card: Card, served: set[str] | None) -> bool:
+        if served is None:
+            return True                      # not filtering by project
+        if card.project is None:
+            return len(served) == 1          # sole-project host adopts a not-yet-tagged card
+        return card.project in served
 
     def get_card(self, num: int) -> Card | None:
         rows = self._get(self.roadmap, {"id_2": f"eq.{num}", "select": "*", "limit": "1"})
@@ -175,6 +196,7 @@ class PatchAdapter(BacklogAdapter):
             blocked_by=self._rel_list(r.get("blocked_by")),
             assignee=self._rel_one(r.get("assignee")),
             solved_in_pr=r.get("solved_in_pr"),
+            project=self._rel_one(r.get("project")),
         )
 
     # Auth ----

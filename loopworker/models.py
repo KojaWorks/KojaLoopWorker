@@ -45,6 +45,7 @@ class Card:
     blocked_by: list[str] = field(default_factory=list)  # ids of blocker cards
     assignee: str | None = None          # id of the owning worker, if claimed
     solved_in_pr: str | None = None
+    project: str | None = None           # id of the projects row this card belongs to
 
     @property
     def is_epic(self) -> bool:
