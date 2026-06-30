@@ -43,7 +43,7 @@ class Manager:
         self.grace = timedelta(seconds=grace_seconds)
         self.wallclock_cap = timedelta(minutes=manifest.worker.wallclock_cap_minutes)
         self.adapter = build_adapter(manifest)
-        self.pool = SlotPool(manifest, base_port=base_port)
+        self.pool = SlotPool(manifest, base_port=base_port, log=self.log)
         self.state_dir = (state_dir or Path("state") / manifest.project_name).resolve()
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.lockfile = self.state_dir / "manager.lock"
@@ -106,6 +106,7 @@ class Manager:
                 self._reap(slot, reason)
 
     def _reap(self, slot: Slot, reason: str) -> None:
+        slot.activity = f"reaping ({reason})"
         self.log(f"reaping slot {slot.index} (session {slot.session}): {reason}")
         if slot.session:
             tmux.kill(slot.session)
@@ -165,12 +166,13 @@ class Manager:
             return
 
         slot.state = SlotState.BUSY
+        slot.activity = f"running ~{card.num} ({name})"
         slot.session = session
         slot.card_num = card.num
         slot.worker_id = worker.id
         slot.started_at = now
         slot.done_since = None
-        self.log(f"spawned {name} on ~{card.num} ({card.title!r}) in slot {slot.index}")
+        self.log(f"spawned {name} on ~{card.num} ({card.title!r}) in slot {slot.index} (tmux: {session})")
 
     # --- worker launch -----------------------------------------------------
     def _session_name(self, card_num: int) -> str:
@@ -227,6 +229,7 @@ class Manager:
                 {
                     "index": s.index,
                     "state": s.state.value,
+                    "activity": s.activity,
                     "port": s.port,
                     "card": s.card_num,
                     "session": s.session,
