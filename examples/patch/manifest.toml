@@ -1,5 +1,6 @@
-# Example manifest for pointing LoopWorker at the Patch project itself.
-# Drop this (and the sibling scripts) into KojaPatch/.loopworker/ and adjust.
+# Generic Supabase-project example (uses LOOPWORKER_PORT in the scripts). KojaPatch's
+# real, in-repo contract lives at KojaPatch/.loopworker/ and uses its own npm db scripts
+# (per-worktree port derivation) instead — see that dir.
 
 [project]
 name = "patch"
@@ -18,7 +19,7 @@ workers_table = "loop_workers"
 # which reads it via the Patch MCP get_page tool. (To be forked to a one-card brief —
 # see DESIGN "Open questions".)
 source = "patch-page"
-ref    = "https://patch.d.nevyn.dev/app/cfacaea7-59e9-4f40-8bba-44c10137a48e"
+ref    = "https://patch.d.nevyn.dev/app/b5b7a703-63eb-4159-8fc9-e2b4963586f5"  # Managed Agent Loop
 
 [worker]
 mcp                   = ["patch", "chrome-devtools"]
