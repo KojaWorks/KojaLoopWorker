@@ -272,6 +272,9 @@ class Manager:
                     "index": s.index,
                     "state": s.state.value,
                     "activity": s.activity,
+                    # live one-liner of what the worker is thinking/doing, scraped
+                    # from its tmux pane (only while a worker holds the slot)
+                    "thinking": tmux.summary_line(s.session) if (s.session and s.state == SlotState.BUSY) else "",
                     "port": s.port,
                     "card": s.card_num,
                     "session": s.session,

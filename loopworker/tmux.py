@@ -52,6 +52,31 @@ def capture(session: str, lines: int = 200) -> str:
     return r.stdout if r.returncode == 0 else ""
 
 
+# Pane lines that are UI chrome, not the agent's actual thinking/talking.
+_CHROME_PREFIXES = ("─", "❯", "⏵", "│", "╭", "╰", "│")
+
+
+def _pick_summary(pane: str) -> str:
+    """The most recent substantive line in pane text (an assistant step `⏺ …` or a
+    thinking spinner `✢ Percolating… (24s)`), skipping box-drawing / prompt / footer
+    chrome. Empty if nothing useful. Pure (no tmux) so it's testable."""
+    for line in reversed(pane.splitlines()):
+        s = line.strip()
+        if not s or s.startswith(_CHROME_PREFIXES):
+            continue
+        if "mode on (shift+tab" in s or "esc to interrupt" in s:
+            continue
+        return s[:140]
+    return ""
+
+
+def summary_line(session: str, lookback: int = 40) -> str:
+    """A one-line gist of what the Worker is doing right now, scraped from its pane.
+    Best-effort cosmetics for the dashboard — empty string on any trouble."""
+    r = _tmux("capture-pane", "-p", "-t", session, "-S", f"-{lookback}")
+    return _pick_summary(r.stdout) if r.returncode == 0 else ""
+
+
 def list_sessions(prefix: str = "") -> list[str]:
     r = _tmux("list-sessions", "-F", "#{session_name}")
     if r.returncode != 0:
