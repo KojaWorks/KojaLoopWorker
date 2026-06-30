@@ -5,6 +5,7 @@ The working copy's .loopworker/manifest.toml is the source of truth; flags overr
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -13,7 +14,26 @@ from .config import Manifest
 from .manager import Manager
 
 
+def load_dotenv() -> None:
+    """Load KEY=VALUE pairs from a `.env` into os.environ so `loopworker` just works
+    after `cp .env.example .env` (the README's promise). Looks in the CWD and the
+    repo root; a real env var already set always wins (so `PATCH_PAT=… loopworker`
+    still overrides). A tiny parser — no dependency, no interpolation/export syntax."""
+    for path in (Path.cwd() / ".env", Path(__file__).resolve().parent.parent / ".env"):
+        if not path.is_file():
+            continue
+        for raw in path.read_text().splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, val = line.split("=", 1)
+            key = key.strip()
+            if key and key not in os.environ:
+                os.environ[key] = val.strip().strip('"').strip("'")
+
+
 def main(argv: list[str] | None = None) -> int:
+    load_dotenv()
     p = argparse.ArgumentParser(prog="loopworker", description=__doc__)
     p.add_argument("--project", required=True, help="path to the LoopWorker-compatible working copy")
     p.add_argument("--poll-interval", type=int, default=300, help="seconds between ticks (default 300)")
