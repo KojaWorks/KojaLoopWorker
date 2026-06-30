@@ -37,9 +37,14 @@ class Manager:
         grace_seconds: int = 120,
         base_port: int = 54400,
         state_dir: Path | None = None,
+        reconcile_interval: int = 15,
     ):
         self.manifest = manifest
         self.poll_interval = poll_interval
+        # Reconcile (reap finished workers, refresh the dashboard, catch crashes) runs
+        # on this fast cadence; spawning new workers (the expensive part) only every
+        # poll_interval. Keeps the dashboard honest without hammering the backlog.
+        self.reconcile_interval = min(reconcile_interval, poll_interval)
         self.grace = timedelta(seconds=grace_seconds)
         self.wallclock_cap = timedelta(minutes=manifest.worker.wallclock_cap_minutes)
         self.adapter = build_adapter(manifest)
@@ -63,20 +68,24 @@ class Manager:
             self._reap_orphans()  # workers stranded by a previously-dead Manager
             self.log(f"building {self.manifest.slots} slot(s) — provisioning stacks (first run is slow)")
             self.pool.build()
-            self.log("pool ready; entering reconcile loop")
+            self.log(f"pool ready; reconciling every {self.reconcile_interval}s, filling every {self.poll_interval}s")
+            last_fill = 0.0  # 0 → fill on the first iteration
             while not self._stop:
+                now = datetime.now(timezone.utc)
                 try:
-                    self.tick()
-                except Exception as e:  # one bad tick must not kill the Manager
-                    self.log(f"ERROR in tick: {e!r}")
-                if self._draining:
-                    if not self._busy_count():
-                        self.log("drain complete — all workers finished; shutting down")
-                        break
-                    # poll fast while draining so we exit promptly once the last finishes
-                    self._sleep(min(self.poll_interval, 5))
-                else:
-                    self._sleep(self.poll_interval)
+                    self._reconcile_busy(now)  # cheap: reap finished workers, refresh dashboard, catch crashes
+                    if not self._draining and (time.monotonic() - last_fill) >= self.poll_interval:
+                        if self.killswitch.exists():
+                            self.log("killswitch present (PAUSED) — not spawning new workers")
+                        else:
+                            self._fill_idle(now)
+                        last_fill = time.monotonic()
+                except Exception as e:  # one bad iteration must not kill the Manager
+                    self.log(f"ERROR in loop: {e!r}")
+                if self._draining and not self._busy_count():
+                    self.log("drain complete — all workers finished; shutting down")
+                    break
+                self._sleep(self.reconcile_interval)
         finally:
             # A worker without its Manager has no reconciler/reaper, so don't leave
             # orphans behind when we exit (Ctrl-C, SIGTERM, or a fatal error).
@@ -106,12 +115,16 @@ class Manager:
             if action == SlotAction.KEEP:
                 slot.done_since = None
             elif action == SlotAction.REAP:
+                # The worker finished/parked the card (it's no longer In progress).
+                # Reflect that on the dashboard instead of a stale "running ~N".
+                slot.activity = f"finishing — {reason}; reaping soon"
                 if slot.done_since is None:
                     slot.done_since = now
                     self.log(f"slot {slot.index} ~{slot.card_num}: {reason}; reap grace started")
                 elif now - slot.done_since >= self.grace:
                     self._reap(slot, reason)
             elif action in (SlotAction.CRASH_RECLAIM, SlotAction.HUNG_RECLAIM):
+                slot.activity = f"reclaiming — {reason}"
                 self.log(f"slot {slot.index} ~{slot.card_num}: {reason} — reclaiming card")
                 if card is not None:
                     try:

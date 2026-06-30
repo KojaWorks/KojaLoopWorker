@@ -107,6 +107,7 @@ def test_spawn_keep_reap_cycle(mgr):
     m.adapter.cards[1].status = CardStatus.SHIPPED
     m.tick()
     assert slot.state == SlotState.BUSY and slot.done_since is not None
+    assert "reaping" in slot.activity  # dashboard reflects "finishing", not a stale "running"
     m.tick()
     assert slot.state == SlotState.IDLE
     assert killed == [spawned[0]]
