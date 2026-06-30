@@ -15,7 +15,7 @@ def _manifest():
         project_name="demo",
         project_dir=Path("/tmp/demo"),
         backlog=BacklogConfig(adapter="patch", portal="https://patch/x",
-                              options={"api_base": "https://api.patch"}),
+                              options={"api_base": "https://api.patch", "anon_key": "anon-test"}),
         brief=BriefConfig(source="patch-page",
                           ref="https://patch/app/loop-runner-instructions-"
                               "cfacaea7-59e9-4f40-8bba-44c10137a48e"),
@@ -27,7 +27,10 @@ def _manifest():
 
 @pytest.fixture
 def adapter(monkeypatch):
-    monkeypatch.setenv("PATCH_SECRET_KEY", "test-key")
+    monkeypatch.setenv("PATCH_PAT", "pat_test")
+    # Don't hit the network exchanging the PAT at construction; the mapping/selection
+    # tests stub _get/_patch directly, above the auth layer.
+    monkeypatch.setattr(PatchAdapter, "_ensure_token", lambda self, force=False: None)
     return PatchAdapter(_manifest())
 
 
@@ -82,3 +85,45 @@ def test_brief_points_worker_at_patch_page(adapter):
     brief = adapter.get_brief()
     assert "cfacaea7-59e9-4f40-8bba-44c10137a48e" in brief
     assert "get_page" in brief
+
+
+class _ExResp:
+    def __init__(self, token):
+        self.status_code = 200
+        self._token = token
+    def raise_for_status(self): pass
+    def json(self): return {"access_token": self._token, "expires_at": 9_999_999_999}
+
+
+def test_exchange_sets_bearer_and_caches(monkeypatch):
+    # __init__ exchanges the PAT once; a far-future expiry means no re-exchange.
+    monkeypatch.setenv("PATCH_PAT", "pat_abc")
+    posts = []
+    def fake_post(url, json, headers, timeout):
+        posts.append((url, json["token"], headers.get("apikey")))
+        return _ExResp("jwt-1")
+    monkeypatch.setattr("loopworker.backlog.patch.httpx.post", fake_post)
+    a = PatchAdapter(_manifest())
+    assert a._client.headers["Authorization"] == "Bearer jwt-1"
+    assert posts == [("https://api.patch/functions/v1/pat-exchange", "pat_abc", "anon-test")]
+    a._ensure_token()                       # cached -> no second exchange
+    assert len(posts) == 1
+
+
+def test_request_retries_once_on_401(monkeypatch):
+    # An expired/revoked JWT surfaces as a 401; _request re-exchanges and retries.
+    monkeypatch.setenv("PATCH_PAT", "pat_abc")
+    exchanges = []
+    def fake_post(url, json, headers, timeout):
+        exchanges.append(1); return _ExResp(f"jwt-{len(exchanges)}")
+    monkeypatch.setattr("loopworker.backlog.patch.httpx.post", fake_post)
+    a = PatchAdapter(_manifest())           # exchange #1
+    codes = [401, 200]
+    class _ReqResp:
+        def __init__(self, code): self.status_code = code
+        def raise_for_status(self): pass
+        def json(self): return [{"ok": True}]
+    monkeypatch.setattr(a._client, "request", lambda method, path, **kw: _ReqResp(codes.pop(0)))
+    out = a._get("roadmap", {})
+    assert out == [{"ok": True}]            # got the retried 200
+    assert len(exchanges) == 2              # the 401 forced exactly one re-exchange

@@ -54,12 +54,16 @@ class FakeBacklog(BacklogAdapter):
 
 @pytest.fixture
 def mgr(tmp_path, monkeypatch):
-    monkeypatch.setenv("PATCH_SECRET_KEY", "test")
+    monkeypatch.setenv("PATCH_PAT", "pat_test")
+    # Manager() builds a real PatchAdapter; don't exchange the PAT over the network
+    # (this test swaps in FakeBacklog right after, but construction runs first).
+    monkeypatch.setattr("loopworker.backlog.patch.PatchAdapter._ensure_token",
+                        lambda self, force=False: None)
     project = tmp_path / "proj"
     project.mkdir()
     manifest = Manifest(
         project_name="demo", project_dir=project,
-        backlog=BacklogConfig("patch", "", {"api_base": "https://x"}),
+        backlog=BacklogConfig("patch", "", {"api_base": "https://x", "anon_key": "anon-test"}),
         brief=BriefConfig("repo-file", "B.md"),
         worker=WorkerConfig(), slots=1, scripts=ScriptsConfig(),
     )
