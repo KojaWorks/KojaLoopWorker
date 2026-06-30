@@ -112,6 +112,27 @@ def test_spawn_keep_reap_cycle(mgr):
     assert m.adapter.releases == []  # legitimately Shipped — not reclaimed
 
 
+def test_reap_workers_on_shutdown(mgr, monkeypatch):
+    # A worker must not outlive its Manager — shutdown kills live worker sessions.
+    m, _state, _spawned, killed = mgr
+    m.tick()                                   # spawn a worker into the slot
+    sess = m.pool.slots[0].session
+    monkeypatch.setattr(manager_mod.tmux, "has_session", lambda s: True)
+    killed.clear()
+    m._reap_workers("shutting down")
+    assert killed == [sess]
+
+
+def test_reap_orphans_at_startup(mgr, monkeypatch):
+    # A previous Manager that died leaves lw-<proj>-* sessions; startup kills them.
+    m, _state, _spawned, killed = mgr
+    monkeypatch.setattr(manager_mod.tmux, "list_sessions",
+                        lambda prefix: ["lw-demo-9", "lw-demo-10"] if prefix == m._session_prefix() else [])
+    killed.clear()
+    m._reap_orphans()
+    assert set(killed) == {"lw-demo-9", "lw-demo-10"}
+
+
 def test_crash_reclaim(mgr):
     m, state, spawned, killed = mgr
     slot = m.pool.slots[0]

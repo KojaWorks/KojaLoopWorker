@@ -58,6 +58,7 @@ class Manager:
         signal.signal(signal.SIGINT, self._on_signal)
         signal.signal(signal.SIGTERM, self._on_signal)
         try:
+            self._reap_orphans()  # workers stranded by a previously-dead Manager
             self.log(f"building {self.manifest.slots} slot(s) — provisioning stacks (first run is slow)")
             self.pool.build()
             self.log("pool ready; entering reconcile loop")
@@ -68,6 +69,9 @@ class Manager:
                     self.log(f"ERROR in tick: {e!r}")
                 self._sleep(self.poll_interval)
         finally:
+            # A worker without its Manager has no reconciler/reaper, so don't leave
+            # orphans behind when we exit (Ctrl-C, SIGTERM, or a fatal error).
+            self._reap_workers("manager shutting down")
             self._release_lock()
             self.log("manager stopped (slots left warm)")
 
@@ -175,9 +179,28 @@ class Manager:
         self.log(f"spawned {name} on ~{card.num} ({card.title!r}) in slot {slot.index} (tmux: {session})")
 
     # --- worker launch -----------------------------------------------------
-    def _session_name(self, card_num: int) -> str:
+    def _session_prefix(self) -> str:
         proj = re.sub(r"[^a-zA-Z0-9]+", "-", self.manifest.project_name.lower()).strip("-")
-        return f"lw-{proj}-{card_num}"
+        return f"lw-{proj}-"
+
+    def _session_name(self, card_num: int) -> str:
+        return f"{self._session_prefix()}{card_num}"
+
+    def _reap_orphans(self) -> None:
+        """At startup, kill any worker sessions left running. The lockfile guarantees
+        we're the only Manager, so any lw-<proj>-* session is an orphan from a prior
+        Manager that died without reaping — it has no card-status reconciler behind it."""
+        for sess in tmux.list_sessions(self._session_prefix()):
+            self.log(f"reaping orphaned worker session {sess} (no Manager owned it)")
+            tmux.kill(sess)
+
+    def _reap_workers(self, reason: str) -> None:
+        """Kill this Manager's live worker sessions — on shutdown, so a worker never
+        outlives the Manager that would otherwise reap/reconcile it."""
+        for slot in self.pool.slots:
+            if slot.session and tmux.has_session(slot.session):
+                self.log(f"reaping worker {slot.session} ({reason})")
+                tmux.kill(slot.session)
 
     def _build_prompt(self, slot: Slot, card, worker) -> str:
         brief = self.adapter.get_brief()
@@ -213,7 +236,9 @@ class Manager:
             "set -euo pipefail\n"
             f'cd "{slot.dir}"\n'
             'PROMPT="$(cat .loopworker-prompt.txt)"\n'
-            'exec claude --permission-mode acceptEdits "$PROMPT"\n'
+            # auto mode: the Worker runs unattended, so it must not block on
+            # per-tool permission prompts (acceptEdits still prompts for MCP/bash).
+            'exec claude --permission-mode auto "$PROMPT"\n'
         )
         launch.chmod(0o755)
         return launch
