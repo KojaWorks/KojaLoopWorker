@@ -61,6 +61,7 @@ class Slot:
     dir: str
     port: int
     state: SlotState = SlotState.IDLE
+    activity: str = "new"        # human-readable current step (provisioning, resetting, running ~N, …)
     session: str | None = None   # tmux session name of the worker, when BUSY
     card_num: int | None = None  # the ~NNN being worked, when BUSY
     worker_id: str | None = None # loop_workers row id of the running worker
