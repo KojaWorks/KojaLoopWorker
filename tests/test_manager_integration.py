@@ -113,14 +113,16 @@ def test_spawn_keep_reap_cycle(mgr):
 
 
 def test_reap_workers_on_shutdown(mgr, monkeypatch):
-    # A worker must not outlive its Manager — shutdown kills live worker sessions.
+    # A worker must not outlive its Manager — shutdown kills live worker sessions
+    # AND returns the still-In-progress card to the backlog (not stranded).
     m, _state, _spawned, killed = mgr
-    m.tick()                                   # spawn a worker into the slot
+    m.tick()                                   # spawn a worker; card 1 -> In progress
     sess = m.pool.slots[0].session
     monkeypatch.setattr(manager_mod.tmux, "has_session", lambda s: True)
     killed.clear()
     m._reap_workers("shutting down")
     assert killed == [sess]
+    assert m.adapter.releases == [1]           # the unfinished card was released
 
 
 def test_reap_orphans_at_startup(mgr, monkeypatch):

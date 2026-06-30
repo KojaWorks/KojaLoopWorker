@@ -17,7 +17,7 @@ from pathlib import Path
 from . import tmux
 from .backlog import build_adapter
 from .config import Manifest
-from .models import Slot, SlotState
+from .models import CardStatus, Slot, SlotState
 from .names import pick_name
 from .reconciler import SlotAction, classify
 from .slots import SlotError, SlotPool
@@ -186,21 +186,38 @@ class Manager:
     def _session_name(self, card_num: int) -> str:
         return f"{self._session_prefix()}{card_num}"
 
+    def _reap_session(self, sess: str, reason: str) -> None:
+        """Kill a worker tmux session AND release its card if it's still In progress —
+        a reaped worker that didn't finish must not leave its card stranded with a
+        dead owner (a card the worker already Shipped is left as-is)."""
+        tmux.kill(sess)
+        try:
+            num = int(sess[len(self._session_prefix()):])
+        except ValueError:
+            return  # not one of our card sessions
+        try:
+            card = self.adapter.get_card(num)
+            if card and card.status == CardStatus.IN_PROGRESS:
+                self.adapter.release(card, note=reason)
+                self.log(f"  released ~{num} back to Backlog ({reason})")
+        except Exception as e:
+            self.log(f"  could not release ~{num}: {e!r}")
+
     def _reap_orphans(self) -> None:
-        """At startup, kill any worker sessions left running. The lockfile guarantees
+        """At startup, reap any worker sessions left running. The lockfile guarantees
         we're the only Manager, so any lw-<proj>-* session is an orphan from a prior
         Manager that died without reaping — it has no card-status reconciler behind it."""
         for sess in tmux.list_sessions(self._session_prefix()):
             self.log(f"reaping orphaned worker session {sess} (no Manager owned it)")
-            tmux.kill(sess)
+            self._reap_session(sess, "orphaned worker reclaimed at startup")
 
     def _reap_workers(self, reason: str) -> None:
-        """Kill this Manager's live worker sessions — on shutdown, so a worker never
+        """Reap this Manager's live worker sessions — on shutdown, so a worker never
         outlives the Manager that would otherwise reap/reconcile it."""
         for slot in self.pool.slots:
             if slot.session and tmux.has_session(slot.session):
                 self.log(f"reaping worker {slot.session} ({reason})")
-                tmux.kill(slot.session)
+                self._reap_session(slot.session, reason)
 
     def _build_prompt(self, slot: Slot, card, worker) -> str:
         brief = self.adapter.get_brief()
