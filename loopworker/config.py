@@ -56,6 +56,13 @@ class Manifest:
         name = getattr(self.scripts, which)
         return self.loopworker_dir / name
 
+    def project_brief(self) -> str:
+        """The per-project brief (.loopworker/BRIEF.md): project-specific deltas to the
+        generic loop protocol — verify recipe, merge convention, gotchas. Empty if absent
+        (a minimal project leans on the generic protocol + its repo's own docs)."""
+        path = self.loopworker_dir / "BRIEF.md"
+        return path.read_text() if path.is_file() else ""
+
     @classmethod
     def load(cls, project_dir: str | Path) -> "Manifest":
         project_dir = Path(project_dir).expanduser().resolve()

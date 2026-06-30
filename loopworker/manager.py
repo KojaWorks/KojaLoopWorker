@@ -244,7 +244,12 @@ class Manager:
                 self._reap_session(slot.session, reason)
 
     def _build_prompt(self, slot: Slot, card, worker) -> str:
-        brief = self.adapter.get_brief()
+        brief = self.adapter.get_brief()              # generic loop protocol (a Patch page pointer)
+        project_brief = self.manifest.project_brief()  # this project's deltas (verify/merge/gotchas)
+        project_section = (
+            f"--- PROJECT BRIEF ({self.manifest.project_name}) ---\n{project_brief}\n\n"
+            if project_brief else ""
+        )
         return (
             f"You are {worker.name}, an autonomous LoopWorker.\n\n"
             f"You are assigned exactly ONE card: ~{card.num} \"{card.title}\" in project "
@@ -252,6 +257,7 @@ class Manager:
             f"{worker.name}, status In progress). Do NOT register yourself, do NOT pick "
             f"another card, do NOT browse the backlog for more work.\n\n"
             f"{brief}\n\n"
+            f"{project_section}"
             f"Work this one card per that brief: decide if it is workable. If not, move it "
             f"to Needs refinement (with sharp numbered questions) or Backlog and clear your "
             f"Assignee. If workable: implement the minimum that works, verify, open a PR, run "
