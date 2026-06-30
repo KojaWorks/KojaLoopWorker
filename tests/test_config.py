@@ -2,7 +2,7 @@ import textwrap
 
 import pytest
 
-from loopworker.config import Manifest
+from loopworker.config import HostConfig, Manifest
 
 
 def _write_manifest(root, body):
@@ -60,3 +60,36 @@ def test_defaults(tmp_path):
     assert m.slots == 1
     assert m.worker.wallclock_cap_minutes == 90
     assert m.scripts.provision == "provision.sh"
+
+
+def test_host_config_loads(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(textwrap.dedent("""
+        worker_manager = "miquon"
+        clones_dir = "~/clones"
+        max_slots = 6
+        [backlog]
+        api_base = "https://api.patch/"
+        anon_key = "anon-public"
+        brief_page = "https://patch/app/loop"
+    """))
+    h = HostConfig.load(cfg)
+    assert h.worker_manager == "miquon"
+    assert h.api_base == "https://api.patch"          # trailing slash trimmed
+    assert h.anon_key == "anon-public"
+    assert h.max_slots == 6
+    assert h.clones_dir.is_absolute()                 # ~ expanded
+    assert h.projects_table == "projects"             # default
+    assert h.brief_page == "https://patch/app/loop"
+
+
+def test_host_config_missing_required_key(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('worker_manager = "miquon"\nclones_dir = "/x"\n[backlog]\napi_base="https://a"\n')
+    with pytest.raises(ValueError):                   # anon_key missing
+        HostConfig.load(cfg)
+
+
+def test_host_config_missing_file(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        HostConfig.load(tmp_path / "nope.toml")

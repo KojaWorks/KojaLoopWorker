@@ -38,6 +38,57 @@ class ScriptsConfig:
 
 
 @dataclass
+class HostConfig:
+    """Host-level config for the per-host Manager (`~/.loopworker/config.toml`). The
+    backlog connection and host identity live here, NOT in any project repo: one
+    Manager serves every project in the shared backlog whose worker_manager is ours,
+    cloning each on demand under clones_dir. PATCH_PAT still comes from the env."""
+    worker_manager: str                # this host's Manager id
+    api_base: str
+    anon_key: str
+    clones_dir: Path                   # where project repos are cloned
+    max_slots: int = 4                 # host-wide cap on concurrent live stacks (RAM budget)
+    base_port: int = 54400
+    port_step: int = 100
+    roadmap_table: str = "roadmap"
+    workers_table: str = "loop_workers"
+    projects_table: str = "projects"
+    brief_page: str = ""               # the shared generic loop page (url or id) all workers read
+
+    @classmethod
+    def load(cls, path: str | Path | None = None) -> "HostConfig":
+        path = Path(path or "~/.loopworker/config.toml").expanduser()
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"no host config at {path} — create it (worker_manager, [backlog] api_base/"
+                "anon_key, clones_dir). See README."
+            )
+        with path.open("rb") as f:
+            raw = tomllib.load(f)
+        backlog = raw.get("backlog", {})
+        try:
+            worker_manager = raw["worker_manager"]
+            api_base = backlog["api_base"]
+            anon_key = backlog["anon_key"]
+            clones_dir = raw["clones_dir"]
+        except KeyError as e:
+            raise ValueError(f"{path}: missing required key {e}") from e
+        return cls(
+            worker_manager=worker_manager,
+            api_base=api_base.rstrip("/"),
+            anon_key=anon_key,
+            clones_dir=Path(clones_dir).expanduser(),
+            max_slots=raw.get("max_slots", 4),
+            base_port=raw.get("base_port", 54400),
+            port_step=raw.get("port_step", 100),
+            roadmap_table=backlog.get("roadmap_table", "roadmap"),
+            workers_table=backlog.get("workers_table", "loop_workers"),
+            projects_table=backlog.get("projects_table", "projects"),
+            brief_page=backlog.get("brief_page", ""),
+        )
+
+
+@dataclass
 class Manifest:
     project_name: str
     project_dir: Path                  # the working copy root (--project)

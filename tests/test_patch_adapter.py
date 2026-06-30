@@ -70,6 +70,21 @@ def test_list_workable_filters_and_sorts(adapter, monkeypatch):
     assert nums == [6, 1]  # 6 (prio 60) before 1 (prio 10); others filtered out
 
 
+def test_list_projects_maps_rows(adapter, monkeypatch):
+    adapter.worker_manager = "miquon"
+    rows = [
+        {"id": "p1", "name": "Patch", "repo": "git@x", "default_branch": "main",
+         "slots": 3, "hot": True, "brief_ref": None},
+        {"id": "p2", "name": "GitZ", "repo": None, "default_branch": None,
+         "slots": None, "hot": False, "brief_ref": "u"},
+    ]
+    monkeypatch.setattr(adapter, "_get", lambda table, params: rows if table == adapter.projects else [])
+    ps = adapter.list_projects()
+    assert [p.name for p in ps] == ["Patch", "GitZ"]
+    assert ps[0].hot is True and ps[0].slots == 3
+    assert ps[1].default_branch == "main" and ps[1].hot is False  # null default_branch -> "main"
+
+
 def test_no_project_filter_when_worker_manager_unset(adapter, monkeypatch):
     # Back-compat: an empty worker_manager serves every project (no projects lookup).
     rows = [_row(1, project="p-other")]

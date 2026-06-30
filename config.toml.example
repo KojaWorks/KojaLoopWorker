@@ -1,0 +1,17 @@
+# Host config for the per-host Manager — copy to ~/.loopworker/config.toml.
+# One Manager per host serves EVERY project in the shared backlog whose
+# worker_manager is this host's, cloning each on demand. PATCH_PAT stays in .env.
+
+worker_manager = "miquon"          # this host's id (match the projects table's Worker manager)
+clones_dir     = "~/Dev/loopworker-clones"
+max_slots      = 4                  # host-wide cap on live Supabase stacks (RAM budget)
+# base_port    = 54400             # first slot's stack port (projects get 1000-apart bands)
+# port_step    = 100              # port gap between a project's own slots
+
+[backlog]
+api_base   = "https://api.patch.d.nevyn.dev"
+anon_key   = "<deployment public anon key>"   # PostgREST/Kong apikey header; grants nothing alone
+# brief_page = "https://patch.d.nevyn.dev/app/b5b7a703-63eb-4159-8fc9-e2b4963586f5"  # shared loop page
+# roadmap_table  = "roadmap"
+# workers_table  = "loop_workers"
+# projects_table = "projects"

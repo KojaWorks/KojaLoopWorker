@@ -26,25 +26,41 @@ from datetime import datetime, timezone
 
 import httpx
 
-from ..config import Manifest
-from ..models import Card, CardStatus, Worker
+from ..config import HostConfig, Manifest
+from ..models import Card, CardStatus, ProjectRow, Worker
 from .base import BacklogAdapter
 
 _UUID_TAIL = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", re.I)
 
 
 class PatchAdapter(BacklogAdapter):
-    def __init__(self, manifest: Manifest) -> None:
+    def __init__(
+        self,
+        manifest: Manifest | None = None,
+        *,
+        api_base: str = "",
+        anon_key: str | None = None,
+        worker_manager: str = "",
+        roadmap_table: str = "roadmap",
+        workers_table: str = "loop_workers",
+        projects_table: str = "projects",
+    ) -> None:
         super().__init__(manifest)
-        opts = manifest.backlog.options
-        api_base = opts.get("api_base", "").rstrip("/")
+        if manifest is not None:  # single-project mode: connection lives in the manifest
+            opts = manifest.backlog.options
+            api_base = opts.get("api_base", "")
+            anon_key = opts.get("anon_key")
+            worker_manager = manifest.worker_manager
+            roadmap_table = opts.get("roadmap_table", "roadmap")
+            workers_table = opts.get("workers_table", "loop_workers")
+            projects_table = opts.get("projects_table", "projects")
+        api_base = (api_base or "").rstrip("/")
         if not api_base:
-            raise ValueError("manifest [backlog.patch].api_base is required")
-        anon = opts.get("anon_key")
-        if not anon:
+            raise ValueError("api_base is required")
+        if not anon_key:
             raise ValueError(
-                "manifest [backlog.patch].anon_key is required — the deployment's PUBLIC "
-                "anon key, which PostgREST/Kong needs as the apikey header."
+                "anon_key is required — the deployment's PUBLIC anon key, which "
+                "PostgREST/Kong needs as the apikey header."
             )
         pat = os.environ.get("PATCH_PAT")
         if not pat:
@@ -53,12 +69,12 @@ class PatchAdapter(BacklogAdapter):
                 "(Settings -> Tokens) and put it in the Manager's .env. The Manager "
                 "exchanges it for a short-lived owner session; it never uses service_role."
             )
-        self.roadmap = opts.get("roadmap_table", "roadmap")
-        self.workers = opts.get("workers_table", "loop_workers")
-        self.projects = opts.get("projects_table", "projects")
-        self.worker_manager = manifest.worker_manager  # "" = serve every project (back-compat)
+        self.roadmap = roadmap_table
+        self.workers = workers_table
+        self.projects = projects_table
+        self.worker_manager = worker_manager  # "" = serve every project (back-compat)
         self._pat = pat
-        self._anon = anon
+        self._anon = anon_key
         self._exchange_url = f"{api_base}/functions/v1/pat-exchange"
         self._access_token: str | None = None
         self._access_exp = 0.0  # unix seconds
@@ -66,12 +82,34 @@ class PatchAdapter(BacklogAdapter):
         # exchange in _ensure_token. Content-Type for the JSON body.
         self._client = httpx.Client(
             base_url=f"{api_base}/rest/v1",
-            headers={"apikey": anon, "Content-Type": "application/json"},
+            headers={"apikey": anon_key, "Content-Type": "application/json"},
             timeout=30,
         )
         self._ensure_token()  # fail fast at startup if the PAT is bad
 
+    @classmethod
+    def from_host(cls, host: HostConfig) -> "PatchAdapter":
+        """Build the shared adapter for host mode — connection from HostConfig, no
+        per-project manifest."""
+        return cls(
+            api_base=host.api_base, anon_key=host.anon_key, worker_manager=host.worker_manager,
+            roadmap_table=host.roadmap_table, workers_table=host.workers_table,
+            projects_table=host.projects_table,
+        )
+
     # --- reads -------------------------------------------------------------
+    def list_projects(self) -> list[ProjectRow]:
+        """The projects this host serves: rows in `projects` whose worker_manager is ours."""
+        rows = self._get(self.projects, {"worker_manager": f"eq.{self.worker_manager}", "select": "*"})
+        return [
+            ProjectRow(
+                id=r["id"], name=r.get("name") or "", repo=r.get("repo"),
+                default_branch=r.get("default_branch") or "main",
+                slots=r.get("slots"), hot=bool(r.get("hot")), brief_ref=r.get("brief_ref"),
+            )
+            for r in rows
+        ]
+
     def list_workable(self) -> list[Card]:
         cards = [self._to_card(r) for r in self._get(self.roadmap, {"select": "*"})]
         by_id = {c.id: c for c in cards}

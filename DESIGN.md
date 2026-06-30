@@ -27,7 +27,23 @@ adapters behind the same interface.
 
 ## Components
 
-### Manager (`loopworker.py`)
+### Host Manager (`host.py`)
+
+One process per **host**. It reads the shared backlog's `projects` table for rows whose
+`worker_manager` is this host's, clones each repo on demand under `clones_dir`, and runs a
+per-project Manager over a single shared backlog adapter. A host-wide `max_slots` budget
+bounds live Supabase stacks: **hot** projects keep a warm pool (counted permanently);
+**cold** projects provision a slot per card from the leftover budget and tear it down after.
+Host config lives in `~/.loopworker/config.toml` (backlog connection, host id, clones dir,
+budget) — NOT in any project repo, so onboarding a project is just a table row + a
+`.loopworker/` contract. The host owns the lockfile, signals (⌃C drain→force→hard-exit),
+and the dashboard; it delegates per-project reconcile/spawn/reap to the Manager below.
+
+A teammate runs their own Host Manager on their own box (their compute + `claude` login)
+against the same backlog, scoped to their `worker_manager` — the owner's LLM budget is never
+spent on workers; the PAT is backlog access only.
+
+### Manager (`manager.py`)
 
 A single long-lived Python process. Each tick (~5 min) it **reconciles** two sets — live Worker
 processes (tmux sessions) against card statuses — and fixes any divergence. It is a reconciler, not
