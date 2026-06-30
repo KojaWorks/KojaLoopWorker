@@ -277,6 +277,10 @@ class Manager:
             "set -euo pipefail\n"
             f'cd "{slot.dir}"\n'
             'PROMPT="$(cat .loopworker-prompt.txt)"\n'
+            # LOOPWORKER marks this as a Manager-spawned worker so the project's
+            # SessionEnd hook leaves the WARM slot stack up when we reap the worker
+            # (otherwise reaping tears down the stack the next card needs).
+            "export LOOPWORKER=1\n"
             # auto mode: the Worker runs unattended, so it must not block on
             # per-tool permission prompts (acceptEdits still prompts for MCP/bash).
             'exec claude --permission-mode auto "$PROMPT"\n'
