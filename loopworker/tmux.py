@@ -52,8 +52,10 @@ def capture(session: str, lines: int = 200) -> str:
     return r.stdout if r.returncode == 0 else ""
 
 
-# Pane lines that are UI chrome, not the agent's actual thinking/talking.
-_CHROME_PREFIXES = ("─", "❯", "⏵", "│", "╭", "╰", "│")
+# Pane lines that are UI chrome, not the agent's actual thinking/talking. "⎿" is
+# claude's tool-result / rotating-tip continuation glyph ("⎿ Tip: …") that sits below
+# the real line — skip it so we walk up to the assistant step / spinner.
+_CHROME_PREFIXES = ("─", "❯", "⏵", "│", "╭", "╰", "⎿")
 
 
 def _pick_summary(pane: str) -> str:

@@ -25,3 +25,12 @@ def test_falls_back_to_last_step_when_no_spinner():
 
 def test_empty_when_only_chrome():
     assert _pick_summary("───\n❯\n  ⏵⏵ auto mode on (shift+tab to cycle)\n\n") == ""
+
+
+def test_skips_tip_line_below_the_real_thinking():
+    pane = (
+        "⏺ Editing app/src/views/NewView.tsx\n"
+        "  ⎿  Tip: Use /btw to ask a quick side question without interrupting Claude's current work\n"
+        "───\n❯\n  ⏵⏵ auto mode on (shift+tab to cycle)\n"
+    )
+    assert _pick_summary(pane) == "⏺ Editing app/src/views/NewView.tsx"
