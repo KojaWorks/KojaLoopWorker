@@ -46,6 +46,7 @@ class Manifest:
     worker: WorkerConfig
     slots: int
     scripts: ScriptsConfig
+    worker_manager: str = ""           # which host's Manager serves this project; ""=serve all (back-compat)
 
     @property
     def loopworker_dir(self) -> Path:
@@ -97,5 +98,6 @@ class Manifest:
             ),
             slots=raw.get("slots", {}).get("count", 1),
             scripts=ScriptsConfig(**raw.get("scripts", {})),
+            worker_manager=project.get("worker_manager", ""),
         )
         return manifest

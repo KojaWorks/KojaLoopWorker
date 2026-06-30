@@ -70,6 +70,35 @@ def test_list_workable_filters_and_sorts(adapter, monkeypatch):
     assert nums == [6, 1]  # 6 (prio 60) before 1 (prio 10); others filtered out
 
 
+def test_no_project_filter_when_worker_manager_unset(adapter, monkeypatch):
+    # Back-compat: an empty worker_manager serves every project (no projects lookup).
+    rows = [_row(1, project="p-other")]
+    monkeypatch.setattr(adapter, "_get", lambda table, params: rows)
+    assert [c.num for c in adapter.list_workable()] == [1]
+
+
+def test_project_filter_scopes_to_served(adapter, monkeypatch):
+    adapter.worker_manager = "miquon"
+    roadmap = [
+        _row(1, project="p-patch"),   # mine -> keep
+        _row(2, project="p-gitz"),    # another manager's -> skip
+        _row(3, project=None),        # untagged; sole served project -> adopted
+    ]
+    def fake_get(table, params):
+        return [{"id": "p-patch"}] if table == adapter.projects else roadmap
+    monkeypatch.setattr(adapter, "_get", fake_get)
+    assert sorted(c.num for c in adapter.list_workable()) == [1, 3]
+
+
+def test_untagged_card_skipped_when_serving_multiple(adapter, monkeypatch):
+    adapter.worker_manager = "multi"
+    roadmap = [_row(1, project=None), _row(2, project="p-a")]
+    def fake_get(table, params):
+        return [{"id": "p-a"}, {"id": "p-b"}] if table == adapter.projects else roadmap
+    monkeypatch.setattr(adapter, "_get", fake_get)
+    assert [c.num for c in adapter.list_workable()] == [2]  # untagged is ambiguous -> not picked
+
+
 def test_claim_returns_true_when_row_updated(adapter, monkeypatch):
     monkeypatch.setattr(adapter, "_patch", lambda t, p, b: [_row(1, status="In progress")])
     assert adapter.claim(Card("u1", 1, "t", CardStatus.BACKLOG, 1), Worker("w1", "ada")) is True
