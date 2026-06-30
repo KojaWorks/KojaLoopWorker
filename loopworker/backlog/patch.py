@@ -2,21 +2,26 @@
 a Claude and never uses the MCP).
 
 Schema facts (from the live workspace + KojaPatch source):
-  * REST at {api_base}/rest/v1/<table>; auth = apikey + Authorization: Bearer <key>.
+  * REST at {api_base}/rest/v1/<table>; auth = apikey (anon) + Authorization: Bearer <jwt>.
   * roadmap.id_2 is the ~NNN card number (real column); id (uuid) is the primary key.
   * relations are scalar columns: single -> uuid, multi -> jsonb array of uuids. We
     normalize either shape to a list. roadmap.assignee -> loop_workers (to-one);
     roadmap.blocked_by / epic -> roadmap.
   * area (multiselect) is a jsonb array of strings; "epic" in area marks an umbrella.
 
-Auth: set PATCH_SECRET_KEY (Supabase service_role key) in the Manager's env. It bypasses
-RLS — that's required for the Manager to read/write the roadmap, and is why it lives in
-.env, never in the repo.
+Auth: set PATCH_PAT in the Manager's env — a Personal Access Token minted once in
+Patch (Settings -> Tokens). The Manager exchanges it (POST /functions/v1/pat-exchange)
+for a SHORT-LIVED owner JWT and talks to PostgREST as that owner — RLS-scoped, never
+the service_role god key. It re-exchanges as the JWT nears expiry (and on a 401), which
+also re-checks revocation, so a revoked PAT stops working within ~the session lifetime.
+The apikey header is the deployment's PUBLIC anon key (manifest [backlog.patch].anon_key);
+Kong needs it to route, but it grants nothing on its own.
 """
 from __future__ import annotations
 
 import os
 import re
+import time
 from datetime import datetime, timezone
 
 import httpx
@@ -35,23 +40,34 @@ class PatchAdapter(BacklogAdapter):
         api_base = opts.get("api_base", "").rstrip("/")
         if not api_base:
             raise ValueError("manifest [backlog.patch].api_base is required")
-        key = os.environ.get("PATCH_SECRET_KEY") or os.environ.get("PATCH_SERVICE_TOKEN")
-        if not key:
+        anon = opts.get("anon_key")
+        if not anon:
+            raise ValueError(
+                "manifest [backlog.patch].anon_key is required — the deployment's PUBLIC "
+                "anon key, which PostgREST/Kong needs as the apikey header."
+            )
+        pat = os.environ.get("PATCH_PAT")
+        if not pat:
             raise RuntimeError(
-                "PATCH_SECRET_KEY (Supabase service_role key) is not set — "
-                "the Manager needs it to read/write the Patch backlog."
+                "PATCH_PAT is not set — mint a Personal Access Token in Patch "
+                "(Settings -> Tokens) and put it in the Manager's .env. The Manager "
+                "exchanges it for a short-lived owner session; it never uses service_role."
             )
         self.roadmap = opts.get("roadmap_table", "roadmap")
         self.workers = opts.get("workers_table", "loop_workers")
+        self._pat = pat
+        self._anon = anon
+        self._exchange_url = f"{api_base}/functions/v1/pat-exchange"
+        self._access_token: str | None = None
+        self._access_exp = 0.0  # unix seconds
+        # apikey is the public anon key (Kong routing); Authorization is set per
+        # exchange in _ensure_token. Content-Type for the JSON body.
         self._client = httpx.Client(
             base_url=f"{api_base}/rest/v1",
-            headers={
-                "apikey": key,
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json",
-            },
+            headers={"apikey": anon, "Content-Type": "application/json"},
             timeout=30,
         )
+        self._ensure_token()  # fail fast at startup if the PAT is bad
 
     # --- reads -------------------------------------------------------------
     def list_workable(self) -> list[Card]:
@@ -155,20 +171,46 @@ class PatchAdapter(BacklogAdapter):
             solved_in_pr=r.get("solved_in_pr"),
         )
 
-    # PostgREST verbs ----
-    def _get(self, table: str, params: dict) -> list[dict]:
-        r = self._client.get(f"/{table}", params=params)
+    # Auth ----
+    def _ensure_token(self, *, force: bool = False) -> None:
+        """Exchange the PAT for a fresh owner JWT when missing/near-expiry/forced.
+        Re-exchanging (vs. silently reusing) is how revocation takes effect."""
+        if not force and self._access_token and time.time() < self._access_exp - 60:
+            return
+        r = httpx.post(
+            self._exchange_url,
+            json={"token": self._pat},
+            headers={"apikey": self._anon, "Content-Type": "application/json"},
+            timeout=30,
+        )
+        if r.status_code == 401:
+            raise RuntimeError(
+                "Patch rejected PATCH_PAT (revoked or wrong). Mint a new token in "
+                "Settings -> Tokens and update the Manager's .env."
+            )
         r.raise_for_status()
-        return r.json()
+        body = r.json()
+        self._access_token = body["access_token"]
+        self._access_exp = float(body.get("expires_at") or 0)
+        self._client.headers["Authorization"] = f"Bearer {self._access_token}"
+
+    # PostgREST verbs ----
+    def _request(self, method: str, path: str, **kw) -> httpx.Response:
+        self._ensure_token()
+        r = self._client.request(method, path, **kw)
+        if r.status_code == 401:  # token expired mid-flight or just revoked — re-exchange once
+            self._ensure_token(force=True)
+            r = self._client.request(method, path, **kw)
+        r.raise_for_status()
+        return r
+
+    def _get(self, table: str, params: dict) -> list[dict]:
+        return self._request("GET", f"/{table}", params=params).json()
 
     def _post(self, table: str, body: dict) -> list[dict]:
-        r = self._client.post(f"/{table}", json=body, headers={"Prefer": "return=representation"})
-        r.raise_for_status()
-        return r.json()
+        return self._request("POST", f"/{table}", json=body, headers={"Prefer": "return=representation"}).json()
 
     def _patch(self, table: str, params: dict, body: dict) -> list[dict]:
-        r = self._client.patch(
-            f"/{table}", params=params, json=body, headers={"Prefer": "return=representation"}
-        )
-        r.raise_for_status()
-        return r.json()
+        return self._request(
+            "PATCH", f"/{table}", params=params, json=body, headers={"Prefer": "return=representation"}
+        ).json()
