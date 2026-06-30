@@ -25,7 +25,7 @@ Not yet wired for a live run — see "What's left" below.
 ```bash
 python3.13 -m venv .venv
 ./.venv/bin/pip install -e .
-cp .env.example .env            # set PATCH_SECRET_KEY
+cp .env.example .env            # set PATCH_PAT (mint in Patch → Settings → Tokens)
 
 # the target project must ship a .loopworker/ contract (see examples/)
 ./.venv/bin/loopworker --project ~/Dev/myproject
@@ -53,7 +53,6 @@ project's stack.
 
 ## What's left (needs you)
 
-- **Credentials / host:** a real `PATCH_SECRET_KEY`, and `claude` logged in on the host.
-- **A `.loopworker/` for a real target** (e.g. KojaPatch) — `examples/patch/` is a starting point.
-- **The forked Worker brief** — the live Patch loop-runner page still describes the old
-  self-looping behavior; it should be forked to a one-card brief. See DESIGN "Open questions".
+- **Credentials / host:** a `PATCH_PAT` (mint in Patch → Settings → Tokens), `claude` logged
+  in on the host, and the `patch` + `chrome-devtools` MCPs configured at user scope so each
+  spawned Worker inherits them.

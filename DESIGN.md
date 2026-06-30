@@ -112,7 +112,8 @@ token. Notion/GitHub adapters are future work behind the same four methods.
 ## Manager is not a Claude
 
 The `mcp__…__*` tools exist only inside a Claude session. The Manager is deliberately non-AI, so it
-**cannot use the Patch MCP** — it hits Patch's REST API (PostgREST) directly with a service token.
+**cannot use the Patch MCP** — it hits Patch's REST API (PostgREST) directly, authenticating with a
+PAT it exchanges for a short-lived owner session (RLS-scoped, no service_role).
 This is a feature: deterministic, cheap, no model in the polling loop, and it makes the
 backlog-adapter boundary clean. It also means no `claude -p` preflight is needed — the initial-prompt
 argv *is* the kickoff, a static template with no AI in the Manager anywhere.
@@ -193,7 +194,7 @@ never the primary store of Manager state.
 cd ~/Dev && git clone git@…/myproject
 git clone git@…/KojaLoopWorker && cd KojaLoopWorker
 uv venv && uv pip install -e .            # venv, not system pip
-cp .env.example .env                       # PATCH_SERVICE_TOKEN, etc.
+cp .env.example .env                       # PATCH_PAT (mint in Patch → Settings → Tokens)
 tmux new -s loopworker './loopworker.py --project ~/Dev/myproject'
 #   first run builds N slots + provisions N stacks (slow, once), then starts reconciling
 ```
@@ -202,8 +203,9 @@ The working copy's `manifest.toml` is the source of truth; CLI flags are overrid
 the only required argument.
 
 Credentials on the host:
-- Manager needs a **Patch service token** — the Supabase `service_role` key, read from
-  `PATCH_SECRET_KEY` in `.env` (REST, not MCP). It bypasses RLS; never commit it.
+- Manager needs a **Patch PAT** — `PATCH_PAT` in `.env`, minted once in Patch (Settings ->
+  Tokens). It exchanges the PAT for a short-lived owner session (REST, not MCP); RLS-scoped,
+  no service_role, revocable. The deployment's public anon key goes in the manifest.
 - The Workers' `claude` CLI must be **logged in on the host once** — interactive `claude` inherits
   that auth; there is no per-Worker login.
 - Worker `.mcp.json` (Patch + Chrome DevTools) ships in the project repo; the Manager injects secrets

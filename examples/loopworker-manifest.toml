@@ -12,11 +12,15 @@ adapter = "patch"                 # patch | notion | github   (only `patch` in v
 portal  = "https://patch.d.nevyn.dev/app/projects-myproject-roadmap-00000000-0000-0000-0000-000000000000"
 
 [backlog.patch]
-# Adapter-specific resolution. The Manager hits PostgREST directly with a service
-# token (set PATCH_SERVICE_TOKEN in the Manager's .env), NOT the MCP.
+# Adapter-specific resolution. The Manager hits PostgREST directly (not the MCP),
+# authenticating with a PAT it exchanges for a short-lived owner session — set
+# PATCH_PAT in the Manager's .env (mint it in Patch -> Settings -> Tokens).
 api_base      = "https://api.patch.d.nevyn.dev"
 roadmap_table = "roadmap"
 workers_table = "loop_workers"
+# The deployment's PUBLIC anon key — PostgREST/Kong needs it as the apikey header.
+# Not secret (it's in the web bundle), so it lives here, not in .env.
+anon_key      = "eyJ...your-deployments-anon-key..."
 # Columns the adapter expects on the roadmap: status, priority, area (multiselect),
 # blocked_by (self-relation), assignee (relation -> workers_table), solved_in_pr.
 
