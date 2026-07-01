@@ -170,6 +170,9 @@ def test_host_mode_build_prompt_uses_injected_brief(tmp_path):
         Worker("w1", "ada"),
     )
     assert "GENERIC LOOP" in prompt and "PROJECT DELTA" in prompt
+    # unattended workers must be told not to ask interactively, and not to merge over red CI
+    assert "UNATTENDED" in prompt
+    assert "NEVER merge over a red" in prompt
 
 
 def test_discover_skips_project_without_contract(tmp_path, monkeypatch):
