@@ -135,7 +135,10 @@ class PatchAdapter(BacklogAdapter):
             and self._unblocked(c, by_id)
             and self._in_scope(c, served)
         ]
-        workable.sort(key=lambda c: c.priority, reverse=True)
+        # priority desc; ties broken by oldest card first (lowest id_2) so the queue is
+        # deterministic — equal-priority (incl. all unranked → 0) cards don't flap on
+        # PostgREST's physical row order.
+        workable.sort(key=lambda c: (-c.priority, c.num))
         return workable
 
     def _served_project_ids(self) -> set[str] | None:

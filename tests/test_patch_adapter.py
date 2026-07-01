@@ -63,11 +63,14 @@ def test_list_workable_filters_and_sorts(adapter, monkeypatch):
         _row(5, priority=70, blocked_by=["u-unshipped"]),      # blocker not Shipped -> skip
         _row(9, priority=1, status="Shipped"),                 # a shipped card (blocker for 6)
         _row(6, priority=60, blocked_by=["u9"]),               # blocker shipped -> workable
+        _row(8, priority=10),                                  # ties with 1 -> older (1) first
+        _row(7, priority=None),                                # unranked -> 0, sinks to bottom
     ]
     monkeypatch.setattr(adapter, "_get", lambda table, params: rows)
     workable = adapter.list_workable()
     nums = [c.num for c in workable]
-    assert nums == [6, 1]  # 6 (prio 60) before 1 (prio 10); others filtered out
+    # 6 (60) > {1,8 tie at 10, oldest first} > 7 (unranked -> 0, last)
+    assert nums == [6, 1, 8, 7]
 
 
 def test_list_projects_maps_rows(adapter, monkeypatch):
