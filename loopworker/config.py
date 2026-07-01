@@ -26,6 +26,10 @@ class BriefConfig:
 @dataclass
 class WorkerConfig:
     mcp: list[str] = field(default_factory=list)
+    # Env var NAMES the worker needs (e.g. a backend secret). The Manager forwards their
+    # values from its own env into the worker's tmux session — bypassing tmux's frozen
+    # server env, which otherwise hides a var added to .env after the server started.
+    env: list[str] = field(default_factory=list)
     wallclock_cap_minutes: int = 90
 
 
@@ -145,6 +149,7 @@ class Manifest:
             brief=BriefConfig(source=brief["source"], ref=brief["ref"]),
             worker=WorkerConfig(
                 mcp=raw.get("worker", {}).get("mcp", []),
+                env=raw.get("worker", {}).get("env", []),
                 wallclock_cap_minutes=raw.get("worker", {}).get("wallclock_cap_minutes", 90),
             ),
             slots=raw.get("slots", {}).get("count", 1),

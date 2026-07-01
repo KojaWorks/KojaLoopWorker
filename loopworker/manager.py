@@ -240,8 +240,16 @@ class Manager:
 
         session = self._session_name(card.num)
         launch = self._write_launch(slot, card, worker)
+        # Forward the manifest's declared worker env vars from the Manager's own env into
+        # the session (tmux sessions don't inherit vars added after the server started).
+        env: dict[str, str] = {}
+        for k in self.manifest.worker.env:
+            if k in os.environ:
+                env[k] = os.environ[k]
+            else:
+                self.log(f"warning: worker env {k!r} declared in manifest but not set in the Manager env")
         try:
-            tmux.spawn(session, slot.dir, ["bash", str(launch)])
+            tmux.spawn(session, slot.dir, ["bash", str(launch)], env=env)
         except RuntimeError as e:
             self.log(f"tmux spawn failed for ~{card.num}: {e!r} — releasing")
             self.pool.recycle(slot)

@@ -82,7 +82,7 @@ def mgr(tmp_path, monkeypatch):
     # control tmux from the test
     state = {"alive": True}
     spawned, killed = [], []
-    monkeypatch.setattr(manager_mod.tmux, "spawn", lambda sess, cwd, argv: spawned.append(sess))
+    monkeypatch.setattr(manager_mod.tmux, "spawn", lambda sess, cwd, argv, env=None: spawned.append(sess))
     monkeypatch.setattr(manager_mod.tmux, "kill", lambda sess: killed.append(sess))
     monkeypatch.setattr(manager_mod.tmux, "worker_running", lambda sess: state["alive"])
     return m, state, spawned, killed

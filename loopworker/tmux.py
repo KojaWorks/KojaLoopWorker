@@ -38,9 +38,13 @@ def worker_running(session: str) -> bool:
     return r.stdout.strip() not in _SHELLS
 
 
-def spawn(session: str, cwd: str, argv: list[str]) -> None:
-    """Start a detached session running `argv` in `cwd`. Raises on failure."""
-    r = _tmux("new-session", "-d", "-s", session, "-c", cwd, *argv)
+def spawn(session: str, cwd: str, argv: list[str], env: dict[str, str] | None = None) -> None:
+    """Start a detached session running `argv` in `cwd`. `env` vars are injected into the
+    session with `-e` — a tmux session otherwise inherits the SERVER's environment, frozen
+    when the server first started, so a var added to .env afterward would be invisible.
+    Raises on failure."""
+    eflags = [a for k, v in (env or {}).items() for a in ("-e", f"{k}={v}")]
+    r = _tmux("new-session", "-d", "-s", session, "-c", cwd, *eflags, *argv)
     if r.returncode != 0:
         raise RuntimeError(f"tmux new-session failed for {session}: {r.stderr.strip()}")
 

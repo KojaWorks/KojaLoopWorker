@@ -50,3 +50,23 @@ def test_detects_folder_trust_prompt():
     assert not looks_like_trust_prompt(PANE)
     assert not looks_like_trust_prompt("⏺ Reading files…\n✢ Percolating (12s)")
     assert not looks_like_trust_prompt("")
+
+
+def test_spawn_injects_declared_env_before_command(monkeypatch):
+    """Regression: worker env vars go into the session via `-e`, before the command — so a
+    worker sees a secret the tmux server's frozen env doesn't have."""
+    import types
+    from loopworker import tmux
+
+    seen = {}
+    def fake(*a):
+        seen["args"] = a
+        return types.SimpleNamespace(returncode=0, stderr="")
+    monkeypatch.setattr(tmux, "_tmux", fake)
+
+    tmux.spawn("sess", "/tmp/wt", ["bash", "run.sh"], env={"PATCH_DEV_SECRET_KEY": "shh"})
+    a = seen["args"]
+    assert a[0] == "new-session"
+    i = a.index("-e")
+    assert a[i + 1] == "PATCH_DEV_SECRET_KEY=shh"      # -e KEY=VALUE
+    assert i < a.index("bash")                          # flags precede the command
