@@ -90,3 +90,56 @@ def test_cold_pool_provisions_on_acquire_then_tears_down(tmp_path, monkeypatch):
     pool.recycle(slot)
     assert "teardown" in calls                           # cold teardown runs teardown.sh
     assert slot.state == SlotState.COLD                  # returned to cold (no lingering stack)
+
+
+def _hot_pool(tmp_path, monkeypatch, start=1):
+    """A hot pool with worktree/provision/teardown stubbed out (no git/supabase)."""
+    logs: list[str] = []
+    pool = _pool(tmp_path, "true\n", logs)          # constructor makes `slots=1` IDLE slot
+    monkeypatch.setattr(pool, "_ensure_worktree", lambda s: None)
+    monkeypatch.setattr(pool, "_provision", lambda s: None)
+    if start != 1:
+        pool.resize(start)
+    return pool
+
+
+def test_resize_grow_provisions_only_new_slots(tmp_path, monkeypatch):
+    pool = _hot_pool(tmp_path, monkeypatch)
+    provisioned: list[int] = []
+    monkeypatch.setattr(pool, "_provision", lambda s: provisioned.append(s.index))
+    pool.resize(3)
+    assert {s.index for s in pool.slots} == {0, 1, 2}
+    assert provisioned == [1, 2]                     # slot 0 already existed; only 1,2 are new
+
+
+def test_resize_shrink_tears_down_highest_idle_first(tmp_path, monkeypatch):
+    pool = _hot_pool(tmp_path, monkeypatch, start=3)
+    torn: list[int] = []
+    monkeypatch.setattr(pool, "teardown_slot", lambda s: torn.append(s.index))
+    pool.resize(1)
+    assert torn == [2, 1]                            # surplus removed highest-index first
+    assert [s.index for s in pool.slots] == [0]
+
+
+def test_resize_shrink_defers_a_busy_slot_until_recycled(tmp_path, monkeypatch):
+    pool = _hot_pool(tmp_path, monkeypatch, start=2)
+    pool.slots[1].state = SlotState.BUSY            # slot 1 is running a card
+    torn: list[int] = []
+    monkeypatch.setattr(pool, "teardown_slot", lambda s: torn.append(s.index))
+    pool.resize(1)
+    assert pool.slots[1].retiring is True           # busy slot flagged, NOT yanked
+    assert torn == [] and len(pool.slots) == 2      # still present, nothing torn down yet
+    assert pool.slots[1] not in pool.available_slots()  # the retiring slot gets no new work
+    pool.recycle(pool.slots[1])                     # its worker finishes
+    assert torn == [1] and [s.index for s in pool.slots] == [0]
+
+
+def test_resize_up_revives_a_retiring_slot(tmp_path, monkeypatch):
+    pool = _hot_pool(tmp_path, monkeypatch, start=2)
+    pool.slots[1].state = SlotState.BUSY
+    pool.resize(1)
+    assert pool.slots[1].retiring is True
+    added: list = []
+    monkeypatch.setattr(pool, "_add_slot", lambda: added.append(1))
+    pool.resize(2)                                  # need one back — revive, don't provision anew
+    assert pool.slots[1].retiring is False and added == []

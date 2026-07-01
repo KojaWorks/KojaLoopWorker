@@ -30,14 +30,32 @@ def _host(tmp_path, **kw):
     return h
 
 
+class FakePool:
+    def __init__(self, hot, nslots):
+        self.hot = hot
+        self.slots = list(range(nslots))
+        self.torn = False
+
+    def build(self):
+        pass
+
+    def teardown(self):
+        self.torn = True
+
+    def resize(self, count):
+        self.slots = list(range(count))
+
+
 class FakeMgr:
     """Stands in for a per-project Manager for scheduling tests."""
-    def __init__(self, name, hot, nslots, busy=0, will_take=0):
-        self.manifest = types.SimpleNamespace(project_name=name)
-        self.pool = types.SimpleNamespace(hot=hot, slots=list(range(nslots)), build=lambda: None)
+    def __init__(self, name, hot, nslots, busy=0, will_take=0, project_id=None):
+        self.manifest = types.SimpleNamespace(project_name=name, slots=nslots)
+        self.pool = FakePool(hot, nslots)
+        self.project_id = project_id
         self._busy = busy
         self._will_take = will_take
         self.fills: list = []
+        self.reaped = None
 
     def busy_count(self):
         return self._busy
@@ -51,7 +69,7 @@ class FakeMgr:
         pass
 
     def _reap_workers(self, reason):
-        pass
+        self.reaped = reason
 
     def _reap_orphans(self):
         pass
@@ -161,3 +179,70 @@ def test_discover_skips_project_without_contract(tmp_path, monkeypatch):
     h = _host(tmp_path, projects=[ProjectRow(id="p1", name="Broken", repo="git@x")])
     h.discover()
     assert h.managers == []
+
+
+def _reconcile_host(tmp_path, monkeypatch, rows_box):
+    """A host whose _build_manager yields FakeMgrs, so reconcile_projects can be tested
+    without git/supabase/network. rows_box["rows"] is the mutable served-project set."""
+    import loopworker.host as host_mod
+    h = _host(tmp_path, max_slots=4)
+    h.adapter.list_projects = lambda: list(rows_box["rows"])
+    made: dict = {}
+
+    def fake_build_manager(row, manifest, idx):
+        m = FakeMgr(row.name, row.hot, manifest.slots, project_id=row.id)
+        made[row.id] = m
+        return m
+
+    monkeypatch.setattr(h, "_build_manager", fake_build_manager)
+    monkeypatch.setattr(h, "_ensure_clone", lambda row: tmp_path)
+    monkeypatch.setattr(host_mod.Manifest, "load",
+                        staticmethod(lambda clone: types.SimpleNamespace(slots=1, project_name="x")))
+    return h, made
+
+
+def test_reconcile_projects_adds_retires_and_resizes(tmp_path, monkeypatch):
+    p1 = ProjectRow(id="p1", name="Patch", repo="git@x", hot=True, slots=3)
+    p2 = ProjectRow(id="p2", name="Melur", repo="git@y", hot=False, slots=1)
+    box = {"rows": [p1, p2]}
+    h, made = _reconcile_host(tmp_path, monkeypatch, box)
+
+    h.reconcile_projects()                                   # first pass: both built
+    assert {m.project_id for m in h.managers} == {"p1", "p2"}
+    assert made["p1"].manifest.slots == 3                    # row.slots override applied
+    assert made["p1"].pool.hot and len(made["p1"].pool.slots) == 3
+    assert not made["p2"].pool.hot
+
+    # drop Melur, add GitZ, shrink Patch 3 -> 2 — all without a restart
+    box["rows"] = [ProjectRow(id="p1", name="Patch", repo="git@x", hot=True, slots=2),
+                   ProjectRow(id="p3", name="GitZ", repo="git@z", hot=False, slots=1)]
+    h.reconcile_projects()
+    assert {m.project_id for m in h.managers} == {"p1", "p3"}
+    assert made["p2"].pool.torn and made["p2"].reaped        # retired: workers reaped + torn down
+    assert len(made["p1"].pool.slots) == 2                   # Patch resized live
+    assert "p3" in made                                      # GitZ picked up
+
+
+def test_reconcile_projects_survives_a_backlog_error(tmp_path):
+    h = _host(tmp_path)
+    keep = FakeMgr("Patch", hot=True, nslots=3, project_id="p1")
+    h.managers = [keep]
+
+    def boom():
+        raise RuntimeError("network blip")
+
+    h.adapter.list_projects = boom
+    h.reconcile_projects()
+    assert h.managers == [keep]     # a transient read failure must not retire everything
+
+
+def test_apply_slot_targets_caps_hot_to_budget(tmp_path):
+    h = _host(tmp_path, max_slots=2)
+    a = FakeMgr("A", hot=True, nslots=1, project_id="p1")
+    b = FakeMgr("B", hot=True, nslots=1, project_id="p2")
+    h.managers = [a, b]
+    rows = {"p1": ProjectRow(id="p1", name="A", hot=True, slots=3),   # wants 3
+            "p2": ProjectRow(id="p2", name="B", hot=True, slots=3)}   # wants 3
+    h._apply_slot_targets(rows)
+    assert len(a.pool.slots) == 2    # first hot project takes the whole 2-slot budget
+    assert len(b.pool.slots) == 0    # nothing left for the second

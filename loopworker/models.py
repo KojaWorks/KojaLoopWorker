@@ -94,3 +94,5 @@ class Slot:
     worker_id: str | None = None # loop_workers row id of the running worker
     started_at: datetime | None = None
     done_since: datetime | None = None  # when its card first left In progress (reap grace clock)
+    retiring: bool = False       # slot count was lowered while this slot was BUSY: tear it
+    #                              down (don't return it to the pool) once its card finishes

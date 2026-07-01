@@ -39,6 +39,15 @@ budget) — NOT in any project repo, so onboarding a project is just a table row
 `.loopworker/` contract. The host owns the lockfile, signals (⌃C drain→force→hard-exit),
 and the dashboard; it delegates per-project reconcile/spawn/reap to the Manager below.
 
+The `projects` table is treated as **live config**: `reconcile_projects` re-reads it every
+poll and reconciles the delta into the running Managers without a restart — a newly assigned
+project is cloned + built, an unassigned one is drained + torn down, and a changed `slots`
+count resizes the pool in place (`SlotPool.resize`; a BUSY slot is flagged `retiring` and
+torn down by `recycle` only after its card finishes, so a worker is never yanked mid-card). A
+failed read leaves the current set untouched — a transient backlog error must never be read
+as "no projects, retire everything." A `hot`⇄`cold` flip is the one change that still needs a
+restart (different provisioning model); it's logged when seen.
+
 A teammate runs their own Host Manager on their own box (their compute + `claude` login)
 against the same backlog, scoped to their `worker_manager` — the owner's LLM budget is never
 spent on workers; the PAT is backlog access only.

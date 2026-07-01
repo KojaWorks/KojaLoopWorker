@@ -106,6 +106,64 @@ class SlotPool:
             self._run_script("teardown", slot, check=False)
             self._git(self.manifest.project_dir, "worktree", "remove", "--force", slot.dir, check=False)
 
+    def resize(self, count: int) -> None:
+        """Grow or shrink the pool to `count` slots live (a project's slot count changed
+        in the backlog). Grow: add slots — a hot pool provisions each now, a cold pool
+        leaves them COLD until a card acquires them. Shrink: retire the surplus — free
+        slots are torn down immediately; a BUSY slot is flagged `retiring` and torn down
+        by recycle() after its card finishes, so a running worker is never yanked.
+        Idempotent: resizing to the current active size is a no-op."""
+        active = [s for s in self.slots if not s.retiring]
+        if count > len(active):
+            need = count - len(active)
+            for slot in self.slots:  # revive any not-yet-torn-down retiring slots first
+                if need and slot.retiring:
+                    slot.retiring = False
+                    need -= 1
+                    self.log(f"slot {slot.index}: retirement cancelled (slot count raised again)")
+            for _ in range(need):
+                self._add_slot()
+        elif count < len(active):
+            for slot in sorted(active, key=lambda s: s.index, reverse=True)[: len(active) - count]:
+                self._retire(slot)
+
+    def _add_slot(self) -> Slot:
+        idx = self._free_index()
+        slot = Slot(index=idx, dir=str(self.root / f"slot-{idx}"),
+                    port=self.base_port + idx * self.port_step,
+                    state=SlotState.IDLE if self.hot else SlotState.COLD)
+        self.slots.append(slot)
+        if self.hot:
+            try:
+                self._ensure_worktree(slot)
+                self._provision(slot)
+                slot.state = SlotState.IDLE
+                slot.activity = "idle"
+                self.log(f"slot {idx}: added, ready on port {slot.port}")
+            except SlotError as e:
+                slot.state = SlotState.BROKEN
+                slot.activity = f"broken: {e}"
+                self.log(f"slot {idx}: added but BROKEN — {e}")
+        else:
+            self.log(f"slot {idx}: added (cold — provisions on demand)")
+        return slot
+
+    def _free_index(self) -> int:
+        used = {s.index for s in self.slots}
+        i = 0
+        while i in used:
+            i += 1
+        return i
+
+    def _retire(self, slot: Slot) -> None:
+        if slot.state == SlotState.BUSY:
+            slot.retiring = True
+            self.log(f"slot {slot.index}: retiring after its current card finishes")
+        else:
+            self.teardown_slot(slot)
+            self.slots.remove(slot)
+            self.log(f"slot {slot.index}: retired (torn down)")
+
     # --- acquire / free ----------------------------------------------------
     def acquire(self, slot: Slot, branch_slug: str) -> None:
         """Reset the slot to a clean tree on a fresh branch off origin/main and run the
@@ -140,9 +198,16 @@ class SlotPool:
         slot.done_since = None
 
     def recycle(self, slot: Slot) -> None:
-        """Release a slot after a worker is reaped. Hot → back to warm IDLE (stack kept).
+        """Release a slot after a worker is reaped. Retiring → tear it down and drop it
+        (its slot was removed while it was busy). Hot → back to warm IDLE (stack kept).
         Cold → tear the stack + worktree down and return to COLD, so an idle cold project
         leaves nothing running."""
+        if slot.retiring:
+            self.teardown_slot(slot)
+            if slot in self.slots:
+                self.slots.remove(slot)
+            self.log(f"slot {slot.index}: retired (torn down after its card finished)")
+            return
         if self.hot:
             self.free(slot)
             return
@@ -159,8 +224,9 @@ class SlotPool:
         self._git(self.manifest.project_dir, "worktree", "remove", "--force", slot.dir, check=False)
 
     def available_slots(self) -> list[Slot]:
-        """Slots that can take a card now: warm IDLE, or COLD (provisioned on acquire)."""
-        return [s for s in self.slots if s.state in (SlotState.IDLE, SlotState.COLD)]
+        """Slots that can take a card now: warm IDLE, or COLD (provisioned on acquire).
+        A retiring slot is on its way out — never hand it new work."""
+        return [s for s in self.slots if s.state in (SlotState.IDLE, SlotState.COLD) and not s.retiring]
 
     def idle_slots(self) -> list[Slot]:
         return [s for s in self.slots if s.state == SlotState.IDLE]

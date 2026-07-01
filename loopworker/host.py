@@ -48,6 +48,7 @@ class HostManager:
         self.started_at = datetime.now(timezone.utc)
         self.log_lines: deque[str] = deque(maxlen=200)
         self.managers: list[Manager] = []
+        self._bands: dict[str, int] = {}   # project_id -> port-band index (freed on retire, reused)
         self._stop = False
         self._draining = False
         self._sigint_count = 0
@@ -63,17 +64,103 @@ class HostManager:
             self.log("WARNING: no brief_page in host config — workers get no generic loop protocol; "
                      "set [backlog].brief_page to the Managed Agent Loop page")
         self.managers = []
-        for idx, row in enumerate(rows):
+        self._bands = {}
+        for row in rows:
             try:
-                clone = self._ensure_clone(row)
-                manifest = Manifest.load(clone)
+                manifest = self._load_row(row)
             except Exception as e:
                 self.log(f"skipping project {row.name!r}: {e}")
                 continue
-            if row.slots:
-                manifest.slots = row.slots
-            self.managers.append(self._build_manager(row, manifest, idx))
+            self.managers.append(self._build_manager(row, manifest, self._alloc_band(row.id)))
             self.log(f"  {row.name}: {'hot' if row.hot else 'cold'}, {manifest.slots} slot(s)")
+
+    def reconcile_projects(self, now: datetime | None = None) -> None:
+        """Re-read the served-project set from the backlog and reconcile it into the live
+        Managers WITHOUT a restart: newly-assigned projects are cloned + built, projects
+        no longer ours are drained + torn down, and a changed slot count resizes the pool.
+        Runs on the poll cadence. A failed read leaves the current Managers untouched — a
+        transient backlog error must never be read as 'no projects, retire everything'."""
+        try:
+            rows = {r.id: r for r in self.adapter.list_projects()}
+        except Exception as e:
+            self.log(f"project reconcile skipped — list_projects failed: {e!r}")
+            return
+        current = {m.project_id: m for m in self.managers}
+
+        for pid, m in list(current.items()):  # retire projects no longer assigned to us
+            if pid not in rows:
+                self.log(f"{m.manifest.project_name!r} no longer assigned to this host — draining + tearing down")
+                try:
+                    m._reap_workers("project unassigned from this host")  # releases in-progress cards
+                    m.pool.teardown()                                     # stop warm stacks, remove worktrees
+                except Exception as e:
+                    self.log(f"  teardown of {m.manifest.project_name!r} hit an error: {e!r}")
+                self.managers.remove(m)
+                self._bands.pop(pid, None)
+
+        for pid, row in rows.items():  # build newly-assigned projects
+            if pid in current:
+                continue
+            try:
+                manifest = self._load_row(row)
+            except Exception as e:
+                self.log(f"skipping new project {row.name!r}: {e}")
+                continue
+            m = self._build_manager(row, manifest, self._alloc_band(pid))
+            try:
+                m._reap_orphans()
+                m.pool.build()  # hot: provision warm slots; cold: nothing until a card arrives
+            except Exception as e:
+                self.log(f"provisioning new project {row.name!r} failed: {e!r}")
+            self.managers.append(m)
+            self.log(f"added project {row.name}: {'hot' if row.hot else 'cold'}, {manifest.slots} slot(s)")
+
+        for m in self.managers:  # a hot⇄cold flip changes the whole provisioning model
+            row = rows.get(m.project_id)
+            if row and row.hot != m.pool.hot:
+                self.log(f"{m.manifest.project_name!r} hot flag is now {row.hot} — restart the Manager "
+                         "to change its pool model (slot count still updates live)")
+
+        self._apply_slot_targets(rows)
+
+    def _load_row(self, row: ProjectRow) -> Manifest:
+        """Clone the project on demand and load its .loopworker manifest, applying a
+        row-level slot-count override. Raises if the clone lacks a contract."""
+        manifest = Manifest.load(self._ensure_clone(row))
+        if row.slots:
+            manifest.slots = row.slots
+        return manifest
+
+    def _alloc_band(self, project_id: str) -> int:
+        """Assign a project the lowest free port-band index so two projects' slot ports
+        never overlap; reused after a project retires."""
+        used = set(self._bands.values())
+        idx = 0
+        while idx in used:
+            idx += 1
+        self._bands[project_id] = idx
+        return idx
+
+    def _apply_slot_targets(self, rows: dict) -> None:
+        """Resize each project's pool to its configured slot count, capping hot pools so
+        total hot slots stay within max_slots (in Manager order — earlier projects keep
+        theirs). Cold pools take their configured count as cheap COLD placeholders; the
+        real concurrency cap for cold work is enforced dynamically in _fill_all."""
+        remaining = self.host.max_slots
+        for m in self.managers:
+            row = rows.get(m.project_id)
+            desired = row.slots if (row and row.slots) else m.manifest.slots
+            if m.pool.hot:
+                target = max(min(desired, remaining), 0)
+                remaining -= target
+            else:
+                target = desired
+            if target != len(m.pool.slots):
+                self.log(f"{m.manifest.project_name}: resizing {len(m.pool.slots)} -> {target} slot(s)")
+                try:
+                    m.pool.resize(target)
+                except Exception as e:
+                    self.log(f"  resize of {m.manifest.project_name!r} failed: {e!r}")
 
     def _ensure_clone(self, row: ProjectRow) -> Path:
         dest = self.host.clones_dir / _slug(row.name)
@@ -150,6 +237,7 @@ class HostManager:
                         if self.killswitch.exists():
                             self.log("killswitch present (PAUSED) — not spawning new workers")
                         else:
+                            self.reconcile_projects(now)  # pick up added/removed/resized projects live
                             self._fill_all(now)
                         last_fill = time.monotonic()
                 except Exception as e:
@@ -168,6 +256,7 @@ class HostManager:
         now = datetime.now(timezone.utc)
         self._reconcile_all(now)
         if not self._draining and not self.killswitch.exists():
+            self.reconcile_projects(now)
             self._fill_all(now)
 
     # --- scheduling --------------------------------------------------------

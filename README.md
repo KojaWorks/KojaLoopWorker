@@ -46,6 +46,12 @@ host-wide cap on live stacks). The Manager reads the **projects** table for rows
 projects keep a warm pool, `cold` projects provision a slot per card and tear it down after,
 all within `max_slots`.
 
+The **projects** table is live config, re-read every poll — no restart needed. Assign a new
+project to your host and it's cloned + started on the next tick; unassign one and it drains +
+tears down; change a project's `slots` and its pool resizes in place (a busy slot finishes its
+card before it's retired). Only a `hot`⇄`cold` flip still needs a restart (it changes the whole
+provisioning model); the Manager logs a note when it sees one.
+
 **Single-project mode.** `loopworker --project ~/Dev/myproject` serves just that one working
 copy (its `.loopworker/manifest.toml` is the source of truth) — handy for local testing.
 Useful flags: `--slots N`, `--poll-interval S`, `--once` (single tick), `--no-dashboard`.
