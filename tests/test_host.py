@@ -45,6 +45,9 @@ class FakePool:
     def resize(self, count):
         self.slots = list(range(count))
 
+    def active_count(self):
+        return len(self.slots)
+
 
 class FakeMgr:
     """Stands in for a per-project Manager for scheduling tests."""
@@ -249,3 +252,13 @@ def test_apply_slot_targets_caps_hot_to_budget(tmp_path):
     h._apply_slot_targets(rows)
     assert len(a.pool.slots) == 2    # first hot project takes the whole 2-slot budget
     assert len(b.pool.slots) == 0    # nothing left for the second
+
+
+def test_apply_slot_targets_caps_cold_to_max_slots(tmp_path):
+    # A cold pool with more slots than max_slots would overflow its port band into the
+    # next project's — cap it (concurrency is separately capped in _fill_all anyway).
+    h = _host(tmp_path, max_slots=3)
+    cold = FakeMgr("C", hot=False, nslots=1, project_id="p1")
+    h.managers = [cold]
+    h._apply_slot_targets({"p1": ProjectRow(id="p1", name="C", hot=False, slots=6)})
+    assert len(cold.pool.slots) == 3

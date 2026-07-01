@@ -154,9 +154,16 @@ class HostManager:
                 target = max(min(desired, remaining), 0)
                 remaining -= target
             else:
-                target = desired
-            if target != len(m.pool.slots):
-                self.log(f"{m.manifest.project_name}: resizing {len(m.pool.slots)} -> {target} slot(s)")
+                # Cold pools don't reserve budget (they draw from leftover in _fill_all),
+                # but the count is still capped to max_slots: a project's port band is only
+                # max_slots wide, so more slots than that would overflow into the next
+                # project's band and collide on a port. You can never run more than
+                # max_slots concurrently anyway, so extra cold slots buy nothing.
+                target = min(desired, self.host.max_slots)
+            # gate on active (non-retiring) count — resize() ignores retiring slots, so
+            # counting them here would log a phantom resize every poll while one drains.
+            if target != m.pool.active_count():
+                self.log(f"{m.manifest.project_name}: resizing {m.pool.active_count()} -> {target} slot(s)")
                 try:
                     m.pool.resize(target)
                 except Exception as e:

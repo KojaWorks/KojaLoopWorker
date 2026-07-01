@@ -231,6 +231,11 @@ class SlotPool:
     def idle_slots(self) -> list[Slot]:
         return [s for s in self.slots if s.state == SlotState.IDLE]
 
+    def active_count(self) -> int:
+        """The pool's effective size for resize decisions: slots not being retired. A
+        retiring slot is on its way out, so it doesn't count toward the target."""
+        return sum(1 for s in self.slots if not s.retiring)
+
     # --- internals ---------------------------------------------------------
     def _ensure_worktree(self, slot: Slot) -> None:
         if (Path(slot.dir) / ".git").exists():
