@@ -172,6 +172,19 @@ class HostManager:
     def _ensure_clone(self, row: ProjectRow) -> Path:
         dest = self.host.clones_dir / _slug(row.name)
         if (dest / ".git").exists():
+            # Keep the cached clone current. Without this it's frozen at first-clone, so the
+            # manifest (loaded from here) never picks up a manifest.toml change — not even
+            # across a host restart, until the clone is deleted by hand. Fetch + hard-reset
+            # the working tree to the latest default branch. Best-effort: a transient failure
+            # keeps the last-good clone rather than crashing the host. (Worker code is already
+            # kept fresh per-card by the slot's reset_and_claim; this is for the manifest.)
+            for step in (["fetch", "--quiet", "origin"],
+                         ["reset", "--hard", "--quiet", f"origin/{row.default_branch}"]):
+                r = subprocess.run(["git", "-C", str(dest), *step], capture_output=True, text=True)
+                if r.returncode != 0:
+                    self.log(f"warning: git {step[0]} failed refreshing {row.name} clone "
+                             f"(using cached): {r.stderr.strip()}")
+                    break
             return dest
         if not row.repo:
             raise RuntimeError("no repo to clone (set the project's Repo)")

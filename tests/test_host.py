@@ -187,6 +187,26 @@ def test_discover_skips_project_without_contract(tmp_path, monkeypatch):
     assert h.managers == []
 
 
+def test_ensure_clone_refreshes_existing_clone(tmp_path, monkeypatch):
+    """Regression: an existing clone must be fetched + hard-reset to the latest default
+    branch. Without it the clone (and the manifest loaded from it) stays frozen at
+    first-clone forever — not even a host restart picks up a manifest.toml change."""
+    import loopworker.host as host_mod
+    h = _host(tmp_path)
+    row = ProjectRow(id="p1", name="Patch", repo="git@x", default_branch="main")
+    (h.host.clones_dir / "patch" / ".git").mkdir(parents=True)   # clone already present
+
+    calls: list = []
+    monkeypatch.setattr(host_mod.subprocess, "run",
+                        lambda argv, **kw: (calls.append(argv),
+                                            types.SimpleNamespace(returncode=0, stderr=""))[1])
+    dest = h._ensure_clone(row)
+
+    assert dest == h.host.clones_dir / "patch"
+    assert [c[3] for c in calls] == ["fetch", "reset"]     # refreshed, in order
+    assert calls[1][-1] == "origin/main"                   # to the default branch
+
+
 def _reconcile_host(tmp_path, monkeypatch, rows_box):
     """A host whose _build_manager yields FakeMgrs, so reconcile_projects can be tested
     without git/supabase/network. rows_box["rows"] is the mutable served-project set."""
