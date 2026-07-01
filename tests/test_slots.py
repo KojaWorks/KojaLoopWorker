@@ -1,5 +1,6 @@
 """_run_script streams a lifecycle script's output to the log AND captures it for
 the LOOPWORKER_PORT handshake; a nonzero exit raises with the failing tail."""
+import types
 from pathlib import Path
 
 import pytest
@@ -100,7 +101,8 @@ def test_cold_pool_provisions_on_acquire_then_tears_down(tmp_path, monkeypatch):
     calls: list = []
     monkeypatch.setattr(pool, "_ensure_worktree", lambda s: calls.append("worktree"))
     monkeypatch.setattr(pool, "_provision", lambda s: calls.append("provision"))
-    monkeypatch.setattr(pool, "_git", lambda *a, **k: calls.append(("git", a[1])))
+    monkeypatch.setattr(pool, "_git", lambda *a, **k:
+                        (calls.append(("git", a[1])), types.SimpleNamespace(stdout="c0ffee0\n"))[1])
     monkeypatch.setattr(pool, "_run_script", lambda which, s, **k: (calls.append(which) or (0, "")))
 
     pool.acquire(slot, "card-x")

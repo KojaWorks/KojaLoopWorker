@@ -183,6 +183,10 @@ class SlotPool:
         self._git(wt, "reset", "--hard", self.base_ref)
         self._git(wt, "clean", "-fd")
         self._git(wt, "checkout", "-B", f"claude/{branch_slug}", self.base_ref)
+        # Log the resolved tip, so a stale reset is instantly visible instead of a guess
+        # about whether the worktree actually landed on origin/main's latest.
+        head = self._git(wt, "rev-parse", "--short", "HEAD").stdout.strip()
+        self.log(f"slot {slot.index}: worktree at {self.base_ref} @ {head}, branch claude/{branch_slug}")
         rc, out = self._run_script("reset", slot, check=False)
         if rc != 0:
             raise SlotError(f"reset.sh failed for slot {slot.index} (rc={rc})")
