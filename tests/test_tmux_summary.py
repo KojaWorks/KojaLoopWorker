@@ -1,6 +1,6 @@
 """_pick_summary scrapes the worker's latest thinking/talking line from pane text,
 skipping claude's box-drawing / prompt / footer chrome."""
-from loopworker.tmux import _pick_summary
+from loopworker.tmux import _pick_summary, looks_like_trust_prompt
 
 PANE = """\
 ❯ You are dijkstra, an autonomous LoopWorker.
@@ -34,3 +34,19 @@ def test_skips_tip_line_below_the_real_thinking():
         "───\n❯\n  ⏵⏵ auto mode on (shift+tab to cycle)\n"
     )
     assert _pick_summary(pane) == "⏺ Editing app/src/views/NewView.tsx"
+
+
+def test_detects_folder_trust_prompt():
+    dialog = (
+        "╭───────────────────────────────╮\n"
+        "│ Do you trust the files in this folder?\n"
+        "│ /Users/nevyn/Dev/loopworker-clones/patchapp.loopworker-slots/slot-0\n"
+        "│ ❯ 1. Yes, proceed\n"
+        "│   2. No, exit\n"
+        "╰───────────────────────────────╯\n"
+    )
+    assert looks_like_trust_prompt(dialog)
+    # normal worker panes must NOT match — we must never send a stray key into a live session
+    assert not looks_like_trust_prompt(PANE)
+    assert not looks_like_trust_prompt("⏺ Reading files…\n✢ Percolating (12s)")
+    assert not looks_like_trust_prompt("")

@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import re
 import signal
+import threading
 import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
@@ -26,6 +27,14 @@ from .slots import SlotError, SlotPool
 def _slug(text: str, limit: int = 40) -> str:
     s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
     return s[:limit].strip("-") or "card"
+
+
+# Auto-accepting Claude Code's folder-trust dialog on a fresh clone. The keystroke that
+# accepts it — its highlighted default is "Yes, proceed", so Enter confirms. Kept as a
+# constant because it's the one bit that can only be verified against the live dialog.
+_TRUST_ACCEPT_KEYS = ("Enter",)
+_TRUST_WATCH_SECONDS = 15.0   # dialog shows within a second or two of launch; then give up
+_TRUST_POLL_SECONDS = 0.5
 
 
 class Manager:
@@ -242,6 +251,7 @@ class Manager:
                 pass
             return
 
+        self._watch_trust(session)  # accept the folder-trust dialog if this clone is new
         slot.state = SlotState.BUSY
         slot.activity = f"running ~{card.num} ({name})"
         slot.session = session
@@ -353,6 +363,29 @@ class Manager:
         )
         launch.chmod(0o755)
         return launch
+
+    def _watch_trust(self, session: str) -> None:
+        """Accept Claude Code's folder-trust dialog for a worker in a not-yet-trusted clone —
+        it would otherwise hang the unattended worker on a prompt no one answers. We only ever
+        spawn workers for registry projects (each authorized by its projects-table row), so
+        accepting on their behalf IS the trust decision you already made by adding the row.
+
+        Guarded: keys are sent ONLY after positively matching the dialog text, so a keystroke
+        never leaks into an already-trusted worker's input. Trust persists per-directory, so
+        this fires on a dir's first worker and is a no-op forever after. Runs in a daemon
+        thread so it never blocks the loop; on a trusted dir it just watches briefly and exits."""
+        def run() -> None:
+            deadline = time.monotonic() + _TRUST_WATCH_SECONDS
+            while time.monotonic() < deadline:
+                if not tmux.has_session(session):
+                    return
+                if tmux.looks_like_trust_prompt(tmux.capture(session, lines=40)):
+                    tmux.send_keys(session, *_TRUST_ACCEPT_KEYS)
+                    self.log(f"accepted folder-trust dialog for {session} (fresh clone)")
+                    return
+                time.sleep(_TRUST_POLL_SECONDS)
+
+        threading.Thread(target=run, name=f"trust-{session}", daemon=True).start()
 
     # --- snapshot for the dashboard ----------------------------------------
     def snapshot(self) -> dict:

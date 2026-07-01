@@ -2,10 +2,13 @@
 
 A Worker is an interactive `claude` running in a detached tmux session, so it stays
 human-attachable (`tmux attach -t <session>`) for intervention. We deliver the brief
-via the launch script (see manager.spawn_worker), never via `send-keys`.
+via the launch script (see manager.spawn_worker), never via `send-keys` — the ONE
+exception is auto-accepting Claude Code's folder-trust dialog on a fresh clone
+(manager._watch_trust), which would otherwise hang an unattended Worker.
 """
 from __future__ import annotations
 
+import re
 import subprocess
 
 # pane_current_command values that mean "no Worker process — just an idle shell".
@@ -44,6 +47,24 @@ def spawn(session: str, cwd: str, argv: list[str]) -> None:
 
 def kill(session: str) -> None:
     _tmux("kill-session", "-t", session)  # best-effort; ignore if already gone
+
+
+def send_keys(session: str, *keys: str) -> None:
+    """Send key(s) to a session. Used ONLY to answer Claude Code's one-time folder-trust
+    dialog on a fresh clone (manager._watch_trust) — never to drive the Worker. Named keys
+    like "Enter" are passed through to tmux as-is."""
+    _tmux("send-keys", "-t", session, *keys)
+
+
+# Claude Code's folder-trust dialog on an untrusted dir ("Do you trust the files in this
+# folder?"). Matched before sending any keystroke, so we never leak input into a session
+# that's already past startup.
+_TRUST_PROMPT = re.compile(r"trust the files|do you trust", re.I)
+
+
+def looks_like_trust_prompt(pane: str) -> bool:
+    """True if the pane is showing the folder-trust dialog. Pure (no tmux) so it's testable."""
+    return bool(_TRUST_PROMPT.search(pane or ""))
 
 
 def capture(session: str, lines: int = 200) -> str:
