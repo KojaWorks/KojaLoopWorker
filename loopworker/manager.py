@@ -179,6 +179,9 @@ class Manager:
         pass (the host's per-project share of the host-wide slot budget); None = no cap."""
         if max_new is not None and max_new <= 0:
             return
+        revived = self.pool.revive_broken()  # retry slots a fixable failure (e.g. a missing tool) broke
+        if revived:
+            self.log(f"revived {revived} broken cold slot(s) to retry provisioning")
         available = self.pool.available_slots()
         if not available:
             return
@@ -367,7 +370,8 @@ class Manager:
                     # live one-liner of what the worker is thinking/doing, scraped
                     # from its tmux pane (only while a worker holds the slot)
                     "thinking": tmux.summary_line(s.session) if (s.session and s.state == SlotState.BUSY) else "",
-                    "port": s.port,
+                    # only projects that echo LOOPWORKER_PORT bind one; hide it for native/stackless
+                    "port": s.port if s.port_reported else None,
                     "card": s.card_num,
                     "session": s.session,
                     "started_at": s.started_at.isoformat() if s.started_at else None,

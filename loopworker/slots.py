@@ -231,6 +231,20 @@ class SlotPool:
     def idle_slots(self) -> list[Slot]:
         return [s for s in self.slots if s.state == SlotState.IDLE]
 
+    def revive_broken(self) -> int:
+        """Return BROKEN cold slots to COLD so a transient provision failure (a missing host
+        tool, a busy port) retries on the next fill instead of stranding the slot until a
+        Manager restart. Hot broken slots are left alone — they need a re-provisioned warm
+        stack, which is build()/restart's job. Returns how many were revived."""
+        n = 0
+        for s in self.slots:
+            if s.state == SlotState.BROKEN and not self.hot:
+                s.state = SlotState.COLD
+                s.activity = "cold (retry after earlier failure)"
+                s.retiring = False
+                n += 1
+        return n
+
     def active_count(self) -> int:
         """The pool's effective size for resize decisions: slots not being retired. A
         retiring slot is on its way out, so it doesn't count toward the target."""
@@ -253,7 +267,7 @@ class SlotPool:
         )
 
     def _provision(self, slot: Slot) -> None:
-        slot.activity = "provisioning (npm install + supabase start)"
+        slot.activity = "provisioning"  # the project's provision.sh — its output streams to the log
         rc, out = self._run_script("provision", slot, check=False)
         if rc != 0:
             raise SlotError(f"provision.sh failed (rc={rc}) — see the [slot {slot.index} provision] log above")
@@ -263,6 +277,7 @@ class SlotPool:
         m = _PORT_LINE.search(stdout or "")
         if m:
             slot.port = int(m.group(1))
+            slot.port_reported = True
 
     def _run_script(self, which: str, slot: Slot, *, check: bool = True) -> tuple[int, str]:
         """Run a lifecycle script, STREAMING its output line-by-line to the log (so a

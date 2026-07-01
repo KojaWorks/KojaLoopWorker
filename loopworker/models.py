@@ -96,3 +96,6 @@ class Slot:
     done_since: datetime | None = None  # when its card first left In progress (reap grace clock)
     retiring: bool = False       # slot count was lowered while this slot was BUSY: tear it
     #                              down (don't return it to the pool) once its card finishes
+    port_reported: bool = False  # the project's provision/reset echoed LOOPWORKER_PORT, i.e.
+    #                              it actually binds a port (a web stack). Native/stackless
+    #                              projects never set this, so the dashboard hides the port.

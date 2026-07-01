@@ -14,7 +14,7 @@ SnapshotProvider = Callable[[], dict]
 def _slots_table(slots: list[dict]) -> str:
     rows = "".join(
         f"<tr><td>{s['index']}</td><td>{s['state']}</td>"
-        f"<td>{html.escape(s.get('activity') or '—')}</td><td>{s['port']}</td>"
+        f"<td>{html.escape(s.get('activity') or '—')}</td><td>{s.get('port') or '—'}</td>"
         f"<td>{'~' + str(s['card']) if s['card'] else '—'}</td>"
         f"<td>{html.escape(s['session'] or '—')}</td>"
         f"<td>{s['started_at'] or '—'}</td>"
@@ -54,15 +54,6 @@ def _render_host(snap: dict) -> str:
 def _render(snap: dict) -> str:
     if "projects" in snap:
         return _render_host(snap)
-    rows = "".join(
-        f"<tr><td>{s['index']}</td><td>{s['state']}</td>"
-        f"<td>{html.escape(s.get('activity') or '—')}</td><td>{s['port']}</td>"
-        f"<td>{'~' + str(s['card']) if s['card'] else '—'}</td>"
-        f"<td>{html.escape(s['session'] or '—')}</td>"
-        f"<td>{s['started_at'] or '—'}</td>"
-        f"<td class=thinking>{html.escape(s.get('thinking') or '—')}</td></tr>"
-        for s in snap["slots"]
-    )
     log = "".join(f"<div>{html.escape(line)}</div>" for line in reversed(snap["log"]))
     paused = " · <b style='color:#c0392b'>PAUSED</b>" if snap["paused"] else ""
     return f"""<!doctype html><meta charset=utf-8>
@@ -77,8 +68,7 @@ def _render(snap: dict) -> str:
 </style>
 <h2>LoopWorker · {html.escape(snap['project'])}{paused}</h2>
 <div>started {snap['started_at']} · poll every {snap['poll_interval']}s</div>
-<table><tr><th>slot</th><th>state</th><th>activity</th><th>port</th><th>card</th><th>session</th><th>started</th><th>thinking</th></tr>
-{rows}</table>
+{_slots_table(snap["slots"])}
 <h3>log</h3><div class=log>{log}</div>
 """
 

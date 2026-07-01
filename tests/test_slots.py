@@ -31,6 +31,27 @@ def test_run_script_streams_and_captures_port(tmp_path):
     assert any("doing-a-thing" in line for line in logs)      # streamed live
     pool._capture_port(slot, out)
     assert slot.port == 31999                                 # handshake parsed from captured output
+    assert slot.port_reported is True                         # project bound a port → dashboard shows it
+
+
+def test_capture_port_absent_leaves_port_unreported(tmp_path):
+    logs: list[str] = []
+    pool = _pool(tmp_path, "true\n", logs)
+    slot = Slot(index=0, dir=str(tmp_path), port=55200)
+    pool._capture_port(slot, "built an iOS app, no server\n")  # native provision emits no port line
+    assert slot.port_reported is False                        # → dashboard hides the (unused) port
+
+
+def test_revive_broken_resets_cold(tmp_path):
+    cold = _cold_pool(tmp_path)
+    cold.slots[0].state = SlotState.BROKEN
+    assert cold.revive_broken() == 1 and cold.slots[0].state == SlotState.COLD
+
+
+def test_revive_broken_leaves_hot(tmp_path, monkeypatch):
+    hot = _hot_pool(tmp_path, monkeypatch)                 # hot needs a rebuilt stack, not a bare retry
+    hot.slots[0].state = SlotState.BROKEN
+    assert hot.revive_broken() == 0 and hot.slots[0].state == SlotState.BROKEN
 
 
 def test_redact_scrubs_stack_secrets():
