@@ -60,10 +60,14 @@ def send_keys(session: str, *keys: str) -> None:
     _tmux("send-keys", "-t", session, *keys)
 
 
-# Claude Code's folder-trust dialog on an untrusted dir ("Do you trust the files in this
-# folder?"). Matched before sending any keystroke, so we never leak input into a session
-# that's already past startup.
-_TRUST_PROMPT = re.compile(r"trust the files|do you trust", re.I)
+# Claude Code's folder-trust dialog on an untrusted dir. Observed wording: a header
+# "Accessing workspace:", the question "…is this a project you created or one you trust?",
+# and option "Yes, I trust this folder". Match any of those distinctive phrases (the first
+# guess — "do you trust the files" — was wrong, so keep a few). Guarded so we only send a
+# keystroke when the dialog is actually up, never into a live worker's input.
+_TRUST_PROMPT = re.compile(
+    r"trust this folder|Accessing workspace|one you trust|do you trust|trust the files", re.I
+)
 
 
 def looks_like_trust_prompt(pane: str) -> bool:

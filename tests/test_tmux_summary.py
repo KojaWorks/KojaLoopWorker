@@ -37,13 +37,14 @@ def test_skips_tip_line_below_the_real_thinking():
 
 
 def test_detects_folder_trust_prompt():
+    # The ACTUAL Claude Code dialog wording (observed on a fresh clone), not the first guess.
     dialog = (
-        "╭───────────────────────────────╮\n"
-        "│ Do you trust the files in this folder?\n"
-        "│ /Users/nevyn/Dev/loopworker-clones/patchapp.loopworker-slots/slot-0\n"
-        "│ ❯ 1. Yes, proceed\n"
-        "│   2. No, exit\n"
-        "╰───────────────────────────────╯\n"
+        "Accessing workspace:\n"
+        "/Users/nevyn/Dev/loopworker-clones/kojaserv.loopworker-slots/slot-0\n"
+        "Quick safety check: Is this a project you created or one you trust?\n"
+        "❯ 1. Yes, I trust this folder\n"
+        "  2. No, exit\n"
+        "Enter to confirm · Esc to cancel\n"
     )
     assert looks_like_trust_prompt(dialog)
     # normal worker panes must NOT match — we must never send a stray key into a live session
