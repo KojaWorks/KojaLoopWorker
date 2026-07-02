@@ -176,6 +176,7 @@ def test_host_mode_build_prompt_uses_injected_brief(tmp_path):
     # unattended workers must be told not to ask interactively, and not to merge over red CI
     assert "UNATTENDED" in prompt
     assert "NEVER merge over a red" in prompt
+    assert "EXIT SIGNAL" in prompt   # status flip is the reap trigger — must be the last step
 
 
 def test_discover_skips_project_without_contract(tmp_path, monkeypatch):
