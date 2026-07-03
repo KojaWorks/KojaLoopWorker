@@ -62,6 +62,24 @@ def test_defaults(tmp_path):
     assert m.scripts.provision == "provision.sh"
 
 
+def test_nonpositive_script_timeout_rejected_at_load(tmp_path):
+    # A typo like `reset_timeout_minutes = 0` would otherwise kill every script at t=0
+    # with a baffling "timed out after 0s" — surface it as a config error instead.
+    root = _write_manifest(tmp_path, """
+        [project]
+        name = "demo"
+        [backlog]
+        adapter = "patch"
+        [brief]
+        source = "repo-file"
+        ref = "BRIEF.md"
+        [scripts]
+        reset_timeout_minutes = 0
+    """)
+    with pytest.raises(ValueError, match="reset_timeout_minutes"):
+        Manifest.load(root)
+
+
 def test_host_config_loads(tmp_path):
     cfg = tmp_path / "config.toml"
     cfg.write_text(textwrap.dedent("""

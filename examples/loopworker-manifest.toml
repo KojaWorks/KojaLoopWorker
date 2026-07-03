@@ -48,3 +48,9 @@ provision = "provision.sh"        # FIRST time per slot: heavy, idempotent. Brin
 reset     = "reset.sh"            # per-acquire: cheap. DB reset + project clean. Isolation gate.
 verify    = "verify.sh"           # merge gate: typecheck + tests. Nonzero exit = do not ship.
 teardown  = "teardown.sh"         # slot retirement: stop stack, free ports.
+# Hard timeouts (minutes). A hung script (a wedged docker daemon can block `supabase
+# db reset` forever) gets its whole process group killed and the slot marked BROKEN,
+# instead of freezing the Manager. Defaults shown.
+provision_timeout_minutes = 45
+reset_timeout_minutes     = 15
+teardown_timeout_minutes  = 10
