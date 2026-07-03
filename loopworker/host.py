@@ -22,7 +22,7 @@ from pathlib import Path
 
 from .backlog.patch import PatchAdapter, brief_pointer
 from .config import HostConfig, Manifest
-from .manager import Manager, _pid_alive, _slug
+from .manager import _DEFAULT_WORKER_ENV, Manager, _pid_alive, _slug
 from .models import ProjectRow
 
 
@@ -60,6 +60,10 @@ class HostManager:
         logged and skipped (not fatal — the others still run)."""
         rows = self.adapter.list_projects()
         self.log(f"serving {len(rows)} project(s) as worker_manager={self.host.worker_manager!r}")
+        # Auth forwarding is silent per-spawn, so say up front whether workers will get
+        # their own credential or fall back to the host's shared (race-prone) login.
+        for k in _DEFAULT_WORKER_ENV:
+            self.log(f"worker auth: {k} {'set — forwarding to workers' if k in os.environ else 'NOT set — workers use the host claude login'}")
         if not self.host.brief_page:
             self.log("WARNING: no brief_page in host config — workers get no generic loop protocol; "
                      "set [backlog].brief_page to the Managed Agent Loop page")
