@@ -29,6 +29,7 @@ class WorkerConfig:
     # Env var NAMES the worker needs (e.g. a backend secret). The Manager forwards their
     # values from its own env into the worker's tmux session — bypassing tmux's frozen
     # server env, which otherwise hides a var added to .env after the server started.
+    # Auth vars every worker needs forward by default (manager._DEFAULT_WORKER_ENV).
     env: list[str] = field(default_factory=list)
     wallclock_cap_minutes: int = 90
 

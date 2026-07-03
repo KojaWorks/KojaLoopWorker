@@ -160,6 +160,18 @@ def test_draining_starts_no_new_workers(mgr):
     assert m.pool.slots[0].state == SlotState.IDLE
 
 
+def test_default_auth_env_forwarded_to_worker(mgr, monkeypatch):
+    # CLAUDE_CODE_OAUTH_TOKEN forwards into the session without a manifest declaration,
+    # so headless workers stay off the host's shared keychain credential.
+    m, _state, _spawned, _killed = mgr
+    envs: list[dict] = []
+    monkeypatch.setattr(manager_mod.tmux, "spawn",
+                        lambda sess, cwd, argv, env=None: envs.append(env))
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok_test")
+    m.tick()
+    assert envs == [{"CLAUDE_CODE_OAUTH_TOKEN": "tok_test"}]
+
+
 def test_reap_orphans_at_startup(mgr, monkeypatch):
     # A previous Manager that died leaves lw-<proj>-* sessions; startup kills them.
     m, _state, _spawned, killed = mgr

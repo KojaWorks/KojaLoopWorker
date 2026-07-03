@@ -36,6 +36,11 @@ _TRUST_ACCEPT_KEYS = ("Enter",)
 _TRUST_WATCH_SECONDS = 15.0   # dialog shows within a second or two of launch; then give up
 _TRUST_POLL_SECONDS = 0.5
 
+# Forwarded into every worker session when set in the Manager's env, no manifest
+# declaration needed: a long-lived token keeps headless workers off the host's shared
+# keychain credential, whose single-use refresh tokens concurrent claudes race on.
+_DEFAULT_WORKER_ENV = ("CLAUDE_CODE_OAUTH_TOKEN",)
+
 
 class Manager:
     def __init__(
@@ -240,9 +245,10 @@ class Manager:
 
         session = self._session_name(card.num)
         launch = self._write_launch(slot, card, worker)
-        # Forward the manifest's declared worker env vars from the Manager's own env into
-        # the session (tmux sessions don't inherit vars added after the server started).
-        env: dict[str, str] = {}
+        # Forward default + manifest-declared worker env vars from the Manager's own env
+        # into the session (tmux sessions don't inherit vars added after the server
+        # started). Only declared vars warn when absent; defaults are best-effort.
+        env: dict[str, str] = {k: os.environ[k] for k in _DEFAULT_WORKER_ENV if k in os.environ}
         for k in self.manifest.worker.env:
             if k in os.environ:
                 env[k] = os.environ[k]
