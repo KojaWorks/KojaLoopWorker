@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import os
 import re
+import signal
 import subprocess
+import threading
 from collections.abc import Callable
 from pathlib import Path
 
@@ -23,6 +25,14 @@ from .config import Manifest
 from .models import Slot, SlotState
 
 _PORT_LINE = re.compile(r"^LOOPWORKER_PORT=(\d+)\s*$", re.MULTILINE)
+
+# Coarse watchdog: log that a script is still running once it passes this (or half its
+# timeout, whichever is sooner), so a slow-but-alive script is visible before the kill.
+_SOFT_WARN_SECS = 300.0
+
+
+def _fmt_dur(secs: float) -> str:
+    return f"{secs / 60:g} min" if secs >= 60 else f"{secs:g}s"
 
 # Provision/reset scripts print stack secrets (supabase start dumps anon/service-role
 # JWTs, the JWT secret, S3 keys, the DB URL). We STREAM that output to the log + tmux +
@@ -103,8 +113,7 @@ class SlotPool:
 
     def teardown(self) -> None:
         for slot in self.slots:
-            self._run_script("teardown", slot, check=False)
-            self._git(self.manifest.project_dir, "worktree", "remove", "--force", slot.dir, check=False)
+            self.teardown_slot(slot)
 
     def resize(self, count: int) -> None:
         """Grow or shrink the pool to `count` slots live (a project's slot count changed
@@ -224,7 +233,10 @@ class SlotPool:
 
     def teardown_slot(self, slot: Slot) -> None:
         """Stop one slot's stack and remove its worktree (best-effort)."""
-        self._run_script("teardown", slot, check=False)
+        try:
+            self._run_script("teardown", slot, check=False)
+        except SlotError as e:  # timeout or missing script — teardown stays best-effort
+            self.log(f"slot {slot.index}: teardown incomplete — {e}")
         self._git(self.manifest.project_dir, "worktree", "remove", "--force", slot.dir, check=False)
 
     def available_slots(self) -> list[Slot]:
@@ -283,13 +295,23 @@ class SlotPool:
             slot.port = int(m.group(1))
             slot.port_reported = True
 
+    def _script_timeout(self, which: str) -> float:
+        """Hard deadline (seconds) for a lifecycle script, from the manifest."""
+        return getattr(self.manifest.scripts, f"{which}_timeout_minutes", 15.0) * 60
+
     def _run_script(self, which: str, slot: Slot, *, check: bool = True) -> tuple[int, str]:
         """Run a lifecycle script, STREAMING its output line-by-line to the log (so a
         slow/failing provision isn't a silent black box) while capturing it for the
-        LOOPWORKER_PORT handshake. stderr is merged into stdout so errors show too."""
+        LOOPWORKER_PORT handshake. stderr is merged into stdout so errors show too.
+
+        The script gets its own process group and a hard timeout: a wedged docker daemon
+        once made reset.sh hang forever, freezing the whole Manager for hours. On timeout
+        the entire group is killed (scripts spawn trees like npm→node→supabase) and
+        SlotError raises — even with check=False — so BROKEN-slot handling takes over."""
         path = self.manifest.script_path(which)
         if not path.is_file():
             raise SlotError(f"missing {which} script: {path}")
+        timeout = self._script_timeout(which)
         env = {
             **os.environ,
             "LOOPWORKER_SLOT_DIR": slot.dir,
@@ -300,16 +322,53 @@ class SlotPool:
             ["bash", str(path), slot.dir],
             cwd=slot.dir if Path(slot.dir).is_dir() else str(self.manifest.project_dir),
             env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+            start_new_session=True,
         )
         lines: list[str] = []
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            line = line.rstrip("\n")
-            lines.append(line)
-            if line.strip():
-                self.log(f"  [slot {slot.index} {which}] {_redact(line)}")
-        rc = proc.wait()
+        abandoned = threading.Event()
+
+        # Stream on a side thread: a pipe read can block indefinitely (even past the
+        # child's death, if an orphaned grandchild inherited the write end), while
+        # wait(timeout) always returns control to the Manager thread.
+        def pump() -> None:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                if abandoned.is_set():
+                    return  # run is over; a late line must not log into a later card
+                line = line.rstrip("\n")
+                lines.append(line)
+                if line.strip():
+                    self.log(f"  [slot {slot.index} {which}] {_redact(line)}")
+
+        reader = threading.Thread(target=pump, daemon=True, name=f"slot{slot.index}-{which}-pump")
+        reader.start()
+
+        soft = min(_SOFT_WARN_SECS, timeout / 2)
+        timed_out = False
+        try:
+            rc = proc.wait(timeout=soft)
+        except subprocess.TimeoutExpired:
+            self.log(f"  [slot {slot.index} {which}] still running after {_fmt_dur(soft)}"
+                     f" (killed at {_fmt_dur(timeout)})")
+            try:
+                rc = proc.wait(timeout=timeout - soft)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                self.log(f"  [slot {slot.index} {which}] timed out after {_fmt_dur(timeout)}"
+                         " — killing its process group")
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                rc = proc.wait()
+        reader.join(timeout=5)  # EOF follows the group's death; don't hang on a stuck pipe
+        if reader.is_alive():
+            abandoned.set()
+            self.log(f"  [slot {slot.index} {which}] output pipe still open after exit"
+                     " (orphaned child?) — abandoning the reader")
         out = "\n".join(lines)
+        if timed_out:
+            raise SlotError(f"{which} script timed out after {_fmt_dur(timeout)} (process group killed)")
         if check and rc != 0:
             tail = _redact(lines[-1]) if lines else "(no output)"
             raise SlotError(f"{which} script failed (rc={rc}): {tail}")

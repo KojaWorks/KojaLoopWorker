@@ -39,6 +39,17 @@ class ScriptsConfig:
     reset: str = "reset.sh"
     verify: str = "verify.sh"
     teardown: str = "teardown.sh"
+    # Hard per-script timeouts (minutes; floats allowed). A wedged stack tool (a hung
+    # docker daemon) once made reset.sh block forever and froze the whole Manager —
+    # on timeout the script's process group is killed and the slot goes BROKEN.
+    provision_timeout_minutes: float = 45
+    reset_timeout_minutes: float = 15
+    teardown_timeout_minutes: float = 10
+
+    def __post_init__(self) -> None:
+        for name in ("provision", "reset", "teardown"):
+            if getattr(self, f"{name}_timeout_minutes") <= 0:
+                raise ValueError(f"scripts.{name}_timeout_minutes must be > 0")
 
 
 @dataclass

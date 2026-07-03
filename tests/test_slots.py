@@ -1,5 +1,8 @@
 """_run_script streams a lifecycle script's output to the log AND captures it for
 the LOOPWORKER_PORT handshake; a nonzero exit raises with the failing tail."""
+import os
+import signal
+import time
 import types
 from pathlib import Path
 
@@ -63,6 +66,42 @@ def test_redact_scrubs_stack_secrets():
         == "URL postgresql://postgres:[redacted]@127.0.0.1:30402/postgres"
     assert _redact("Applying migration 0101_personal_access_tokens.sql") \
         == "Applying migration 0101_personal_access_tokens.sql"   # ordinary lines untouched
+
+
+def _assert_dead(pid: int) -> None:
+    """The kernel delivers SIGKILL to the group asynchronously; poll briefly."""
+    for _ in range(50):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.1)
+    os.kill(pid, signal.SIGKILL)  # don't leak it past the failed assertion
+    pytest.fail(f"pid {pid} survived the process-group kill")
+
+
+def test_run_script_timeout_kills_whole_process_group(tmp_path):
+    # A wedged docker daemon once made reset.sh hang forever and froze the Manager for
+    # 7.5h. The script must be killed WITH its children (scripts spawn npm→node→… trees).
+    logs: list[str] = []
+    pool = _pool(tmp_path, "sleep 600 &\necho $! > child.pid\necho started\nwait\n", logs)
+    pool.manifest.scripts.provision_timeout_minutes = 0.02   # 1.2s; soft warn at 0.6s
+    slot = Slot(index=0, dir=str(tmp_path), port=1)
+    with pytest.raises(SlotError) as e:
+        pool._run_script("provision", slot)                  # check=True and check=False both raise
+    assert "timed out" in str(e.value)
+    assert any("still running" in line for line in logs)     # soft watchdog fired before the kill
+    _assert_dead(int((tmp_path / "child.pid").read_text()))  # the backgrounded child died too
+
+
+def test_teardown_timeout_stays_best_effort(tmp_path):
+    logs: list[str] = []
+    pool = _pool(tmp_path, "true\n", logs)
+    (tmp_path / ".loopworker" / "teardown.sh").write_text("#!/usr/bin/env bash\nsleep 600\n")
+    pool.manifest.scripts.teardown_timeout_minutes = 0.01
+    slot = Slot(index=0, dir=str(tmp_path), port=1)
+    pool.teardown_slot(slot)                                 # must NOT raise — teardown is best-effort
+    assert any("teardown incomplete" in line for line in logs)
 
 
 def test_run_script_raises_with_tail_on_failure(tmp_path):
