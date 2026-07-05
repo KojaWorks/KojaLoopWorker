@@ -80,11 +80,12 @@ def mgr(tmp_path, monkeypatch):
     monkeypatch.setattr(m.pool, "acquire", lambda s, slug: None)
 
     # control tmux from the test
-    state = {"alive": True}
+    state = {"alive": True, "pane": ""}
     spawned, killed = [], []
     monkeypatch.setattr(manager_mod.tmux, "spawn", lambda sess, cwd, argv, env=None: spawned.append(sess))
     monkeypatch.setattr(manager_mod.tmux, "kill", lambda sess: killed.append(sess))
     monkeypatch.setattr(manager_mod.tmux, "worker_running", lambda sess: state["alive"])
+    monkeypatch.setattr(manager_mod.tmux, "capture", lambda sess, lines=200: state["pane"])
     return m, state, spawned, killed
 
 
@@ -127,6 +128,29 @@ def test_reap_workers_on_shutdown(mgr, monkeypatch):
     m._reap_workers("shutting down")
     assert killed == [sess]
     assert m.adapter.releases == [1]           # the unfinished card was released
+
+
+def test_auth_wedged_worker_is_reclaimed(mgr):
+    # A worker whose auth dies mid-session parks at claude's login prompt: process still
+    # alive, card still In progress, under wallclock. Without detection it wedges the slot
+    # for the full cap; with it, the Manager reclaims the card and frees the slot at once.
+    m, state, _spawned, killed = mgr
+    m.tick()                                   # spawn a worker; card 1 -> In progress
+    sess = m.pool.slots[0].session
+    assert m.pool.slots[0].state == SlotState.BUSY
+    state["pane"] = "⏺ Please run /login · API Error: 401 Invalid authentication credentials"
+    m.reconcile()                              # reconcile-only (no refill) to isolate the reclaim
+    assert killed == [sess]                     # wedged worker reaped immediately (grace=0)
+    assert m.adapter.releases == [1]            # card returned to Backlog for a fresh worker
+    assert m.pool.slots[0].state == SlotState.IDLE  # slot freed, not stuck until wallclock
+
+    # ...and it does NOT immediately respawn into the same auth failure: the cooldown holds
+    # off spawning (respawning would 401 again and pile on the concurrent auth that causes it).
+    state["pane"] = ""
+    spawned_before = list(_spawned)
+    m.tick()
+    assert _spawned == spawned_before           # nothing new spawned during the cooldown
+    assert m.pool.slots[0].state == SlotState.IDLE
 
 
 def test_sigint_escalates_drain_then_force(mgr):

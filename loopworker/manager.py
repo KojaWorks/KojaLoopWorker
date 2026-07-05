@@ -36,6 +36,9 @@ _TRUST_ACCEPT_KEYS = ("Enter",)
 _TRUST_WATCH_SECONDS = 15.0   # dialog shows within a second or two of launch; then give up
 _TRUST_POLL_SECONDS = 0.5
 
+# How long to stop spawning after a worker dies at the login prompt (see _auth_cooldown_until).
+_AUTH_COOLDOWN = timedelta(minutes=5)
+
 # Forwarded into every worker session when set in the Manager's env, no manifest
 # declaration needed: a long-lived token keeps headless workers off the host's shared
 # keychain credential, whose single-use refresh tokens concurrent claudes race on.
@@ -90,6 +93,11 @@ class Manager:
         self._stop = False          # exit the loop; finally reaps any live workers
         self._draining = False      # finish current workers, start no new ones
         self._sigint_count = 0      # ⌃C escalation: 1=drain, 2=force, 3=hard exit
+        # After a worker dies at the login prompt, hold off spawning until this time: an
+        # auth failure is almost always systemic (the account's session got revoked), so
+        # immediately respawning would just 401 again AND add concurrent auth load, which
+        # is itself what triggers the revocation. Back off and let it recover.
+        self._auth_cooldown_until: datetime | None = None
 
     # --- lifecycle ---------------------------------------------------------
     def run(self) -> None:
@@ -157,7 +165,10 @@ class Manager:
                 continue
             card = self.adapter.get_card(slot.card_num)
             alive = tmux.worker_running(slot.session)
-            action, reason = classify(slot, card, alive, now, self.wallclock_cap)
+            # Only worth scraping the pane while the process is alive but the card's still
+            # open — that's the wedge case (a dead process is already CRASH_RECLAIM).
+            auth_failed = alive and tmux.looks_like_auth_failure(tmux.capture(slot.session, lines=40))
+            action, reason = classify(slot, card, alive, now, self.wallclock_cap, auth_failed)
 
             if action == SlotAction.KEEP:
                 slot.done_since = None
@@ -170,9 +181,13 @@ class Manager:
                     self.log(f"slot {slot.index} ~{slot.card_num}: {reason}; reap grace started")
                 elif now - slot.done_since >= self.grace:
                     self._reap(slot, reason)
-            elif action in (SlotAction.CRASH_RECLAIM, SlotAction.HUNG_RECLAIM):
+            elif action in (SlotAction.CRASH_RECLAIM, SlotAction.HUNG_RECLAIM, SlotAction.AUTH_RECLAIM):
                 slot.activity = f"reclaiming — {reason}"
                 self.log(f"slot {slot.index} ~{slot.card_num}: {reason} — reclaiming card")
+                if action == SlotAction.AUTH_RECLAIM:
+                    self._auth_cooldown_until = now + _AUTH_COOLDOWN
+                    self.log(f"auth cooldown: not spawning for {_AUTH_COOLDOWN} — an auth failure is "
+                             "usually the account's session being revoked; re-login on the host may be needed")
                 if card is not None:
                     try:
                         self.adapter.release(card, note=reason)
@@ -193,6 +208,8 @@ class Manager:
         pass (the host's per-project share of the host-wide slot budget); None = no cap."""
         if max_new is not None and max_new <= 0:
             return
+        if self._auth_cooldown_until and now < self._auth_cooldown_until:
+            return  # backing off after an auth failure — see _auth_cooldown_until
         revived = self.pool.revive_broken()  # retry slots a fixable failure (e.g. a missing tool) broke
         if revived:
             self.log(f"revived {revived} broken cold slot(s) to retry provisioning")
