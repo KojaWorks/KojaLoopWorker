@@ -42,6 +42,31 @@ _TRUST_POLL_SECONDS = 0.5
 _DEFAULT_WORKER_ENV = ("CLAUDE_CODE_OAUTH_TOKEN",)
 
 
+def watch_trust(session: str, log) -> None:
+    """Accept Claude Code's folder-trust dialog for a worker in a not-yet-trusted clone — it
+    would otherwise hang the unattended worker on a prompt no one answers. We only ever spawn
+    workers (card workers or one-off scaffolding agents, see host.py) for registry projects
+    (each authorized by its projects-table row), so accepting on their behalf IS the trust
+    decision you already made by adding the row.
+
+    Guarded: keys are sent ONLY after positively matching the dialog text, so a keystroke
+    never leaks into an already-trusted worker's input. Trust persists per-directory, so this
+    fires on a dir's first worker and is a no-op forever after. Runs in a daemon thread so it
+    never blocks the caller; on a trusted dir it just watches briefly and exits."""
+    def run() -> None:
+        deadline = time.monotonic() + _TRUST_WATCH_SECONDS
+        while time.monotonic() < deadline:
+            if not tmux.has_session(session):
+                return
+            if tmux.looks_like_trust_prompt(tmux.capture(session, lines=40)):
+                tmux.send_keys(session, *_TRUST_ACCEPT_KEYS)
+                log(f"accepted folder-trust dialog for {session} (fresh clone)")
+                return
+            time.sleep(_TRUST_POLL_SECONDS)
+
+    threading.Thread(target=run, name=f"trust-{session}", daemon=True).start()
+
+
 class Manager:
     def __init__(
         self,
@@ -265,7 +290,7 @@ class Manager:
                 pass
             return
 
-        self._watch_trust(session)  # accept the folder-trust dialog if this clone is new
+        watch_trust(session, self.log)  # accept the folder-trust dialog if this clone is new
         slot.state = SlotState.BUSY
         slot.activity = f"running ~{card.num} ({name})"
         slot.session = session
@@ -386,29 +411,6 @@ class Manager:
         )
         launch.chmod(0o755)
         return launch
-
-    def _watch_trust(self, session: str) -> None:
-        """Accept Claude Code's folder-trust dialog for a worker in a not-yet-trusted clone —
-        it would otherwise hang the unattended worker on a prompt no one answers. We only ever
-        spawn workers for registry projects (each authorized by its projects-table row), so
-        accepting on their behalf IS the trust decision you already made by adding the row.
-
-        Guarded: keys are sent ONLY after positively matching the dialog text, so a keystroke
-        never leaks into an already-trusted worker's input. Trust persists per-directory, so
-        this fires on a dir's first worker and is a no-op forever after. Runs in a daemon
-        thread so it never blocks the loop; on a trusted dir it just watches briefly and exits."""
-        def run() -> None:
-            deadline = time.monotonic() + _TRUST_WATCH_SECONDS
-            while time.monotonic() < deadline:
-                if not tmux.has_session(session):
-                    return
-                if tmux.looks_like_trust_prompt(tmux.capture(session, lines=40)):
-                    tmux.send_keys(session, *_TRUST_ACCEPT_KEYS)
-                    self.log(f"accepted folder-trust dialog for {session} (fresh clone)")
-                    return
-                time.sleep(_TRUST_POLL_SECONDS)
-
-        threading.Thread(target=run, name=f"trust-{session}", daemon=True).start()
 
     # --- snapshot for the dashboard ----------------------------------------
     def snapshot(self) -> dict:

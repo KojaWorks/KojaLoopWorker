@@ -4,7 +4,7 @@ A Worker is an interactive `claude` running in a detached tmux session, so it st
 human-attachable (`tmux attach -t <session>`) for intervention. We deliver the brief
 via the launch script (see manager.spawn_worker), never via `send-keys` — the ONE
 exception is auto-accepting Claude Code's folder-trust dialog on a fresh clone
-(manager._watch_trust), which would otherwise hang an unattended Worker.
+(manager.watch_trust), which would otherwise hang an unattended Worker.
 """
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ def kill(session: str) -> None:
 
 def send_keys(session: str, *keys: str) -> None:
     """Send key(s) to a session. Used ONLY to answer Claude Code's one-time folder-trust
-    dialog on a fresh clone (manager._watch_trust) — never to drive the Worker. Named keys
+    dialog on a fresh clone (manager.watch_trust) — never to drive the Worker. Named keys
     like "Enter" are passed through to tmux as-is."""
     _tmux("send-keys", "-t", session, *keys)
 

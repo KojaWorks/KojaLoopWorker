@@ -182,10 +182,83 @@ def test_host_mode_build_prompt_uses_injected_brief(tmp_path):
 def test_discover_skips_project_without_contract(tmp_path, monkeypatch):
     import loopworker.host as host_mod
     monkeypatch.setattr(HostManager, "_ensure_clone", lambda self, row: tmp_path / "missing")
+    scaffolded = []
+    monkeypatch.setattr(HostManager, "_scaffold_if_needed", lambda self, row: scaffolded.append(row))
     # Manifest.load raises FileNotFoundError for a clone with no .loopworker — skipped, not fatal.
     h = _host(tmp_path, projects=[ProjectRow(id="p1", name="Broken", repo="git@x")])
     h.discover()
     assert h.managers == []
+    assert [r.name for r in scaffolded] == ["Broken"]   # scaffold kicked off before giving up
+
+
+def _scaffold_host(tmp_path, monkeypatch, *, clone_ok=True, session_running=False):
+    """A host wired for _scaffold_if_needed tests: fake git clone + tmux, no network."""
+    import loopworker.host as host_mod
+    h = _host(tmp_path)
+    calls = {"clone": [], "spawn": []}
+
+    def fake_run(argv, **kw):
+        calls["clone"].append(argv)
+        if clone_ok:
+            Path(argv[-1]).mkdir(parents=True, exist_ok=True)   # simulate `git clone` creating the dir
+        return types.SimpleNamespace(returncode=0 if clone_ok else 1, stderr="" if clone_ok else "boom")
+
+    monkeypatch.setattr(host_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(host_mod.tmux, "has_session", lambda s: session_running)
+    monkeypatch.setattr(host_mod.tmux, "spawn",
+                        lambda session, cwd, argv, env=None: calls["spawn"].append((session, cwd, argv, env)))
+    monkeypatch.setattr(host_mod, "watch_trust", lambda session, log: None)
+    return h, calls
+
+
+def test_scaffold_spawns_once_per_project(tmp_path, monkeypatch):
+    h, calls = _scaffold_host(tmp_path, monkeypatch)
+    row = ProjectRow(id="p1", name="Broken Repo", repo="git@x:broken.git")
+
+    h._scaffold_if_needed(row)
+
+    assert len(calls["clone"]) == 1 and calls["clone"][0][:2] == ["git", "clone"]
+    assert len(calls["spawn"]) == 1
+    session, cwd, argv, env = calls["spawn"][0]
+    assert session == "lw-scaffold-broken-repo"
+    assert cwd == str(h.host.clones_dir / "broken-repo-scaffold")
+    assert argv == ["bash", str(Path(cwd) / ".loopworker-scaffold-launch.sh")]
+    marker = h.state_dir / "scaffold-broken-repo.attempted"
+    assert marker.exists()
+
+    h._scaffold_if_needed(row)  # second call: marker guards against a respawn
+    assert len(calls["spawn"]) == 1
+
+
+def test_scaffold_skips_without_repo(tmp_path, monkeypatch):
+    h, calls = _scaffold_host(tmp_path, monkeypatch)
+    h._scaffold_if_needed(ProjectRow(id="p1", name="No Repo", repo=None))
+    assert calls["spawn"] == []
+
+
+def test_scaffold_skips_if_session_already_running(tmp_path, monkeypatch):
+    h, calls = _scaffold_host(tmp_path, monkeypatch, session_running=True)
+    h._scaffold_if_needed(ProjectRow(id="p1", name="Broken", repo="git@x"))
+    assert calls["spawn"] == []
+    assert not (h.state_dir / "scaffold-broken.attempted").exists()
+
+
+def test_scaffold_clone_failure_is_logged_not_raised_and_no_marker(tmp_path, monkeypatch):
+    h, calls = _scaffold_host(tmp_path, monkeypatch, clone_ok=False)
+    h._scaffold_if_needed(ProjectRow(id="p1", name="Broken", repo="git@x"))
+    assert calls["spawn"] == []
+    assert not (h.state_dir / "scaffold-broken.attempted").exists()   # no marker -> retried next poll
+    assert any("scaffold spawn failed" in line for line in h.log_lines)
+
+
+def test_scaffold_prompt_covers_the_contract_and_guardrails(tmp_path, monkeypatch):
+    h, _ = _scaffold_host(tmp_path, monkeypatch)
+    prompt = h._scaffold_prompt(ProjectRow(id="p1", name="Melur", repo="git@x:melur.git"))
+    assert "[project]" in prompt and "[scripts]" in prompt      # inlined manifest schema
+    assert "xcodebuild" in prompt and "pytest" in prompt         # stack-guessing hints
+    assert "gh pr create" in prompt and "Do NOT merge it yourself" in prompt
+    assert "7-bit ASCII" in prompt
+    assert "do not claim or create any card" in prompt           # not a recurring loop worker
 
 
 def test_ensure_clone_refreshes_existing_clone(tmp_path, monkeypatch):
