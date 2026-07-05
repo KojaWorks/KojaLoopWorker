@@ -64,7 +64,6 @@ class HostManager:
         self.poll_interval = poll_interval
         self.reconcile_interval = min(reconcile_interval, poll_interval)
         self.grace_seconds = grace_seconds
-        self.adapter = PatchAdapter.from_host(host)
         self.state_dir = (state_dir or Path("state") / "host").resolve()
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.lockfile = self.state_dir / "host.lock"
@@ -72,6 +71,9 @@ class HostManager:
         self.started_at = datetime.now(timezone.utc)
         self.log_lines: deque[str] = deque(maxlen=200)
         self.notifier = Notifier(host.notify_command, log=self.log)
+        # Built after log/notifier so the adapter can surface pat-exchange retry progress
+        # and alert if the backend stays unreachable through startup.
+        self.adapter = PatchAdapter.from_host(host, log=self.log, notify=self.notifier.send)
         # One shared gate across every project's Manager — they all draw on the same
         # forwarded claude login (_DEFAULT_WORKER_ENV), so a dead credential pauses
         # dispatch host-wide, not per project. enabled=True here (unlike a bare
