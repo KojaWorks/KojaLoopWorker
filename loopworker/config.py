@@ -72,6 +72,8 @@ class HostConfig:
     workers_table: str = "loop_workers"
     projects_table: str = "projects"
     brief_page: str = ""               # the shared generic loop page (url or id) all workers read
+    notify_command: str = ""           # shell template receiving an alert message on stdin
+    #                                   (worker auth failure, a slot marked BROKEN); empty = no-op
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "HostConfig":
@@ -103,6 +105,7 @@ class HostConfig:
             workers_table=backlog.get("workers_table", "loop_workers"),
             projects_table=backlog.get("projects_table", "projects"),
             brief_page=backlog.get("brief_page", ""),
+            notify_command=raw.get("notify_command", ""),
         )
 
 

@@ -25,10 +25,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import tmux
+from .authgate import AuthGate
 from .backlog.patch import PatchAdapter, brief_pointer
 from .config import HostConfig, Manifest
 from .manager import _DEFAULT_WORKER_ENV, Manager, _pid_alive, _slug, watch_trust
 from .models import ProjectRow
+from .notify import Notifier
 
 
 def _project_weight(row: ProjectRow | None) -> float:
@@ -69,6 +71,16 @@ class HostManager:
         self.killswitch = self.state_dir / "PAUSED"
         self.started_at = datetime.now(timezone.utc)
         self.log_lines: deque[str] = deque(maxlen=200)
+        self.notifier = Notifier(host.notify_command, log=self.log)
+        # One shared gate across every project's Manager — they all draw on the same
+        # forwarded claude login (_DEFAULT_WORKER_ENV), so a dead credential pauses
+        # dispatch host-wide, not per project. enabled=True here (unlike a bare
+        # Manager's own default): HostManager is the real spawn point, never ticked
+        # with a real Manager in tests (only FakeMgr stand-ins).
+        self.auth_gate = AuthGate(
+            enabled=True, log=self.log,
+            notify=lambda msg: self.notifier.send("auth-failure", msg),
+        )
         self.managers: list[Manager] = []
         self._bands: dict[str, int] = {}   # project_id -> port-band index (freed on retire, reused)
         self._weights: dict[str, float] = {}  # project_id -> slot cost (see _project_weight)
@@ -374,6 +386,8 @@ class HostManager:
             brief=brief_pointer(self.host.brief_page),
             project_brief=project_brief,
             project_model=row.model,
+            auth_gate=self.auth_gate,
+            notify=self.notifier.send,
         )
 
     # --- lifecycle ---------------------------------------------------------

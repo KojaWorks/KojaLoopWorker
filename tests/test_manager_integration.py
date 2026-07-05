@@ -239,3 +239,32 @@ def test_crash_reclaim(mgr):
     assert m.adapter.releases == [1]
     assert m.adapter.cards[1].status == CardStatus.BACKLOG
     assert killed == [spawned[0]]
+
+
+def test_auth_gate_failing_pauses_fill(mgr):
+    m, _state, spawned, _killed = mgr
+    m.auth.enabled = True
+    m.auth._ok = False   # simulate a preflight that already failed
+    m.auth._checked_at = float("inf")  # never expires within this test
+    m.tick()
+    assert spawned == []
+    assert m.pool.slots[0].state == SlotState.IDLE
+
+
+def test_broken_slot_notifies_once(mgr):
+    m, *_ = mgr
+    notified = []
+    m._notify = lambda key, message: notified.append((key, message))
+    slot = m.pool.slots[0]
+
+    slot.state = SlotState.BROKEN
+    m._reconcile_busy(m.started_at)
+    m._reconcile_busy(m.started_at)  # still broken — must not refire
+    assert len(notified) == 1
+    assert "BROKEN" in notified[0][1]
+
+    slot.state = SlotState.IDLE
+    m._reconcile_busy(m.started_at)
+    slot.state = SlotState.BROKEN
+    m._reconcile_busy(m.started_at)  # broken again after recovering — fires again
+    assert len(notified) == 2

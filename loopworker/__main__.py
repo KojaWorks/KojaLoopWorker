@@ -54,6 +54,7 @@ def _run_single(args) -> int:
         base_port=args.base_port,
         state_dir=args.state_dir,
     )
+    manager.auth.enabled = True  # a real unattended run: fail fast on a dead claude login
     if not args.no_dashboard:
         dashboard.serve(manager.snapshot, port=args.dashboard_port)
         manager.log(f"dashboard at http://127.0.0.1:{args.dashboard_port}")
