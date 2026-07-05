@@ -18,6 +18,7 @@ class SlotAction(str, Enum):
     REAP = "reap"                    # card left In progress — kill after grace
     CRASH_RECLAIM = "crash_reclaim"  # process dead while still In progress — release card
     HUNG_RECLAIM = "hung_reclaim"    # exceeded wallclock cap — kill + release card
+    AUTH_RECLAIM = "auth_reclaim"    # alive but wedged at the login prompt — release card
 
 
 def classify(
@@ -26,9 +27,11 @@ def classify(
     alive: bool,
     now: datetime,
     wallclock_cap: timedelta,
+    auth_failed: bool = False,
 ) -> tuple[SlotAction, str]:
-    """Decide a BUSY slot's fate. `alive` = its tmux session has a non-shell process.
-    Grace timing for REAP is applied by the caller via slot.done_since."""
+    """Decide a BUSY slot's fate. `alive` = its tmux session has a non-shell process;
+    `auth_failed` = its pane is showing claude's login/401 prompt. Grace timing for REAP
+    is applied by the caller via slot.done_since."""
     if card is None:
         return SlotAction.REAP, "card no longer exists"
     if card.status != CardStatus.IN_PROGRESS:
@@ -36,6 +39,11 @@ def classify(
     # Card is still In progress from here on.
     if not alive:
         return SlotAction.CRASH_RECLAIM, "worker process gone while card still In progress"
+    # Alive but stuck at the login prompt: the process won't recover on its own, so don't
+    # let it hold the slot until the wallclock cap — reclaim now and let a fresh worker retry
+    # (the AuthGate preflight then decides whether it's safe to spawn one yet).
+    if auth_failed:
+        return SlotAction.AUTH_RECLAIM, "worker hit an auth failure (login prompt)"
     if slot.started_at and now - slot.started_at > wallclock_cap:
         return SlotAction.HUNG_RECLAIM, f"exceeded wallclock cap ({wallclock_cap})"
     return SlotAction.KEEP, "healthy"

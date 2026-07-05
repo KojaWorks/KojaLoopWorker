@@ -13,10 +13,12 @@ import signal
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import tmux
+from .authgate import AuthGate
 from .backlog import build_adapter
 from .config import Manifest
 from .models import CardStatus, Slot, SlotState
@@ -87,6 +89,8 @@ class Manager:
         project_model: str | None = None,
         port_step: int = 100,
         base_ref: str = "origin/main",
+        auth_gate: AuthGate | None = None,
+        notify: Callable[[str, str], None] | None = None,
     ):
         self.manifest = manifest
         self.poll_interval = poll_interval
@@ -120,6 +124,12 @@ class Manager:
         self._stop = False          # exit the loop; finally reaps any live workers
         self._draining = False      # finish current workers, start no new ones
         self._sigint_count = 0      # ⌃C escalation: 1=drain, 2=force, 3=hard exit
+        # auth_gate=None (the default, unless a HostManager shares its own) builds an
+        # inert gate: enabled=False so ok() always returns True and never shells out —
+        # only __main__.py's real CLI entrypoints turn it on for an unattended run.
+        self.auth = auth_gate if auth_gate is not None else AuthGate(log=self.log)
+        self._notify = notify or (lambda key, message: None)
+        self._broken_notified: set[int] = set()  # id(slot) of slots already notified BROKEN
 
     # --- lifecycle ---------------------------------------------------------
     def run(self) -> None:
@@ -182,12 +192,18 @@ class Manager:
 
     # --- reconcile ---------------------------------------------------------
     def _reconcile_busy(self, now: datetime) -> None:
+        self._notify_broken()
         for slot in self.pool.slots:
             if slot.state != SlotState.BUSY:
                 continue
             card = self.adapter.get_card(slot.card_num)
             alive = tmux.worker_running(slot.session)
-            action, reason = classify(slot, card, alive, now, self.wallclock_cap)
+            # Only scrape the pane while the process is alive but the card's still open —
+            # that's the wedge case (a dead process is already CRASH_RECLAIM). Catches a
+            # worker that authed fine at spawn but hit a mid-session auth failure, which
+            # AuthGate's spawn-time preflight can't see.
+            auth_failed = alive and tmux.looks_like_auth_failure(tmux.capture(slot.session, lines=40))
+            action, reason = classify(slot, card, alive, now, self.wallclock_cap, auth_failed)
 
             if action == SlotAction.KEEP:
                 slot.done_since = None
@@ -200,7 +216,7 @@ class Manager:
                     self.log(f"slot {slot.index} ~{slot.card_num}: {reason}; reap grace started")
                 elif now - slot.done_since >= self.grace:
                     self._reap(slot, reason)
-            elif action in (SlotAction.CRASH_RECLAIM, SlotAction.HUNG_RECLAIM):
+            elif action in (SlotAction.CRASH_RECLAIM, SlotAction.HUNG_RECLAIM, SlotAction.AUTH_RECLAIM):
                 slot.activity = f"reclaiming — {reason}"
                 self.log(f"slot {slot.index} ~{slot.card_num}: {reason} — reclaiming card")
                 if card is not None:
@@ -217,12 +233,36 @@ class Manager:
             tmux.kill(slot.session)
         self.pool.recycle(slot)  # hot: back to warm IDLE; cold: teardown stack + worktree
 
+    def _notify_broken(self) -> None:
+        """Fire the notify hook once per slot transition into BROKEN — not every
+        reconcile tick, so a slot stuck BROKEN across many ticks doesn't spam.
+
+        Tracked by object identity (id(slot)), not slot.index: SlotPool.resize() can
+        retire a BROKEN slot and later hand a freshly-added Slot the same (now free)
+        index (see slots.py _free_index/_add_slot). An index-keyed set would wrongly
+        treat that brand-new slot as already notified if it happens to go BROKEN too."""
+        live = {id(s) for s in self.pool.slots}
+        self._broken_notified &= live  # drop entries for slots no longer in the pool
+        for slot in self.pool.slots:
+            broken = slot.state == SlotState.BROKEN
+            key = id(slot)
+            if broken and key not in self._broken_notified:
+                self._broken_notified.add(key)
+                self._notify(
+                    f"slot-broken:{self.manifest.project_name}:{slot.index}",
+                    f"LoopWorker: {self.manifest.project_name} slot {slot.index} is BROKEN — {slot.activity}",
+                )
+            elif not broken:
+                self._broken_notified.discard(key)
+
     # --- fill --------------------------------------------------------------
     def _fill_idle(self, now: datetime, max_new: int | None = None) -> None:
         """Spawn workers into available slots. max_new caps how many we may start this
         pass (the host's per-project share of the host-wide slot budget); None = no cap."""
         if max_new is not None and max_new <= 0:
             return
+        if not self.auth.ok():
+            return  # claude login failing — dispatch paused (AuthGate logs/notifies on transition)
         revived = self.pool.revive_broken()  # retry slots a fixable failure (e.g. a missing tool) broke
         if revived:
             self.log(f"revived {revived} broken cold slot(s) to retry provisioning")

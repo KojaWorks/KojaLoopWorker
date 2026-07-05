@@ -66,12 +66,24 @@ class HostConfig:
     max_slots: int = 4                 # host-wide RAM budget, in weighted slot-cost units
     #                                   (see ProjectRow.weight) — NOT a raw slot count when
     #                                   projects have non-default weights
+    # host-wide cap on concurrently RUNNING workers (cards in flight), independent of the
+    # weighted RAM budget: lets a host hold many cold slots for capacity but only auth/run
+    # a few claudes at once. Concurrent claudes on one account race the shared OAuth refresh
+    # and can trip session revocation, so keeping this low is an auth-safety measure, not
+    # just RAM. 0 → default to max_slots at load.
+    max_concurrent_workers: int = 0
     base_port: int = 54400
     port_step: int = 100
     roadmap_table: str = "roadmap"
     workers_table: str = "loop_workers"
     projects_table: str = "projects"
     brief_page: str = ""               # the shared generic loop page (url or id) all workers read
+    notify_command: str = ""           # shell template receiving an alert message on stdin
+    #                                   (worker auth failure, a slot marked BROKEN); empty = no-op
+
+    def __post_init__(self) -> None:
+        if self.max_concurrent_workers <= 0:  # unset → run as many at once as the budget allows
+            self.max_concurrent_workers = self.max_slots
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "HostConfig":
@@ -97,12 +109,14 @@ class HostConfig:
             anon_key=anon_key,
             clones_dir=Path(clones_dir).expanduser(),
             max_slots=raw.get("max_slots", 4),
+            max_concurrent_workers=raw.get("max_concurrent_workers", 0),
             base_port=raw.get("base_port", 54400),
             port_step=raw.get("port_step", 100),
             roadmap_table=backlog.get("roadmap_table", "roadmap"),
             workers_table=backlog.get("workers_table", "loop_workers"),
             projects_table=backlog.get("projects_table", "projects"),
             brief_page=backlog.get("brief_page", ""),
+            notify_command=raw.get("notify_command", ""),
         )
 
 

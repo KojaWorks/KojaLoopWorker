@@ -1,6 +1,7 @@
 """_pick_summary scrapes the worker's latest thinking/talking line from pane text,
 skipping claude's box-drawing / prompt / footer chrome."""
-from loopworker.tmux import _pick_summary, looks_like_trust_prompt
+from loopworker.tmux import (_pick_summary, looks_like_auth_failure,
+                             looks_like_trust_prompt)
 
 PANE = """\
 ❯ You are dijkstra, an autonomous LoopWorker.
@@ -16,6 +17,27 @@ PANE = """\
 
 def test_picks_latest_thinking_line():
     assert _pick_summary(PANE) == "✢ Percolating… (24s · ↑ 237 tokens)"
+
+
+def test_detects_login_prompt():
+    # the exact wedge seen in the field: a worker parked after mid-session auth loss
+    assert looks_like_auth_failure(
+        "⏺ Please run /login · API Error: 401 Invalid authentication credentials")
+    assert looks_like_auth_failure("Not logged in · Please run /login")
+
+
+def test_healthy_pane_is_not_an_auth_failure():
+    assert not looks_like_auth_failure(PANE)  # a normally-working worker
+
+
+def test_no_false_positive_on_self_referential_work():
+    # LoopWorker self-hosts, so a worker editing THIS detection code (or a card whose test
+    # output mentions the phrases) prints the bare strings but not claude's "·" chrome — it
+    # must NOT be misread as wedged and have its in-progress card reclaimed.
+    assert not looks_like_auth_failure(
+        '⏺ Edit(loopworker/tmux.py): r"Please run /login|401 Invalid authentication"')
+    assert not looks_like_auth_failure("  test output: expected 'Please run /login' in prompt")
+    assert not looks_like_auth_failure("FAILED test_auth - 401 Invalid authentication credentials")
 
 
 def test_falls_back_to_last_step_when_no_spinner():

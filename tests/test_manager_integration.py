@@ -80,11 +80,12 @@ def mgr(tmp_path, monkeypatch):
     monkeypatch.setattr(m.pool, "acquire", lambda s, slug: None)
 
     # control tmux from the test
-    state = {"alive": True}
+    state = {"alive": True, "pane": ""}
     spawned, killed = [], []
     monkeypatch.setattr(manager_mod.tmux, "spawn", lambda sess, cwd, argv, env=None: spawned.append(sess))
     monkeypatch.setattr(manager_mod.tmux, "kill", lambda sess: killed.append(sess))
     monkeypatch.setattr(manager_mod.tmux, "worker_running", lambda sess: state["alive"])
+    monkeypatch.setattr(manager_mod.tmux, "capture", lambda sess, lines=200: state["pane"])
     return m, state, spawned, killed
 
 
@@ -114,6 +115,22 @@ def test_spawn_keep_reap_cycle(mgr):
     assert slot.state == SlotState.IDLE
     assert killed == [spawned[0]]
     assert m.adapter.releases == []  # legitimately Shipped — not reclaimed
+
+
+def test_auth_wedged_worker_is_reclaimed(mgr):
+    # A worker whose auth dies mid-session parks at claude's login prompt: process still
+    # alive, card still In progress, under wallclock. Without detection it wedges the slot
+    # for the full cap; with it, the Manager reclaims the card and frees the slot at once.
+    # (Complements AuthGate's preflight, which only guards NEW spawns, not a live wedge.)
+    m, state, _spawned, killed = mgr
+    m.tick()                                   # spawn a worker; card 1 -> In progress
+    sess = m.pool.slots[0].session
+    assert m.pool.slots[0].state == SlotState.BUSY
+    state["pane"] = "⏺ Please run /login · API Error: 401 Invalid authentication credentials"
+    m.reconcile()                              # reconcile-only (no refill) to isolate the reclaim
+    assert killed == [sess]                     # wedged worker reaped immediately (grace=0)
+    assert m.adapter.releases == [1]            # card returned to Backlog for a fresh worker
+    assert m.pool.slots[0].state == SlotState.IDLE  # slot freed, not stuck until wallclock
 
 
 def test_launch_omits_model_flag_when_unset(mgr):
@@ -239,3 +256,54 @@ def test_crash_reclaim(mgr):
     assert m.adapter.releases == [1]
     assert m.adapter.cards[1].status == CardStatus.BACKLOG
     assert killed == [spawned[0]]
+
+
+def test_auth_gate_failing_pauses_fill(mgr):
+    m, _state, spawned, _killed = mgr
+    m.auth.enabled = True
+    m.auth._ok = False   # simulate a preflight that already failed
+    m.auth._checked_at = float("inf")  # never expires within this test
+    m.tick()
+    assert spawned == []
+    assert m.pool.slots[0].state == SlotState.IDLE
+
+
+def test_broken_slot_notifies_once(mgr):
+    m, *_ = mgr
+    notified = []
+    m._notify = lambda key, message: notified.append((key, message))
+    slot = m.pool.slots[0]
+
+    slot.state = SlotState.BROKEN
+    m._reconcile_busy(m.started_at)
+    m._reconcile_busy(m.started_at)  # still broken — must not refire
+    assert len(notified) == 1
+    assert "BROKEN" in notified[0][1]
+
+    slot.state = SlotState.IDLE
+    m._reconcile_busy(m.started_at)
+    slot.state = SlotState.BROKEN
+    m._reconcile_busy(m.started_at)  # broken again after recovering — fires again
+    assert len(notified) == 2
+
+
+def test_broken_slot_notifies_again_after_index_reuse(mgr):
+    # SlotPool.resize() can retire a BROKEN slot and later hand a brand-new Slot the
+    # same (now free) index (slots.py _free_index/_add_slot). An index-keyed
+    # "already notified" set would wrongly swallow the new slot's own BROKEN alert —
+    # tracking must be by slot identity, not slot.index.
+    from loopworker.models import Slot
+    m, *_ = mgr
+    notified = []
+    m._notify = lambda key, message: notified.append((key, message))
+    old = m.pool.slots[0]
+
+    old.state = SlotState.BROKEN
+    m._reconcile_busy(m.started_at)
+    assert len(notified) == 1
+
+    m.pool.slots.remove(old)  # simulate _retire() dropping the old slot
+    new = Slot(index=old.index, dir=old.dir, port=old.port, state=SlotState.BROKEN)
+    m.pool.slots.append(new)  # simulate _add_slot() reusing the freed index
+    m._reconcile_busy(m.started_at)
+    assert len(notified) == 2  # a genuinely new BROKEN slot — must notify again

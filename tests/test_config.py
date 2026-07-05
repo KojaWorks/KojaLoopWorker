@@ -99,6 +99,36 @@ def test_host_config_loads(tmp_path):
     assert h.clones_dir.is_absolute()                 # ~ expanded
     assert h.projects_table == "projects"             # default
     assert h.brief_page == "https://patch/app/loop"
+    assert h.notify_command == ""                      # default: no-op
+    assert h.max_concurrent_workers == 6               # unset -> defaults to max_slots
+
+
+def test_max_concurrent_workers_explicit_override(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(textwrap.dedent("""
+        worker_manager = "miquon"
+        clones_dir = "~/clones"
+        max_slots = 8
+        max_concurrent_workers = 3
+        [backlog]
+        api_base = "https://api.patch/"
+        anon_key = "anon-public"
+    """))
+    assert HostConfig.load(cfg).max_concurrent_workers == 3   # explicit cap honored, not max_slots
+
+
+def test_host_config_notify_command(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(textwrap.dedent("""
+        worker_manager = "miquon"
+        clones_dir = "~/clones"
+        notify_command = "curl -s -F message=@- https://example/notify"
+        [backlog]
+        api_base = "https://api.patch/"
+        anon_key = "anon-public"
+    """))
+    h = HostConfig.load(cfg)
+    assert h.notify_command == "curl -s -F message=@- https://example/notify"
 
 
 def test_host_config_missing_required_key(tmp_path):

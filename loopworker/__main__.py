@@ -54,6 +54,10 @@ def _run_single(args) -> int:
         base_port=args.base_port,
         state_dir=args.state_dir,
     )
+    # A real unattended run: fail fast on a dead claude login. No notify_command wiring
+    # here (that config lives on HostConfig, host-mode only) — single-project mode
+    # still pauses dispatch on a dead login, it just doesn't push an alert about it.
+    manager.auth.enabled = True
     if not args.no_dashboard:
         dashboard.serve(manager.snapshot, port=args.dashboard_port)
         manager.log(f"dashboard at http://127.0.0.1:{args.dashboard_port}")

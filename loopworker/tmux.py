@@ -75,6 +75,24 @@ def looks_like_trust_prompt(pane: str) -> bool:
     return bool(_TRUST_PROMPT.search(pane or ""))
 
 
+# A worker whose auth died mid-run parks at claude's login prompt, rendered as
+# "⏺ Please run /login · API Error: 401 …" (or "Not logged in · Please run /login" headless).
+# The process stays alive, so worker_running() still reports True and the slot would wedge
+# until the wallclock cap. Detect the prompt so the Manager can reap + release the card
+# immediately — the reactive complement to AuthGate's spawn-time preflight.
+#
+# Anchor on claude's runtime chrome — the "· API Error" / "· Please run" separator it prints
+# — NOT a bare "Please run /login" substring: this repo self-hosts, so a worker editing this
+# very file (or a card whose test output prints those words) must not be misread as wedged
+# and have its in-progress card reclaimed. The "·" pins it to claude's actual render.
+_AUTH_FAILED = re.compile(r"Please run /login\s*·\s*API Error|Not logged in\s*·\s*Please run /login", re.I)
+
+
+def looks_like_auth_failure(pane: str) -> bool:
+    """True if the pane shows claude's auth-failed/login prompt. Pure (no tmux) so it's testable."""
+    return bool(_AUTH_FAILED.search(pane or ""))
+
+
 def capture(session: str, lines: int = 200) -> str:
     """Recent pane scrollback, for the dashboard / debugging."""
     r = _tmux("capture-pane", "-p", "-t", session, "-S", f"-{lines}")
