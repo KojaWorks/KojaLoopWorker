@@ -494,6 +494,7 @@ class Manager:
                 for s in self.pool.slots
             ],
             "log": list(self.log_lines),
+            "card_links": self.adapter.card_links(),
         }
 
     # --- plumbing ----------------------------------------------------------

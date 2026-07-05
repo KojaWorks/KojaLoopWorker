@@ -65,6 +65,8 @@ class PatchAdapter(BacklogAdapter):
         roadmap_table: str = "roadmap",
         workers_table: str = "loop_workers",
         projects_table: str = "projects",
+        app_base: str = "",
+        roadmap_page_id: str = "",
         log: Callable[[str], None] = lambda msg: None,
         notify: Callable[[str, str], None] = lambda key, msg: None,
         retry_budget_seconds: float = _RETRY_BUDGET_SECONDS,
@@ -78,6 +80,8 @@ class PatchAdapter(BacklogAdapter):
             roadmap_table = opts.get("roadmap_table", "roadmap")
             workers_table = opts.get("workers_table", "loop_workers")
             projects_table = opts.get("projects_table", "projects")
+            app_base = opts.get("app_base", "")
+            roadmap_page_id = opts.get("roadmap_page_id", "")
         api_base = (api_base or "").rstrip("/")
         if not api_base:
             raise ValueError("api_base is required")
@@ -96,6 +100,14 @@ class PatchAdapter(BacklogAdapter):
         self.roadmap = roadmap_table
         self.workers = workers_table
         self.projects = projects_table
+        # App-link parts for the dashboard's ~NNN linkifier: the Patch APP origin (not the
+        # api_base, which is the API host) and the roadmap table's patch_items id. Both
+        # optional — unset means the dashboard just renders ~NNN as plain text.
+        self._app_base = (app_base or "").rstrip("/")
+        self._roadmap_page_id = roadmap_page_id or ""
+        # num -> row uuid, accumulated from every card we read (see _to_card). Lets the
+        # dashboard resolve ~NNN -> a row URL without a per-request API call.
+        self._card_index: dict[int, str] = {}
         self.worker_manager = worker_manager  # "" = serve every project (back-compat)
         self._log = log
         self._notify = notify
@@ -127,7 +139,8 @@ class PatchAdapter(BacklogAdapter):
         return cls(
             api_base=host.api_base, anon_key=host.anon_key, worker_manager=host.worker_manager,
             roadmap_table=host.roadmap_table, workers_table=host.workers_table,
-            projects_table=host.projects_table, log=log, notify=notify,
+            projects_table=host.projects_table, app_base=host.app_base,
+            roadmap_page_id=host.roadmap_page_id, log=log, notify=notify,
         )
 
     # --- reads -------------------------------------------------------------
@@ -256,7 +269,7 @@ class PatchAdapter(BacklogAdapter):
         return value[0] if isinstance(value, list) else value
 
     def _to_card(self, r: dict) -> Card:
-        return Card(
+        card = Card(
             id=r["id"],
             num=r["id_2"],
             title=r.get("title") or "",
@@ -270,6 +283,22 @@ class PatchAdapter(BacklogAdapter):
             project=self._rel_one(r.get("project")),
             model=r.get("model") or None,
         )
+        self._card_index[card.num] = card.id  # remember num -> uuid for dashboard links
+        return card
+
+    # --- dashboard ---------------------------------------------------------
+    def card_links(self) -> dict[str, str]:
+        """str(num) -> row-page URL for every card seen so far. Empty unless both the
+        app origin and roadmap page id are configured. Pattern (see reference URLs):
+        {app_base}/app/{roadmap_page_id}?row={row-uuid}&rowpage=1."""
+        if not self._app_base or not self._roadmap_page_id:
+            return {}
+        # list() snapshots the index atomically (one C-level op holding the GIL) — the poll
+        # thread mutates _card_index while the dashboard's HTTP handler thread calls this.
+        return {
+            str(num): f"{self._app_base}/app/{self._roadmap_page_id}?row={uuid}&rowpage=1"
+            for num, uuid in list(self._card_index.items())
+        }
 
     # Auth ----
     def _ensure_token(self, *, force: bool = False, retry: bool = False) -> None:
