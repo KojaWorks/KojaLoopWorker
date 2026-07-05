@@ -3,9 +3,12 @@ worker_manager is ours.
 
 Discovers projects from the `projects` table, clones each on demand under clones_dir,
 and runs a per-project Manager (reusing all its spawn/reconcile/reap logic) over a SINGLE
-shared backlog adapter. A host-wide slot budget (max_slots) bounds live Supabase stacks:
-hot projects keep warm pools (counted permanently); cold projects provision a slot per
-card from the leftover budget and tear it down after.
+shared backlog adapter. A host-wide slot budget (max_slots) bounds live stacks: hot
+projects keep warm pools (counted permanently); cold projects provision a slot per card
+from the leftover budget and tear it down after. The budget is spent in WEIGHTED units
+(each project's `weight`, default 1) rather than raw slot counts, since a slot's cost
+varies wildly by project — a warm Supabase stack (a dozen containers, several GB
+resident) is nothing like a cold native build (idle at rest). See _project_weight.
 
 Deterministic and non-AI, like the single-project Manager. One process per host, guarded
 by a lockfile.
@@ -26,6 +29,23 @@ from .backlog.patch import PatchAdapter, brief_pointer
 from .config import HostConfig, Manifest
 from .manager import _DEFAULT_WORKER_ENV, Manager, _pid_alive, _slug, watch_trust
 from .models import ProjectRow
+
+
+def _project_weight(row: ProjectRow | None) -> float:
+    """A project's relative cost per slot (default 1) — e.g. a warm Supabase stack costs
+    more RAM than a cold native build, so it should spend more of the host budget per
+    slot. Guards against a bad (zero/negative) config value falling back to the default
+    rather than corrupting the budget arithmetic."""
+    if row and row.weight and row.weight > 0:
+        return row.weight
+    return 1.0
+
+
+def _affordable(remaining: float, weight: float) -> int:
+    """floor(remaining / weight) as a slot count, tolerant of the tiny binary-float error
+    a weight like 0.1/0.3/1.2 introduces — a naive `remaining // weight` can silently
+    undercount by one slot (e.g. int(1 // 0.1) == 9, not 10)."""
+    return int(remaining / weight + 1e-9)
 
 
 class HostManager:
@@ -51,6 +71,7 @@ class HostManager:
         self.log_lines: deque[str] = deque(maxlen=200)
         self.managers: list[Manager] = []
         self._bands: dict[str, int] = {}   # project_id -> port-band index (freed on retire, reused)
+        self._weights: dict[str, float] = {}  # project_id -> slot cost (see _project_weight)
         self._stop = False
         self._draining = False
         self._sigint_count = 0
@@ -72,14 +93,17 @@ class HostManager:
                      "set [backlog].brief_page to the Managed Agent Loop page")
         self.managers = []
         self._bands = {}
+        self._weights = {}
         for row in rows:
             try:
                 manifest = self._load_row(row)
             except Exception as e:
                 self.log(f"skipping project {row.name!r}: {e}")
                 continue
+            self._weights[row.id] = _project_weight(row)
             self.managers.append(self._build_manager(row, manifest, self._alloc_band(row.id)))
-            self.log(f"  {row.name}: {'hot' if row.hot else 'cold'}, {manifest.slots} slot(s)")
+            weight_note = f", weight {row.weight:g}" if row.weight != 1.0 else ""
+            self.log(f"  {row.name}: {'hot' if row.hot else 'cold'}, {manifest.slots} slot(s){weight_note}")
 
     def reconcile_projects(self, now: datetime | None = None) -> None:
         """Re-read the served-project set from the backlog and reconcile it into the live
@@ -104,6 +128,7 @@ class HostManager:
                     self.log(f"  teardown of {m.manifest.project_name!r} hit an error: {e!r}")
                 self.managers.remove(m)
                 self._bands.pop(pid, None)
+                self._weights.pop(pid, None)
 
         for pid, row in rows.items():  # build newly-assigned projects
             if pid in current:
@@ -267,22 +292,28 @@ class HostManager:
 
     def _apply_slot_targets(self, rows: dict) -> None:
         """Resize each project's pool to its configured slot count, capping hot pools so
-        total hot slots stay within max_slots (in Manager order — earlier projects keep
-        theirs). Cold pools take their configured count as cheap COLD placeholders; the
-        real concurrency cap for cold work is enforced dynamically in _fill_all."""
+        total WEIGHTED hot slot cost stays within max_slots (in Manager order — earlier
+        projects keep theirs). A project's weight (default 1) is its relative cost per
+        slot — see _project_weight. Cold pools take their configured count as cheap COLD
+        placeholders; the real concurrency cap for cold work is enforced dynamically in
+        _fill_all."""
         remaining = self.host.max_slots
         for m in self.managers:
             row = rows.get(m.project_id)
+            weight = _project_weight(row)
+            self._weights[m.project_id] = weight
             desired = row.slots if (row and row.slots) else m.manifest.slots
             if m.pool.hot:
-                target = max(min(desired, remaining), 0)
-                remaining -= target
+                affordable = _affordable(remaining, weight)
+                target = max(min(desired, affordable), 0)
+                remaining -= target * weight
             else:
                 # Cold pools don't reserve budget (they draw from leftover in _fill_all),
                 # but the count is still capped to max_slots: a project's port band is only
                 # max_slots wide, so more slots than that would overflow into the next
                 # project's band and collide on a port. You can never run more than
-                # max_slots concurrently anyway, so extra cold slots buy nothing.
+                # max_slots concurrently anyway (weight only shrinks that further), so
+                # extra cold slots buy nothing.
                 target = min(desired, self.host.max_slots)
             # gate on active (non-retiring) count — resize() ignores retiring slots, so
             # counting them here would log a phantom resize every poll while one drains.
@@ -346,17 +377,21 @@ class HostManager:
 
     # --- lifecycle ---------------------------------------------------------
     def build(self) -> None:
-        """Provision warm pools, capping total hot slots to the host budget so warm
-        stacks never exceed max_slots (leaving the remainder for cold projects)."""
+        """Provision warm pools, capping total WEIGHTED hot slot cost to the host budget
+        so warm stacks never exceed max_slots worth of weight (leaving the remainder for
+        cold projects)."""
         remaining = self.host.max_slots
         for m in self.managers:
             if not m.pool.hot:
                 continue
-            if len(m.pool.slots) > remaining:
-                kept = max(remaining, 0)
-                self.log(f"capping hot {m.manifest.project_name} to {kept} slot(s) (host max_slots={self.host.max_slots})")
+            weight = self._weights.get(m.project_id, 1.0)
+            affordable = _affordable(remaining, weight)
+            if len(m.pool.slots) > affordable:
+                kept = max(affordable, 0)
+                self.log(f"capping hot {m.manifest.project_name} to {kept} slot(s) "
+                         f"(host max_slots={self.host.max_slots}, weight={weight:g})")
                 m.pool.slots = m.pool.slots[:kept]
-            remaining -= len(m.pool.slots)
+            remaining -= len(m.pool.slots) * weight
         for m in self.managers:
             m._reap_orphans()
             m.pool.build()
@@ -410,21 +445,23 @@ class HostManager:
 
     def _fill_all(self, now: datetime) -> None:
         """Hot projects fill their warm slots freely (those stacks are already counted in
-        the budget). Cold projects share the leftover budget, provisioning new stacks only
-        while live stacks stay under max_slots."""
+        the budget). Cold projects share the leftover WEIGHTED budget, provisioning new
+        stacks only while total weighted cost stays under max_slots."""
         hot = [m for m in self.managers if m.pool.hot]
         cold = [m for m in self.managers if not m.pool.hot]
         for m in hot:
             m.fill(now)
-        reserved_hot = sum(len(m.pool.slots) for m in hot)
-        cold_busy = sum(m.busy_count() for m in cold)
+        reserved_hot = sum(len(m.pool.slots) * self._weights.get(m.project_id, 1.0) for m in hot)
+        cold_busy = sum(m.busy_count() * self._weights.get(m.project_id, 1.0) for m in cold)
         remaining = self.host.max_slots - reserved_hot - cold_busy
         for m in cold:
-            if remaining <= 0:
-                break
+            weight = self._weights.get(m.project_id, 1.0)
+            affordable = _affordable(remaining, weight)
+            if affordable <= 0:
+                continue
             before = m.busy_count()
-            m.fill(now, max_new=remaining)
-            remaining -= m.busy_count() - before
+            m.fill(now, max_new=affordable)
+            remaining -= (m.busy_count() - before) * weight
 
     def _reap_all(self, reason: str) -> None:
         for m in self.managers:

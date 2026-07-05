@@ -32,21 +32,27 @@ adapters behind the same interface.
 One process per **host**. It reads the shared backlog's `projects` table for rows whose
 `worker_manager` is this host's, clones each repo on demand under `clones_dir`, and runs a
 per-project Manager over a single shared backlog adapter. A host-wide `max_slots` budget
-bounds live Supabase stacks: **hot** projects keep a warm pool (counted permanently);
-**cold** projects provision a slot per card from the leftover budget and tear it down after.
-Host config lives in `~/.loopworker/config.toml` (backlog connection, host id, clones dir,
-budget) — NOT in any project repo, so onboarding a project is just a table row + a
-`.loopworker/` contract. The host owns the lockfile, signals (⌃C drain→force→hard-exit),
-and the dashboard; it delegates per-project reconcile/spawn/reap to the Manager below.
+bounds live stacks: **hot** projects keep a warm pool (counted permanently); **cold**
+projects provision a slot per card from the leftover budget and tear it down after. The
+budget is spent in WEIGHTED units, not raw slot counts: each project's `weight` (default 1)
+is its relative RAM cost per slot — a warm Supabase stack (a dozen containers, several GB
+resident) is nothing like a cold native build (idle at rest) — so a heavier project's slots
+draw down more of the shared budget than a cheap one's. Host config lives in
+`~/.loopworker/config.toml` (backlog connection, host id, clones dir, budget) — NOT in any
+project repo, so onboarding a project is just a table row + a `.loopworker/` contract. The
+host owns the lockfile, signals (⌃C drain→force→hard-exit), and the dashboard; it delegates
+per-project reconcile/spawn/reap to the Manager below.
 
 The `projects` table is treated as **live config**: `reconcile_projects` re-reads it every
 poll and reconciles the delta into the running Managers without a restart — a newly assigned
-project is cloned + built, an unassigned one is drained + torn down, and a changed `slots`
+project is cloned + built, an unassigned one is drained + torn down, a changed `slots`
 count resizes the pool in place (`SlotPool.resize`; a BUSY slot is flagged `retiring` and
-torn down by `recycle` only after its card finishes, so a worker is never yanked mid-card). A
-failed read leaves the current set untouched — a transient backlog error must never be read
-as "no projects, retire everything." A `hot`⇄`cold` flip is the one change that still needs a
-restart (different provisioning model); it's logged when seen.
+torn down by `recycle` only after its card finishes, so a worker is never yanked mid-card),
+and a changed `weight` takes effect on the next budget recompute (`_apply_slot_targets`/
+`_fill_all`) — no restart either. A failed read leaves the current set untouched — a
+transient backlog error must never be read as "no projects, retire everything." A
+`hot`⇄`cold` flip is the one change that still needs a restart (different provisioning
+model); it's logged when seen.
 
 A teammate runs their own Host Manager on their own box (their compute + `claude` login)
 against the same backlog, scoped to their `worker_manager` — the owner's LLM budget is never
