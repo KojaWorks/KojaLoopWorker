@@ -13,6 +13,7 @@ by a lockfile.
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import subprocess
 import time
@@ -20,9 +21,10 @@ from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import tmux
 from .backlog.patch import PatchAdapter, brief_pointer
 from .config import HostConfig, Manifest
-from .manager import _DEFAULT_WORKER_ENV, Manager, _pid_alive, _slug
+from .manager import _DEFAULT_WORKER_ENV, Manager, _pid_alive, _slug, watch_trust
 from .models import ProjectRow
 
 
@@ -56,8 +58,9 @@ class HostManager:
     # --- discovery / clone -------------------------------------------------
     def discover(self) -> None:
         """Read served projects from the backlog, clone any missing, and build a
-        per-project Manager. A project whose clone lacks a .loopworker contract is
-        logged and skipped (not fatal — the others still run)."""
+        per-project Manager. A project whose clone lacks a .loopworker contract is logged
+        and skipped (not fatal — the others still run), after kicking a one-off scaffolding
+        agent to open a PR adding one (see _scaffold_if_needed)."""
         rows = self.adapter.list_projects()
         self.log(f"serving {len(rows)} project(s) as worker_manager={self.host.worker_manager!r}")
         # Auth forwarding is silent per-spawn, so say up front whether workers will get
@@ -129,11 +132,128 @@ class HostManager:
 
     def _load_row(self, row: ProjectRow) -> Manifest:
         """Clone the project on demand and load its .loopworker manifest, applying a
-        row-level slot-count override. Raises if the clone lacks a contract."""
-        manifest = Manifest.load(self._ensure_clone(row))
+        row-level slot-count override. Raises if the clone lacks a contract — after kicking
+        a one-off scaffolding attempt (see _scaffold_if_needed) so the project can eventually
+        onboard itself instead of sitting skipped forever."""
+        dest = self._ensure_clone(row)
+        try:
+            manifest = Manifest.load(dest)
+        except FileNotFoundError:
+            self._scaffold_if_needed(row)
+            raise
         if row.slots:
             manifest.slots = row.slots
         return manifest
+
+    def _scaffold_if_needed(self, row: ProjectRow) -> None:
+        """A registered project whose clone has no .loopworker contract can't be served. Kick
+        a one-off agent — in a throwaway clone of its own, never the shared clones_dir/<project>
+        directory _ensure_clone refreshes with `git reset --hard` — to inspect the repo and open
+        a PR adding a best-guess contract. Once per project (a marker file): a human reviewing
+        that PR shouldn't be fighting a respawn every poll interval. Best-effort: never raises,
+        so a scaffold failure can't take down discovery for the other projects."""
+        if not row.repo:
+            return
+        marker = self.state_dir / f"scaffold-{_slug(row.name)}.attempted"
+        if marker.exists():
+            return
+        session = f"lw-scaffold-{_slug(row.name)}"
+        if tmux.has_session(session):
+            return
+        # Nested under a "_scaffold" namespace (never a sibling like "<slug>-scaffold") so it
+        # can NEVER collide with another project's real clones_dir/_slug(name) directory —
+        # _slug() strips underscores, so no project's real clone dir can ever land here.
+        scaffold_dir = self.host.clones_dir / "_scaffold" / _slug(row.name)
+        try:
+            if scaffold_dir.exists():
+                shutil.rmtree(scaffold_dir)
+            scaffold_dir.parent.mkdir(parents=True, exist_ok=True)
+            r = subprocess.run(["git", "clone", row.repo, str(scaffold_dir)],
+                               capture_output=True, text=True)
+            if r.returncode != 0:
+                raise RuntimeError(f"git clone failed: {r.stderr.strip()}")
+            launch = self._write_scaffold_launch(scaffold_dir, row)
+            env = {k: os.environ[k] for k in _DEFAULT_WORKER_ENV if k in os.environ}
+            tmux.spawn(session, str(scaffold_dir), ["bash", str(launch)], env=env)
+            watch_trust(session, self.log)
+            marker.write_text(datetime.now(timezone.utc).isoformat())
+            self.log(f"no .loopworker contract for {row.name!r} — spawned scaffolding agent ({session})")
+        except Exception as e:
+            self.log(f"scaffold spawn failed for {row.name!r}: {e!r}")
+
+    def _write_scaffold_launch(self, scaffold_dir: Path, row: ProjectRow) -> Path:
+        prompt = self._scaffold_prompt(row)
+        # Local-only excludes (never committed themselves) so a `git add -A` by the agent
+        # can't sweep our own launch plumbing into the PR it opens for human review.
+        exclude = scaffold_dir / ".git" / "info" / "exclude"
+        with exclude.open("a") as f:
+            f.write("\n.loopworker-scaffold-prompt.txt\n.loopworker-scaffold-launch.sh\n")
+        (scaffold_dir / ".loopworker-scaffold-prompt.txt").write_text(prompt)
+        launch = scaffold_dir / ".loopworker-scaffold-launch.sh"
+        launch.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            f'cd "{scaffold_dir}"\n'
+            'PROMPT="$(cat .loopworker-scaffold-prompt.txt)"\n'
+            "unset USER\n"
+            'exec claude --permission-mode auto "$PROMPT"\n'
+        )
+        launch.chmod(0o755)
+        return launch
+
+    def _scaffold_prompt(self, row: ProjectRow) -> str:
+        """The reusable contract-authoring prompt. Self-contained: the scaffolding agent runs
+        in a fresh clone of THIS project, not of LoopWorker, so it can't read LoopWorker's own
+        examples/ — inline the manifest spec instead of pointing at it."""
+        spec_path = Path(__file__).resolve().parent.parent / "examples" / "loopworker-manifest.toml"
+        spec = spec_path.read_text() if spec_path.is_file() else ""
+        return (
+            f"You are a one-off LoopWorker scaffolding agent — NOT a card worker. This repo "
+            f"({row.name!r}, {row.repo}) is registered in the LoopWorker projects table but has "
+            f"no .loopworker/ contract yet, so the Manager can't serve any cards on it. Your job: "
+            f"inspect this repo's shape and add a best-guess .loopworker/ contract (manifest.toml "
+            f"+ provision.sh/reset.sh/verify.sh/teardown.sh), then open a PR for a human to "
+            f"review.\n\n"
+            f"You are UNATTENDED: no human is watching this terminal. NEVER ask an interactive "
+            f"question or wait for input. Where you're genuinely unsure of a design choice (the "
+            f"Patch portal URL, the brief page, secrets), make the most conservative guess, mark "
+            f"it clearly with a TODO comment, and call it out in the PR body instead of "
+            f"blocking.\n\n"
+            f"--- Contract format (this IS the schema — follow it exactly) ---\n{spec}\n\n"
+            f"--- Guessing the stack (adapt freely; these are hints, not a fixed list) ---\n"
+            f"- package.json (+ a supabase/ dir) -> web stack: provision = npm install (+ "
+            f"supabase start if used), verify = npm test / lint, teardown = supabase stop\n"
+            f"- *.xcodeproj or *.xcworkspace -> verify = xcodebuild build/test on a sane scheme\n"
+            f"- project.yml (XcodeGen) -> provision generates the project first (xcodegen "
+            f"generate)\n"
+            f"- Package.swift -> verify = swift test\n"
+            f"- pyproject.toml / requirements.txt -> provision = a venv + pip install, verify = "
+            f"pytest\n"
+            f"- nothing recognizable (a library/docs repo) -> a minimal contract: no ports, "
+            f"verify = whatever check exists (or a no-op that exits 0 if genuinely nothing to "
+            f"check), teardown.sh with nothing to do\n\n"
+            f"--- Steps ---\n"
+            f"1. Read the repo (package.json, Gemfile, Package.swift, project.yml, *.xcodeproj, "
+            f"pyproject.toml, requirements.txt, docker-compose.yml, README, etc.) to figure out "
+            f"its stack and how it's normally built/tested.\n"
+            f"2. Write .loopworker/manifest.toml per the schema above ([project].name = "
+            f"{_slug(row.name)!r}). You don't know this project's Patch portal URL or brief page "
+            f"— leave those as an obvious placeholder (e.g. \"# TODO: fill in\") and flag it "
+            f"prominently in the PR body.\n"
+            f"3. Write provision.sh (idempotent, first-time-per-slot setup), reset.sh (cheap, "
+            f"per-card reset — the isolation gate), verify.sh (the merge gate: must exit nonzero "
+            f"on failure), teardown.sh (undo what provision started). Each receives "
+            f"LOOPWORKER_SLOT_DIR and LOOPWORKER_PORT in its env — echo the port if the stack "
+            f"binds one, otherwise don't.\n"
+            f"4. Config files (*.toml, *.sh, *.yml) are 7-bit ASCII only — no em-dashes, no "
+            f"smart quotes.\n"
+            f"5. Commit on a new branch, push, and open a PR (gh pr create) explaining what you "
+            f"guessed, what you're unsure about, and what a human must fill in before merging. "
+            f"Do NOT merge it yourself — this is a best guess, not something you can verify "
+            f"against a live Manager.\n"
+            f"6. Then STOP. This is a one-off task, not a recurring card: do not touch the Patch "
+            f"backlog, do not claim or create any card, do not loop."
+        )
 
     def _alloc_band(self, project_id: str) -> int:
         """Assign a project the lowest free port-band index so two projects' slot ports

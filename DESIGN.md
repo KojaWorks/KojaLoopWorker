@@ -161,6 +161,19 @@ Why `provision` (heavy, once) is split from `reset` (cheap, every acquire): that
 warm-stack optimization. Port handshake: the Manager injects `LOOPWORKER_SLOT_DIR` and
 `LOOPWORKER_PORT` into the script + Worker environment; scripts read them.
 
+**Auto-scaffolding a missing contract.** A `projects` row can be added before its repo ships a
+`.loopworker/` contract — the host clones it, `Manifest.load` raises, and (once per project, a
+marker file in the host's state dir) `HostManager._scaffold_if_needed` kicks a one-off `claude`
+agent in a throwaway clone of its own (never the shared `clones_dir/<project>` directory
+`_ensure_clone` refreshes with `git reset --hard`, so the agent's in-progress commit can't be
+stomped by the next poll). The agent inspects the repo's shape, writes a best-guess contract, and
+opens a PR — a human reviews and merges it once, then the project onboards like any other on the
+next clone refresh. No AI runs in the host's own poll loop; the scaffolding work happens entirely
+inside the spawned agent, same as a card Worker. Known gap: unlike a card Worker, a scaffolding
+session has no wallclock cap or reaper — a hung agent's tmux session (`lw-scaffold-<project>`)
+just sits there until someone notices. Fine for an occasional, human-glanced-at one-off; would
+need the same reconcile/reap treatment as card Workers if this starts happening often.
+
 The **loop instructions / worker brief** are pointed to by the manifest and can be whatever suits the
 project: a Markdown file in the repo, a URL, or a Patch page (the live, canonical form today). For
 repo-file/url sources the Manager inlines the text into the spawn prompt; for a `patch-page` it hands
