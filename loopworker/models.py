@@ -62,6 +62,9 @@ class ProjectRow:
     slots: int | None = None             # override the manifest's slot count
     hot: bool = False                    # keep a warm pool vs cold-provision per card
     brief_ref: str | None = None         # optional Patch-page brief (alt to the repo BRIEF.md)
+    weight: float = 1.0                  # relative cost per slot (e.g. a warm Supabase stack
+    #                                      costs more RAM than a cold native build) — the host
+    #                                      slot budget (max_slots) is spent in these units
 
 
 @dataclass

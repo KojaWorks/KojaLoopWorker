@@ -119,6 +119,7 @@ class PatchAdapter(BacklogAdapter):
                 id=r["id"], name=r.get("name") or "", repo=r.get("repo"),
                 default_branch=r.get("default_branch") or "main",
                 slots=r.get("slots"), hot=bool(r.get("hot")), brief_ref=r.get("brief_ref"),
+                weight=float(r["weight"]) if r.get("weight") else 1.0,
             )
             for r in rows
         ]

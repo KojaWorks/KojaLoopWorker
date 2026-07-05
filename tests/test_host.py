@@ -125,7 +125,7 @@ def test_discover_builds_managers_and_applies_row(tmp_path, monkeypatch):
     monkeypatch.setattr(HostManager, "_ensure_clone", lambda self, row: tmp_path / "clone")
 
     h = _host(tmp_path, brief_page="https://patch/app/loop-abc", projects=[
-        ProjectRow(id="p1", name="Patch", repo="git@x", hot=True, slots=3),
+        ProjectRow(id="p1", name="Patch", repo="git@x", hot=True, slots=3, weight=2.0),
         ProjectRow(id="p2", name="GitZ", repo="git@y", hot=False,
                    default_branch="master", brief_ref="https://patch/app/gitz-brief"),
     ])
@@ -134,6 +134,7 @@ def test_discover_builds_managers_and_applies_row(tmp_path, monkeypatch):
     a, b = h.managers
     assert a.project_id == "p1" and a.pool.hot is True and a.manifest.slots == 3   # row.slots override
     assert a.name_prefix == "patch-"
+    assert h._weights == {"p1": 2.0, "p2": 1.0}                                    # weight tracked, default 1
     assert b.project_id == "p2" and b.pool.hot is False
     assert a.adapter is h.adapter                                                  # shared adapter injected
     # generic loop brief injected (no manifest on the shared adapter to resolve it from)
@@ -405,3 +406,48 @@ def test_apply_slot_targets_caps_cold_to_max_slots(tmp_path):
     h.managers = [cold]
     h._apply_slot_targets({"p1": ProjectRow(id="p1", name="C", hot=False, slots=6)})
     assert len(cold.pool.slots) == 3
+
+
+def test_apply_slot_targets_spends_budget_in_weighted_units(tmp_path):
+    # A weight=2 (heavy) project's slots cost double — 2 slots exhaust a 4-slot budget,
+    # leaving only 2 units (i.e. 2 slots at weight 1) for the next hot project.
+    h = _host(tmp_path, max_slots=4)
+    a = FakeMgr("A", hot=True, nslots=1, project_id="p1")
+    b = FakeMgr("B", hot=True, nslots=1, project_id="p2")
+    h.managers = [a, b]
+    rows = {"p1": ProjectRow(id="p1", name="A", hot=True, slots=3, weight=2.0),
+            "p2": ProjectRow(id="p2", name="B", hot=True, slots=3)}
+    h._apply_slot_targets(rows)
+    assert len(a.pool.slots) == 2    # 2 slots * weight 2 = the whole 4-unit budget
+    assert len(b.pool.slots) == 0    # nothing left
+    assert h._weights["p1"] == 2.0 and h._weights["p2"] == 1.0
+
+
+def test_apply_slot_targets_ignores_zero_or_negative_weight(tmp_path):
+    h = _host(tmp_path, max_slots=2)
+    a = FakeMgr("A", hot=True, nslots=1, project_id="p1")
+    h.managers = [a]
+    h._apply_slot_targets({"p1": ProjectRow(id="p1", name="A", hot=True, slots=1, weight=0)})
+    assert len(a.pool.slots) == 1     # weight=0 falls back to 1, not a divide-by-zero
+    assert h._weights["p1"] == 1.0
+
+
+def test_build_caps_hot_pools_to_weighted_budget(tmp_path):
+    h = _host(tmp_path, max_slots=4)
+    h.managers = [FakeMgr("A", hot=True, nslots=3, project_id="p1"),
+                  FakeMgr("B", hot=True, nslots=2, project_id="p2")]
+    h._weights = {"p1": 2.0, "p2": 1.0}
+    h.build()
+    assert len(h.managers[0].pool.slots) == 2     # A's 3 slots at weight 2 -> capped to 2 (4 units)
+    assert len(h.managers[1].pool.slots) == 0     # nothing left for B
+
+
+def test_fill_all_cold_shares_leftover_in_weighted_units(tmp_path):
+    h = _host(tmp_path, max_slots=4)
+    hot = FakeMgr("A", hot=True, nslots=1, will_take=1, project_id="p1")
+    cold = FakeMgr("C", hot=False, nslots=5, will_take=5, project_id="p2")
+    h.managers = [hot, cold]
+    h._weights = {"p1": 1.0, "p2": 2.0}   # C is a heavy (weight 2) cold project
+    h._fill_all(now=None)
+    # budget = 4 - reserved_hot(1*1) - cold_busy(0) = 3; at weight 2 that's 1 affordable slot
+    assert cold.fills == [1]

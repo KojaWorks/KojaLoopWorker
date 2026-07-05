@@ -41,10 +41,13 @@ cp config.toml.example ~/.loopworker/config.toml   # set worker_manager, backlog
 
 **Host mode (default).** `~/.loopworker/config.toml` is the source of truth: the backlog
 connection, this host's `worker_manager` id, where to clone projects, and `max_slots` (the
-host-wide cap on live stacks). The Manager reads the **projects** table for rows whose
-`worker_manager` is yours, clones each repo under `clones_dir`, and runs them: `hot`
-projects keep a warm pool, `cold` projects provision a slot per card and tear it down after,
-all within `max_slots`.
+host-wide RAM budget, in weighted slot-cost units). The Manager reads the **projects**
+table for rows whose `worker_manager` is yours, clones each repo under `clones_dir`, and
+runs them: `hot` projects keep a warm pool, `cold` projects provision a slot per card and
+tear it down after, all within `max_slots`. Each project may set a `weight` (default 1) —
+its relative RAM cost per slot, e.g. a warm Supabase stack (a dozen containers, several GB
+resident) might be `weight = 2` next to a cold native build's `weight = 1` — so the budget
+reflects that slots aren't equally expensive, not just how many are live.
 
 The **projects** table is live config, re-read every poll — no restart needed. Assign a new
 project to your host and it's cloned + started on the next tick; unassign one and it drains +

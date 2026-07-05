@@ -63,7 +63,9 @@ class HostConfig:
     api_base: str
     anon_key: str
     clones_dir: Path                   # where project repos are cloned
-    max_slots: int = 4                 # host-wide cap on concurrent live stacks (RAM budget)
+    max_slots: int = 4                 # host-wide RAM budget, in weighted slot-cost units
+    #                                   (see ProjectRow.weight) — NOT a raw slot count when
+    #                                   projects have non-default weights
     base_port: int = 54400
     port_step: int = 100
     roadmap_table: str = "roadmap"
