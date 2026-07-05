@@ -97,7 +97,9 @@ def test_spawn_keep_reap_cycle(mgr):
     assert slot.state == SlotState.BUSY
     assert spawned == [slot.session]
     assert m.adapter.claims == [(1, "w1")]
-    assert (Path(slot.dir) / ".loopworker-launch.sh").exists()
+    launch = (Path(slot.dir) / ".loopworker-launch.sh").read_text()
+    # claude-code 2.1.201: USER in the env 401s interactive sessions once MCP tools load
+    assert "unset USER" in launch and launch.index("unset USER") < launch.index("exec claude")
 
     # tick 2: worker alive, card still In progress -> KEEP
     m.tick()
