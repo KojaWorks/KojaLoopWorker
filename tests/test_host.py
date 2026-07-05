@@ -200,7 +200,8 @@ def _scaffold_host(tmp_path, monkeypatch, *, clone_ok=True, session_running=Fals
     def fake_run(argv, **kw):
         calls["clone"].append(argv)
         if clone_ok:
-            Path(argv[-1]).mkdir(parents=True, exist_ok=True)   # simulate `git clone` creating the dir
+            # simulate `git clone` creating the dir (with the .git/info/ a real clone ships)
+            (Path(argv[-1]) / ".git" / "info").mkdir(parents=True, exist_ok=True)
         return types.SimpleNamespace(returncode=0 if clone_ok else 1, stderr="" if clone_ok else "boom")
 
     monkeypatch.setattr(host_mod.subprocess, "run", fake_run)
@@ -221,13 +222,61 @@ def test_scaffold_spawns_once_per_project(tmp_path, monkeypatch):
     assert len(calls["spawn"]) == 1
     session, cwd, argv, env = calls["spawn"][0]
     assert session == "lw-scaffold-broken-repo"
-    assert cwd == str(h.host.clones_dir / "broken-repo-scaffold")
+    # nested under _scaffold/ (never a "<slug>-scaffold" sibling — see collision-safety test below)
+    assert cwd == str(h.host.clones_dir / "_scaffold" / "broken-repo")
     assert argv == ["bash", str(Path(cwd) / ".loopworker-scaffold-launch.sh")]
     marker = h.state_dir / "scaffold-broken-repo.attempted"
     assert marker.exists()
 
     h._scaffold_if_needed(row)  # second call: marker guards against a respawn
     assert len(calls["spawn"]) == 1
+
+
+def test_scaffold_dir_cannot_collide_with_a_real_project_clone_dir(tmp_path, monkeypatch):
+    # Regression: an old "<slug>-scaffold" sibling naming would collide with a project whose
+    # OWN name happens to slug to that string (e.g. real project "Broken Scaffold" cloning to
+    # clones_dir/broken-scaffold — the same path "Broken"'s scaffold used to rmtree into).
+    # Nesting under "_scaffold/" makes this impossible: _slug() strips underscores, so no
+    # project's real clone dir (clones_dir/_slug(name)) can ever equal clones_dir/_scaffold/...
+    h, calls = _scaffold_host(tmp_path, monkeypatch)
+    h._scaffold_if_needed(ProjectRow(id="p1", name="Broken", repo="git@x"))
+    scaffold_dir = Path(calls["spawn"][0][1])
+    assert scaffold_dir.parent.name == "_scaffold"
+    real_clone_dir = h.host.clones_dir / _slug_of("Broken Scaffold")
+    assert scaffold_dir != real_clone_dir
+    assert not str(scaffold_dir).startswith(str(real_clone_dir))
+
+
+def _slug_of(name):
+    from loopworker.manager import _slug
+    return _slug(name)
+
+
+def test_scaffold_writes_launch_script_and_excludes_its_own_files(tmp_path, monkeypatch):
+    h, calls = _scaffold_host(tmp_path, monkeypatch)
+    h._scaffold_if_needed(ProjectRow(id="p1", name="Melur", repo="git@x:melur.git"))
+    scaffold_dir = Path(calls["spawn"][0][1])
+
+    launch = (scaffold_dir / ".loopworker-scaffold-launch.sh").read_text()
+    assert "unset USER" in launch
+    assert 'exec claude --permission-mode auto "$PROMPT"' in launch
+    assert 'cat .loopworker-scaffold-prompt.txt' in launch
+
+    prompt_file = (scaffold_dir / ".loopworker-scaffold-prompt.txt").read_text()
+    assert prompt_file == h._scaffold_prompt(ProjectRow(id="p1", name="Melur", repo="git@x:melur.git"))
+
+    # the agent's own plumbing must never leak into the PR it opens
+    exclude = (scaffold_dir / ".git" / "info" / "exclude").read_text()
+    assert ".loopworker-scaffold-prompt.txt" in exclude
+    assert ".loopworker-scaffold-launch.sh" in exclude
+
+
+def test_scaffold_forwards_default_worker_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok-123")
+    h, calls = _scaffold_host(tmp_path, monkeypatch)
+    h._scaffold_if_needed(ProjectRow(id="p1", name="Melur", repo="git@x:melur.git"))
+    _, _, _, env = calls["spawn"][0]
+    assert env == {"CLAUDE_CODE_OAUTH_TOKEN": "tok-123"}
 
 
 def test_scaffold_skips_without_repo(tmp_path, monkeypatch):

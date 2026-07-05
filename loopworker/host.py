@@ -160,11 +160,14 @@ class HostManager:
         session = f"lw-scaffold-{_slug(row.name)}"
         if tmux.has_session(session):
             return
-        scaffold_dir = self.host.clones_dir / f"{_slug(row.name)}-scaffold"
+        # Nested under a "_scaffold" namespace (never a sibling like "<slug>-scaffold") so it
+        # can NEVER collide with another project's real clones_dir/_slug(name) directory —
+        # _slug() strips underscores, so no project's real clone dir can ever land here.
+        scaffold_dir = self.host.clones_dir / "_scaffold" / _slug(row.name)
         try:
             if scaffold_dir.exists():
                 shutil.rmtree(scaffold_dir)
-            self.host.clones_dir.mkdir(parents=True, exist_ok=True)
+            scaffold_dir.parent.mkdir(parents=True, exist_ok=True)
             r = subprocess.run(["git", "clone", row.repo, str(scaffold_dir)],
                                capture_output=True, text=True)
             if r.returncode != 0:
@@ -180,6 +183,11 @@ class HostManager:
 
     def _write_scaffold_launch(self, scaffold_dir: Path, row: ProjectRow) -> Path:
         prompt = self._scaffold_prompt(row)
+        # Local-only excludes (never committed themselves) so a `git add -A` by the agent
+        # can't sweep our own launch plumbing into the PR it opens for human review.
+        exclude = scaffold_dir / ".git" / "info" / "exclude"
+        with exclude.open("a") as f:
+            f.write("\n.loopworker-scaffold-prompt.txt\n.loopworker-scaffold-launch.sh\n")
         (scaffold_dir / ".loopworker-scaffold-prompt.txt").write_text(prompt)
         launch = scaffold_dir / ".loopworker-scaffold-launch.sh"
         launch.write_text(
