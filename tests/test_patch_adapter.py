@@ -54,6 +54,15 @@ def test_relation_normalization(adapter):
     assert c3.assignee is None and c3.blocked_by == []
 
 
+def test_card_model_column_mapped(adapter):
+    c = adapter._to_card(_row(1, model="fable"))
+    assert c.model == "fable"
+    c2 = adapter._to_card(_row(2))
+    assert c2.model is None                      # missing column -> None (project default applies)
+    c3 = adapter._to_card(_row(3, model=""))
+    assert c3.model is None                      # blank select value -> None, not ""
+
+
 def test_list_workable_filters_and_sorts(adapter, monkeypatch):
     rows = [
         _row(1, priority=10),                                  # workable
@@ -77,7 +86,7 @@ def test_list_projects_maps_rows(adapter, monkeypatch):
     adapter.worker_manager = "miquon"
     rows = [
         {"id": "p1", "name": "Patch", "repo": "git@x", "default_branch": "main",
-         "slots": 3, "hot": True, "brief_ref": None, "weight": 2},
+         "slots": 3, "hot": True, "brief_ref": None, "weight": 2, "model": "opus"},
         {"id": "p2", "name": "GitZ", "repo": None, "default_branch": None,
          "slots": None, "hot": False, "brief_ref": "u"},
     ]
@@ -88,6 +97,7 @@ def test_list_projects_maps_rows(adapter, monkeypatch):
     assert ps[1].default_branch == "main" and ps[1].hot is False  # null default_branch -> "main"
     assert ps[0].weight == 2.0                                   # explicit weight parsed
     assert ps[1].weight == 1.0                                   # missing column -> default
+    assert ps[0].model == "opus" and ps[1].model is None         # missing/empty column -> None default
 
 
 def test_no_project_filter_when_worker_manager_unset(adapter, monkeypatch):

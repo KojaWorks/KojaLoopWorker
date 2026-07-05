@@ -125,7 +125,7 @@ def test_discover_builds_managers_and_applies_row(tmp_path, monkeypatch):
     monkeypatch.setattr(HostManager, "_ensure_clone", lambda self, row: tmp_path / "clone")
 
     h = _host(tmp_path, brief_page="https://patch/app/loop-abc", projects=[
-        ProjectRow(id="p1", name="Patch", repo="git@x", hot=True, slots=3, weight=2.0),
+        ProjectRow(id="p1", name="Patch", repo="git@x", hot=True, slots=3, weight=2.0, model="opus"),
         ProjectRow(id="p2", name="GitZ", repo="git@y", hot=False,
                    default_branch="master", brief_ref="https://patch/app/gitz-brief"),
     ])
@@ -135,6 +135,7 @@ def test_discover_builds_managers_and_applies_row(tmp_path, monkeypatch):
     assert a.project_id == "p1" and a.pool.hot is True and a.manifest.slots == 3   # row.slots override
     assert a.name_prefix == "patch-"
     assert h._weights == {"p1": 2.0, "p2": 1.0}                                    # weight tracked, default 1
+    assert a._project_model == "opus" and b._project_model is None                # row.model wired per project
     assert b.project_id == "p2" and b.pool.hot is False
     assert a.adapter is h.adapter                                                  # shared adapter injected
     # generic loop brief injected (no manifest on the shared adapter to resolve it from)

@@ -47,7 +47,11 @@ runs them: `hot` projects keep a warm pool, `cold` projects provision a slot per
 tear it down after, all within `max_slots`. Each project may set a `weight` (default 1) —
 its relative RAM cost per slot, e.g. a warm Supabase stack (a dozen containers, several GB
 resident) might be `weight = 2` next to a cold native build's `weight = 1` — so the budget
-reflects that slots aren't equally expensive, not just how many are live.
+reflects that slots aren't equally expensive, not just how many are live. Each project may
+also set a `model` (a CLI alias: `opus`/`fable`/`sonnet`/`haiku`) — the default a worker on
+that project is spawned with; a card's own `Model` field (in the shared roadmap table)
+overrides it for that one card. Neither set -> the `claude` CLI's own default, unchanged
+from before this existed.
 
 The **projects** table is live config, re-read every poll — no restart needed. Assign a new
 project to your host and it's cloned + started on the next tick; unassign one and it drains +

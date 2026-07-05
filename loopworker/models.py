@@ -46,6 +46,7 @@ class Card:
     assignee: str | None = None          # id of the owning worker, if claimed
     solved_in_pr: str | None = None
     project: str | None = None           # id of the projects row this card belongs to
+    model: str | None = None             # CLI model alias override (opus/fable/sonnet/haiku); "" = project default
 
     @property
     def is_epic(self) -> bool:
@@ -65,6 +66,7 @@ class ProjectRow:
     weight: float = 1.0                  # relative cost per slot (e.g. a warm Supabase stack
     #                                      costs more RAM than a cold native build) — the host
     #                                      slot budget (max_slots) is spent in these units
+    model: str | None = None             # default CLI model alias for this project's workers; "" = CLI default
 
 
 @dataclass

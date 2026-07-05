@@ -37,7 +37,11 @@ projects provision a slot per card from the leftover budget and tear it down aft
 budget is spent in WEIGHTED units, not raw slot counts: each project's `weight` (default 1)
 is its relative RAM cost per slot — a warm Supabase stack (a dozen containers, several GB
 resident) is nothing like a cold native build (idle at rest) — so a heavier project's slots
-draw down more of the shared budget than a cheap one's. Host config lives in
+draw down more of the shared budget than a cheap one's. A project's `model` (CLI alias:
+opus/fable/sonnet/haiku) sets the default a worker is spawned with (`--model`); a card's
+own `model` (roadmap table) overrides it for that one card. Resolved in
+`Manager._resolve_model` and applied in `_write_launch`; neither set omits `--model`
+entirely, so the CLI's own default is unchanged. Host config lives in
 `~/.loopworker/config.toml` (backlog connection, host id, clones dir, budget) — NOT in any
 project repo, so onboarding a project is just a table row + a `.loopworker/` contract. The
 host owns the lockfile, signals (⌃C drain→force→hard-exit), and the dashboard; it delegates

@@ -120,6 +120,7 @@ class PatchAdapter(BacklogAdapter):
                 default_branch=r.get("default_branch") or "main",
                 slots=r.get("slots"), hot=bool(r.get("hot")), brief_ref=r.get("brief_ref"),
                 weight=float(r["weight"]) if r.get("weight") else 1.0,
+                model=r.get("model") or None,
             )
             for r in rows
         ]
@@ -247,6 +248,7 @@ class PatchAdapter(BacklogAdapter):
             assignee=self._rel_one(r.get("assignee")),
             solved_in_pr=r.get("solved_in_pr"),
             project=self._rel_one(r.get("project")),
+            model=r.get("model") or None,
         )
 
     # Auth ----

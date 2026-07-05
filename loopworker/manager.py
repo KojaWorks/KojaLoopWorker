@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import signal
 import threading
 import time
@@ -83,6 +84,7 @@ class Manager:
         hot: bool = True,
         brief: str | None = None,
         project_brief: str | None = None,
+        project_model: str | None = None,
         port_step: int = 100,
         base_ref: str = "origin/main",
     ):
@@ -104,6 +106,9 @@ class Manager:
         # leaves them None and resolves via the manifest at spawn time.
         self._brief = brief
         self._project_brief = project_brief
+        # per-project default model (from the projects table, host mode only); a card's
+        # own `model` (roadmap.model) overrides it. Neither set -> omit --model (CLI default).
+        self._project_model = project_model
         self.pool = SlotPool(manifest, base_port=base_port, port_step=port_step,
                              log=self.log, hot=hot, base_ref=base_ref)
         self.state_dir = (state_dir or Path("state") / manifest.project_name).resolve()
@@ -386,10 +391,17 @@ class Manager:
             f"port is {slot.port}."
         )
 
+    def _resolve_model(self, card) -> str | None:
+        """card.model overrides the project's default (self._project_model); neither set
+        means omit --model entirely, keeping today's CLI-default behavior."""
+        return card.model or self._project_model or None
+
     def _write_launch(self, slot: Slot, card, worker) -> Path:
         prompt = self._build_prompt(slot, card, worker)
         slot_dir = Path(slot.dir)
         (slot_dir / ".loopworker-prompt.txt").write_text(prompt)
+        model = self._resolve_model(card)
+        model_flag = f"--model {shlex.quote(model)} " if model else ""
         launch = slot_dir / ".loopworker-launch.sh"
         launch.write_text(
             "#!/usr/bin/env bash\n"
@@ -406,8 +418,10 @@ class Manager:
             # always load MCP tools, so strip it until upstream fixes it (bisected 2026-07-05).
             "unset USER\n"
             # auto mode: the Worker runs unattended, so it must not block on
-            # per-tool permission prompts (acceptEdits still prompts for MCP/bash).
-            'exec claude --permission-mode auto "$PROMPT"\n'
+            # per-tool permission prompts (acceptEdits still prompts for MCP/bash). model_flag
+            # is the resolved card/project model override (see _resolve_model); empty when
+            # neither is set, so the CLI picks its own default.
+            f'exec claude --permission-mode auto {model_flag}"$PROMPT"\n'
         )
         launch.chmod(0o755)
         return launch
