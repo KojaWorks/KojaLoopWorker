@@ -30,6 +30,16 @@ def test_healthy_pane_is_not_an_auth_failure():
     assert not looks_like_auth_failure(PANE)  # a normally-working worker
 
 
+def test_no_false_positive_on_self_referential_work():
+    # LoopWorker self-hosts, so a worker editing THIS detection code (or a card whose test
+    # output mentions the phrases) prints the bare strings but not claude's "·" chrome — it
+    # must NOT be misread as wedged and have its in-progress card reclaimed.
+    assert not looks_like_auth_failure(
+        '⏺ Edit(loopworker/tmux.py): r"Please run /login|401 Invalid authentication"')
+    assert not looks_like_auth_failure("  test output: expected 'Please run /login' in prompt")
+    assert not looks_like_auth_failure("FAILED test_auth - 401 Invalid authentication credentials")
+
+
 def test_falls_back_to_last_step_when_no_spinner():
     pane = "⏺ Editing app/src/views/NewView.tsx\n───\n❯\n  ⏵⏵ auto mode on (shift+tab to cycle)\n"
     assert _pick_summary(pane) == "⏺ Editing app/src/views/NewView.tsx"
