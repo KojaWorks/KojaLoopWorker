@@ -2,6 +2,7 @@
 The PostgREST verbs (_get/_patch/_post) are stubbed; everything above them is real."""
 from pathlib import Path
 
+import httpx
 import pytest
 
 from loopworker.config import (BacklogConfig, BriefConfig, Manifest,
@@ -170,6 +171,74 @@ def test_exchange_sets_bearer_and_caches(monkeypatch):
     assert posts == [("https://api.patch/functions/v1/pat-exchange", "pat_abc", "anon-test")]
     a._ensure_token()                       # cached -> no second exchange
     assert len(posts) == 1
+
+
+class _Resp:
+    """A scripted pat-exchange response for the retry tests."""
+    def __init__(self, code, token="jwt"):
+        self.status_code = code
+        self._token = token
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError("err", request=None, response=None)
+    def json(self):
+        return {"access_token": self._token, "expires_at": 9_999_999_999}
+
+
+def test_exchange_retries_transient_5xx_then_succeeds(monkeypatch):
+    # prod mid-redeploy: 502, 502, then 200 -> the adapter waits it out and starts.
+    monkeypatch.setenv("PATCH_PAT", "pat_abc")
+    codes, posts = [502, 502, 200], []
+    def fake_post(url, json, headers, timeout):
+        code = codes.pop(0); posts.append(code); return _Resp(code)
+    monkeypatch.setattr("loopworker.backlog.patch.httpx.post", fake_post)
+    sleeps = []
+    monkeypatch.setattr("loopworker.backlog.patch.time.sleep", lambda s: sleeps.append(s))
+    a = PatchAdapter(_manifest())
+    assert a._client.headers["Authorization"] == "Bearer jwt"
+    assert posts == [502, 502, 200]        # retried through both 5xx windows
+    assert sleeps == [10.0, 20.0]          # capped exponential backoff between attempts
+
+
+def test_exchange_retries_connect_error(monkeypatch):
+    # A connect failure (Kong stale upstream) is transient too, not fatal.
+    monkeypatch.setenv("PATCH_PAT", "pat_abc")
+    seq = [httpx.ConnectError("boom"), _Resp(200)]
+    def fake_post(url, json, headers, timeout):
+        item = seq.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+    monkeypatch.setattr("loopworker.backlog.patch.httpx.post", fake_post)
+    monkeypatch.setattr("loopworker.backlog.patch.time.sleep", lambda s: None)
+    a = PatchAdapter(_manifest())
+    assert a._client.headers["Authorization"] == "Bearer jwt"
+
+
+def test_exchange_fails_fast_on_auth(monkeypatch):
+    # A genuine bad/revoked PAT (401) must NOT be retried — surface immediately.
+    monkeypatch.setenv("PATCH_PAT", "pat_bad")
+    posts = []
+    monkeypatch.setattr("loopworker.backlog.patch.httpx.post",
+                        lambda url, json, headers, timeout: posts.append(1) or _Resp(401))
+    sleeps = []
+    monkeypatch.setattr("loopworker.backlog.patch.time.sleep", lambda s: sleeps.append(s))
+    with pytest.raises(RuntimeError, match="rejected PATCH_PAT"):
+        PatchAdapter(_manifest())
+    assert len(posts) == 1 and sleeps == []      # one attempt, no backoff
+
+
+def test_exchange_gives_up_and_notifies_after_budget(monkeypatch):
+    # A sustained outage past the retry budget gives up with a clear error and alerts.
+    monkeypatch.setenv("PATCH_PAT", "pat_abc")
+    monkeypatch.setattr("loopworker.backlog.patch.httpx.post",
+                        lambda url, json, headers, timeout: _Resp(503))
+    monkeypatch.setattr("loopworker.backlog.patch.time.sleep", lambda s: None)
+    alerts = []
+    with pytest.raises(RuntimeError, match="giving up"):
+        PatchAdapter(_manifest(), retry_budget_seconds=25,
+                     notify=lambda key, msg: alerts.append((key, msg)))
+    assert alerts and alerts[0][0] == "patch-unreachable"
 
 
 def test_card_status_parse_tolerates_unknown():

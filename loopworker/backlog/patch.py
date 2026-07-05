@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 import re
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 import httpx
@@ -31,6 +32,13 @@ from ..models import Card, CardStatus, ProjectRow, Worker
 from .base import BacklogAdapter
 
 _UUID_TAIL = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", re.I)
+
+# PAT-exchange backoff: every merge to main recreates the prod stack, so a Manager
+# (re)start colliding with a 5xx window is routine. Retry transient backend errors
+# with capped exponential backoff before giving up (a genuinely bad PAT still 401s fast).
+_RETRY_BASE_SECONDS = 10.0
+_RETRY_CAP_SECONDS = 120.0
+_RETRY_BUDGET_SECONDS = 600.0
 
 
 def brief_pointer(ref: str) -> str:
@@ -57,6 +65,9 @@ class PatchAdapter(BacklogAdapter):
         roadmap_table: str = "roadmap",
         workers_table: str = "loop_workers",
         projects_table: str = "projects",
+        log: Callable[[str], None] = lambda msg: None,
+        notify: Callable[[str, str], None] = lambda key, msg: None,
+        retry_budget_seconds: float = _RETRY_BUDGET_SECONDS,
     ) -> None:
         super().__init__(manifest)
         if manifest is not None:  # single-project mode: connection lives in the manifest
@@ -86,6 +97,9 @@ class PatchAdapter(BacklogAdapter):
         self.workers = workers_table
         self.projects = projects_table
         self.worker_manager = worker_manager  # "" = serve every project (back-compat)
+        self._log = log
+        self._notify = notify
+        self._retry_budget = retry_budget_seconds
         self._pat = pat
         self._anon = anon_key
         self._exchange_url = f"{api_base}/functions/v1/pat-exchange"
@@ -101,13 +115,19 @@ class PatchAdapter(BacklogAdapter):
         self._ensure_token()  # fail fast at startup if the PAT is bad
 
     @classmethod
-    def from_host(cls, host: HostConfig) -> "PatchAdapter":
+    def from_host(
+        cls,
+        host: HostConfig,
+        *,
+        log: Callable[[str], None] = lambda msg: None,
+        notify: Callable[[str, str], None] = lambda key, msg: None,
+    ) -> "PatchAdapter":
         """Build the shared adapter for host mode — connection from HostConfig, no
-        per-project manifest."""
+        per-project manifest. log/notify surface retry progress and give-up alerts."""
         return cls(
             api_base=host.api_base, anon_key=host.anon_key, worker_manager=host.worker_manager,
             roadmap_table=host.roadmap_table, workers_table=host.workers_table,
-            projects_table=host.projects_table,
+            projects_table=host.projects_table, log=log, notify=notify,
         )
 
     # --- reads -------------------------------------------------------------
@@ -254,25 +274,56 @@ class PatchAdapter(BacklogAdapter):
     # Auth ----
     def _ensure_token(self, *, force: bool = False) -> None:
         """Exchange the PAT for a fresh owner JWT when missing/near-expiry/forced.
-        Re-exchanging (vs. silently reusing) is how revocation takes effect."""
+        Re-exchanging (vs. silently reusing) is how revocation takes effect. Transient
+        backend errors (5xx / connect failures) are retried with capped exponential
+        backoff — a Manager (re)start colliding with a prod redeploy shouldn't be fatal.
+        A genuine auth rejection (401/403) still fails fast: the PAT is bad."""
         if not force and self._access_token and time.time() < self._access_exp - 60:
             return
-        r = httpx.post(
-            self._exchange_url,
-            json={"token": self._pat},
-            headers={"apikey": self._anon, "Content-Type": "application/json"},
-            timeout=30,
-        )
-        if r.status_code == 401:
+        elapsed = 0.0
+        delay = _RETRY_BASE_SECONDS
+        while True:
+            err = self._try_exchange()
+            if err is None:
+                return
+            if elapsed >= self._retry_budget:
+                msg = (f"Patch backend still unreachable ({err}) after ~{int(elapsed)}s of "
+                       "retries — giving up.")
+                self._notify("patch-unreachable", f"LoopWorker: {msg}")
+                raise RuntimeError(msg)
+            wait = min(delay, self._retry_budget - elapsed)
+            self._log(f"Patch pat-exchange failed ({err}); retrying in {int(wait)}s")
+            time.sleep(wait)
+            elapsed += wait
+            delay = min(delay * 2, _RETRY_CAP_SECONDS)
+
+    def _try_exchange(self) -> str | None:
+        """One PAT-exchange attempt. Returns None on success (token cached); a short
+        reason string on a transient failure the caller should retry. Raises on a genuine
+        auth rejection (401/403) or any other non-transient error (unexpected 4xx / bad
+        body) — those aren't worth retrying."""
+        try:
+            r = httpx.post(
+                self._exchange_url,
+                json={"token": self._pat},
+                headers={"apikey": self._anon, "Content-Type": "application/json"},
+                timeout=30,
+            )
+        except httpx.TransportError as e:
+            return f"connect error: {e!r}"
+        if r.status_code in (401, 403):
             raise RuntimeError(
                 "Patch rejected PATCH_PAT (revoked or wrong). Mint a new token in "
                 "Settings -> Tokens and update the Manager's .env."
             )
-        r.raise_for_status()
+        if r.status_code >= 500:
+            return f"HTTP {r.status_code}"
+        r.raise_for_status()  # unexpected 4xx -> surface (not transient, not an auth reject)
         body = r.json()
         self._access_token = body["access_token"]
         self._access_exp = float(body.get("expires_at") or 0)
         self._client.headers["Authorization"] = f"Bearer {self._access_token}"
+        return None
 
     # PostgREST verbs ----
     def _request(self, method: str, path: str, **kw) -> httpx.Response:

@@ -22,7 +22,7 @@ def _host(tmp_path, **kw):
     import loopworker.host as host_mod
     fake_adapter = types.SimpleNamespace(list_projects=lambda: kw.get("projects", []))
     orig = host_mod.PatchAdapter.from_host
-    host_mod.PatchAdapter.from_host = staticmethod(lambda h: fake_adapter)
+    host_mod.PatchAdapter.from_host = staticmethod(lambda h, **kw: fake_adapter)
     try:
         h = HostManager(cfg, state_dir=tmp_path / "state")
     finally:
