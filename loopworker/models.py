@@ -97,6 +97,9 @@ class Slot:
     session: str | None = None   # tmux session name of the worker, when BUSY
     card_num: int | None = None  # the ~NNN being worked, when BUSY
     worker_id: str | None = None # loop_workers row id of the running worker
+    model: str | None = None     # CLI model alias resolved at spawn (card/project override),
+    #                              when BUSY; None means the CLI default was used
+
     started_at: datetime | None = None
     done_since: datetime | None = None  # when its card first left In progress (reap grace clock)
     retiring: bool = False       # slot count was lowered while this slot was BUSY: tear it
