@@ -1,0 +1,28 @@
+# Makes LoopWorker itself LoopWorker-compatible: the Manager can serve cards on its
+# own repo. A plain Python project -- venv "stack", pytest verify, nothing to tear
+# down, no ports (no LOOPWORKER_PORT handshake, so the dashboard hides the port).
+
+[project]
+name           = "loopworker"
+worker_manager = "miquon"  # this host's Manager id; serves projects tagged with it in the Projects table
+
+[backlog]
+adapter = "patch"
+portal  = "https://patch.d.nevyn.dev/app/efc002a2-0af5-4205-8217-5960996b49a7"  # shared Roadmap
+
+[backlog.patch]
+api_base      = "https://api.patch.d.nevyn.dev"
+roadmap_table = "roadmap"
+workers_table = "loop_workers"
+anon_key      = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIiwiaWF0IjoxNzgxNjExMTIyLCJleHAiOjE5MzkyOTExMjJ9.qhtLW8SIb1z9L5l6ecarjDPAZMvE0BcG6Fdjc1cf80k"  # public anon key; PostgREST/Kong apikey header
+
+[brief]
+source = "patch-page"
+ref    = "https://patch.d.nevyn.dev/app/b5b7a703-63eb-4159-8fc9-e2b4963586f5"  # Managed Agent Loop
+
+[worker]
+mcp                   = ["patch"]
+wallclock_cap_minutes = 60
+
+[slots]
+count = 1

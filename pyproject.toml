@@ -7,6 +7,11 @@ dependencies = [
     "httpx>=0.27",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
 [project.scripts]
 loopworker = "loopworker.__main__:main"
 
