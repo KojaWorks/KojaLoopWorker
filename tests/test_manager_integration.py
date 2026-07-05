@@ -116,6 +116,43 @@ def test_spawn_keep_reap_cycle(mgr):
     assert m.adapter.releases == []  # legitimately Shipped — not reclaimed
 
 
+def test_launch_omits_model_flag_when_unset(mgr):
+    m, *_ = mgr
+    m.tick()
+    launch = (Path(m.pool.slots[0].dir) / ".loopworker-launch.sh").read_text()
+    assert "--model" not in launch
+    assert 'exec claude --permission-mode auto "$PROMPT"' in launch
+
+
+def test_launch_uses_card_model_over_project_default(mgr):
+    m, *_ = mgr
+    m._project_model = "sonnet"                    # project-wide default
+    m.adapter.cards[1].model = "opus"               # card override wins
+    m.tick()
+    launch = (Path(m.pool.slots[0].dir) / ".loopworker-launch.sh").read_text()
+    assert 'exec claude --permission-mode auto --model opus "$PROMPT"' in launch
+
+
+def test_launch_falls_back_to_project_default_model(mgr):
+    m, *_ = mgr
+    m._project_model = "sonnet"
+    m.tick()
+    launch = (Path(m.pool.slots[0].dir) / ".loopworker-launch.sh").read_text()
+    assert 'exec claude --permission-mode auto --model sonnet "$PROMPT"' in launch
+
+
+def test_launch_shell_quotes_a_hostile_model_value(mgr):
+    # model is a Patch select column (opus/fable/sonnet/haiku) so this shouldn't occur in
+    # practice, but the launch script must not be one shell escape away from injection if a
+    # stale/bad value ever reaches it.
+    m, *_ = mgr
+    m.adapter.cards[1].model = "opus; rm -rf /tmp/pwned"
+    m.tick()
+    launch = (Path(m.pool.slots[0].dir) / ".loopworker-launch.sh").read_text()
+    expected = 'exec claude --permission-mode auto --model \'opus; rm -rf /tmp/pwned\' "$PROMPT"\n'
+    assert expected in launch   # single-quoted -> one inert argv word, no injected command
+
+
 def test_reap_workers_on_shutdown(mgr, monkeypatch):
     # A worker must not outlive its Manager — shutdown kills live worker sessions
     # AND returns the still-In-progress card to the backlog (not stranded).

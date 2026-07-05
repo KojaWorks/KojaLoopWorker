@@ -373,6 +373,7 @@ class HostManager:
             base_ref=f"origin/{row.default_branch}",
             brief=brief_pointer(self.host.brief_page),
             project_brief=project_brief,
+            project_model=row.model,
         )
 
     # --- lifecycle ---------------------------------------------------------
