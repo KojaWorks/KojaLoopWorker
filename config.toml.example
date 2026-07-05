@@ -9,6 +9,9 @@ max_slots      = 4                  # host-wide RAM budget, in weighted slot-cos
                                      # relative cost per slot, see the projects table)
 # base_port    = 54400             # first slot's stack port (projects get 1000-apart bands)
 # port_step    = 100              # port gap between a project's own slots
+# notify_command receives an alert message on stdin (worker auth failure, a slot
+# marked BROKEN) - any CLI push tool works, e.g. Pushover via curl:
+# notify_command = "curl -s -F token=$PUSHOVER_TOKEN -F user=$PUSHOVER_USER -F message=@- https://api.pushover.net/1/messages.json"
 
 [backlog]
 api_base   = "https://api.patch.d.nevyn.dev"

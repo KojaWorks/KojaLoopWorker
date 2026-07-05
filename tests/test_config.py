@@ -99,6 +99,21 @@ def test_host_config_loads(tmp_path):
     assert h.clones_dir.is_absolute()                 # ~ expanded
     assert h.projects_table == "projects"             # default
     assert h.brief_page == "https://patch/app/loop"
+    assert h.notify_command == ""                      # default: no-op
+
+
+def test_host_config_notify_command(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(textwrap.dedent("""
+        worker_manager = "miquon"
+        clones_dir = "~/clones"
+        notify_command = "curl -s -F message=@- https://example/notify"
+        [backlog]
+        api_base = "https://api.patch/"
+        anon_key = "anon-public"
+    """))
+    h = HostConfig.load(cfg)
+    assert h.notify_command == "curl -s -F message=@- https://example/notify"
 
 
 def test_host_config_missing_required_key(tmp_path):
