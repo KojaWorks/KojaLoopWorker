@@ -41,6 +41,13 @@ def _project_weight(row: ProjectRow | None) -> float:
     return 1.0
 
 
+def _affordable(remaining: float, weight: float) -> int:
+    """floor(remaining / weight) as a slot count, tolerant of the tiny binary-float error
+    a weight like 0.1/0.3/1.2 introduces — a naive `remaining // weight` can silently
+    undercount by one slot (e.g. int(1 // 0.1) == 9, not 10)."""
+    return int(remaining / weight + 1e-9)
+
+
 class HostManager:
     def __init__(
         self,
@@ -86,6 +93,7 @@ class HostManager:
                      "set [backlog].brief_page to the Managed Agent Loop page")
         self.managers = []
         self._bands = {}
+        self._weights = {}
         for row in rows:
             try:
                 manifest = self._load_row(row)
@@ -296,7 +304,7 @@ class HostManager:
             self._weights[m.project_id] = weight
             desired = row.slots if (row and row.slots) else m.manifest.slots
             if m.pool.hot:
-                affordable = int(remaining // weight)
+                affordable = _affordable(remaining, weight)
                 target = max(min(desired, affordable), 0)
                 remaining -= target * weight
             else:
@@ -377,7 +385,7 @@ class HostManager:
             if not m.pool.hot:
                 continue
             weight = self._weights.get(m.project_id, 1.0)
-            affordable = int(remaining // weight)
+            affordable = _affordable(remaining, weight)
             if len(m.pool.slots) > affordable:
                 kept = max(affordable, 0)
                 self.log(f"capping hot {m.manifest.project_name} to {kept} slot(s) "
@@ -448,7 +456,7 @@ class HostManager:
         remaining = self.host.max_slots - reserved_hot - cold_busy
         for m in cold:
             weight = self._weights.get(m.project_id, 1.0)
-            affordable = int(remaining // weight)
+            affordable = _affordable(remaining, weight)
             if affordable <= 0:
                 continue
             before = m.busy_count()

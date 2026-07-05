@@ -424,12 +424,22 @@ def test_apply_slot_targets_spends_budget_in_weighted_units(tmp_path):
 
 
 def test_apply_slot_targets_ignores_zero_or_negative_weight(tmp_path):
-    h = _host(tmp_path, max_slots=2)
-    a = FakeMgr("A", hot=True, nslots=1, project_id="p1")
-    h.managers = [a]
-    h._apply_slot_targets({"p1": ProjectRow(id="p1", name="A", hot=True, slots=1, weight=0)})
-    assert len(a.pool.slots) == 1     # weight=0 falls back to 1, not a divide-by-zero
-    assert h._weights["p1"] == 1.0
+    for bad_weight in (0, -2.0):
+        h = _host(tmp_path, max_slots=2)
+        a = FakeMgr("A", hot=True, nslots=1, project_id="p1")
+        h.managers = [a]
+        h._apply_slot_targets({"p1": ProjectRow(id="p1", name="A", hot=True, slots=1, weight=bad_weight)})
+        assert len(a.pool.slots) == 1     # falls back to 1, not a divide-by-zero/negative-budget
+        assert h._weights["p1"] == 1.0
+
+
+def test_affordable_tolerates_fractional_weight_float_error(tmp_path):
+    # Regression: a naive `remaining // weight` undercounts by one slot for weights not
+    # exactly representable in binary floats (e.g. int(1 // 0.1) == 9, not 10).
+    from loopworker.host import _affordable
+    assert _affordable(1, 0.1) == 10
+    assert _affordable(2, 0.2) == 10
+    assert _affordable(10, 0.1) == 100
 
 
 def test_build_caps_hot_pools_to_weighted_budget(tmp_path):
