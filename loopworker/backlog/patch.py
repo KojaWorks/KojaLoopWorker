@@ -293,9 +293,11 @@ class PatchAdapter(BacklogAdapter):
         {app_base}/app/{roadmap_page_id}?row={row-uuid}&rowpage=1."""
         if not self._app_base or not self._roadmap_page_id:
             return {}
+        # list() snapshots the index atomically (one C-level op holding the GIL) — the poll
+        # thread mutates _card_index while the dashboard's HTTP handler thread calls this.
         return {
             str(num): f"{self._app_base}/app/{self._roadmap_page_id}?row={uuid}&rowpage=1"
-            for num, uuid in self._card_index.items()
+            for num, uuid in list(self._card_index.items())
         }
 
     # Auth ----

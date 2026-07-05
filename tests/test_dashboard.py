@@ -8,7 +8,8 @@ _LINKS = {"772": "https://patch.example/app/PAGE?row=u772&rowpage=1"}
 def test_linkify_wraps_known_ref():
     out = _linkify("slot 1 ~772: reclaiming card", _LINKS)
     # & in the query string is escaped inside the href; the ~772 label is preserved
-    assert '<a href="https://patch.example/app/PAGE?row=u772&amp;rowpage=1" target="_blank">~772</a>' in out
+    assert ('<a href="https://patch.example/app/PAGE?row=u772&amp;rowpage=1" '
+            'target="_blank" rel="noopener noreferrer">~772</a>') in out
     assert "reclaiming card" in out
 
 
@@ -31,7 +32,7 @@ def _slot(card):
 def test_render_links_activity_column():
     # the Manager-authored activity string ("running ~772 (ada)") is linkified too
     out = _render(_single_snap())
-    assert 'target="_blank">~772</a> (ada)' in out
+    assert 'rel="noopener noreferrer">~772</a> (ada)' in out
 
 
 def _single_snap():

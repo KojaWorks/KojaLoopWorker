@@ -21,7 +21,8 @@ def _linkify(text: str, card_links: dict[str, str]) -> str:
         url = card_links.get(m.group(1))
         if not url:
             return m.group(0)
-        return f'<a href="{html.escape(url, quote=True)}" target="_blank">{m.group(0)}</a>'
+        return (f'<a href="{html.escape(url, quote=True)}" target="_blank"'
+                f' rel="noopener noreferrer">{m.group(0)}</a>')
     return _CARD_REF.sub(repl, html.escape(text))
 
 
