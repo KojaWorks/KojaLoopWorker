@@ -41,3 +41,18 @@ def test_over_wallclock_is_hung():
     slot = _slot(started_at=NOW - timedelta(minutes=91))
     action, _ = classify(slot, _card(), True, NOW, CAP)
     assert action == SlotAction.HUNG_RECLAIM
+
+
+def test_auth_failure_is_reclaim():
+    # alive process, card still In progress, well under wallclock — but wedged at the login
+    # prompt: reclaim now instead of holding the slot for the full cap.
+    action, reason = classify(_slot(), _card(), True, NOW, CAP, auth_failed=True)
+    assert action == SlotAction.AUTH_RECLAIM
+    assert "auth" in reason
+
+
+def test_auth_failure_after_card_done_still_reaps():
+    # card already left In progress takes precedence — don't misreport a finished worker as
+    # an auth failure just because a stale 401 line sits in its scrollback.
+    action, _ = classify(_slot(), _card(CardStatus.SHIPPED), True, NOW, CAP, auth_failed=True)
+    assert action == SlotAction.REAP

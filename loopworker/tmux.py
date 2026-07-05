@@ -75,6 +75,20 @@ def looks_like_trust_prompt(pane: str) -> bool:
     return bool(_TRUST_PROMPT.search(pane or ""))
 
 
+# A worker whose auth died mid-run parks at claude's login prompt ("Please run /login ·
+# API Error: 401 …"). The process stays alive, so worker_running() still reports True and
+# the slot would wedge until the wallclock cap. Detect the prompt so the Manager can reap +
+# release the card immediately. This is the reactive complement to AuthGate's preflight: the
+# gate stops us spawning INTO a dead login, this catches a worker that died AFTER spawning
+# (mid-session), which the gate's spawn-time check can't see.
+_AUTH_FAILED = re.compile(r"Please run /login|401 Invalid authentication|Not logged in", re.I)
+
+
+def looks_like_auth_failure(pane: str) -> bool:
+    """True if the pane shows claude's auth-failed/login prompt. Pure (no tmux) so it's testable."""
+    return bool(_AUTH_FAILED.search(pane or ""))
+
+
 def capture(session: str, lines: int = 200) -> str:
     """Recent pane scrollback, for the dashboard / debugging."""
     r = _tmux("capture-pane", "-p", "-t", session, "-S", f"-{lines}")

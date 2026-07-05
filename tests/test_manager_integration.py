@@ -80,11 +80,12 @@ def mgr(tmp_path, monkeypatch):
     monkeypatch.setattr(m.pool, "acquire", lambda s, slug: None)
 
     # control tmux from the test
-    state = {"alive": True}
+    state = {"alive": True, "pane": ""}
     spawned, killed = [], []
     monkeypatch.setattr(manager_mod.tmux, "spawn", lambda sess, cwd, argv, env=None: spawned.append(sess))
     monkeypatch.setattr(manager_mod.tmux, "kill", lambda sess: killed.append(sess))
     monkeypatch.setattr(manager_mod.tmux, "worker_running", lambda sess: state["alive"])
+    monkeypatch.setattr(manager_mod.tmux, "capture", lambda sess, lines=200: state["pane"])
     return m, state, spawned, killed
 
 
@@ -114,6 +115,22 @@ def test_spawn_keep_reap_cycle(mgr):
     assert slot.state == SlotState.IDLE
     assert killed == [spawned[0]]
     assert m.adapter.releases == []  # legitimately Shipped — not reclaimed
+
+
+def test_auth_wedged_worker_is_reclaimed(mgr):
+    # A worker whose auth dies mid-session parks at claude's login prompt: process still
+    # alive, card still In progress, under wallclock. Without detection it wedges the slot
+    # for the full cap; with it, the Manager reclaims the card and frees the slot at once.
+    # (Complements AuthGate's preflight, which only guards NEW spawns, not a live wedge.)
+    m, state, _spawned, killed = mgr
+    m.tick()                                   # spawn a worker; card 1 -> In progress
+    sess = m.pool.slots[0].session
+    assert m.pool.slots[0].state == SlotState.BUSY
+    state["pane"] = "⏺ Please run /login · API Error: 401 Invalid authentication credentials"
+    m.reconcile()                              # reconcile-only (no refill) to isolate the reclaim
+    assert killed == [sess]                     # wedged worker reaped immediately (grace=0)
+    assert m.adapter.releases == [1]            # card returned to Backlog for a fresh worker
+    assert m.pool.slots[0].state == SlotState.IDLE  # slot freed, not stuck until wallclock
 
 
 def test_launch_omits_model_flag_when_unset(mgr):

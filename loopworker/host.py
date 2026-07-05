@@ -418,19 +418,25 @@ class HostManager:
                 self.log("no serviceable projects — nothing to do")
                 return
             self.build()
-            self.log(f"host ready; reconciling every {self.reconcile_interval}s, filling every {self.poll_interval}s")
-            last_fill = 0.0
+            self.log(f"host ready; reconciling + staggered fill every {self.reconcile_interval}s, "
+                     f"project discovery every {self.poll_interval}s")
+            last_discover = 0.0
             while not self._stop:
                 now = datetime.now(timezone.utc)
                 try:
                     self._reconcile_all(now)
-                    if not self._draining and (time.monotonic() - last_fill) >= self.poll_interval:
-                        if self.killswitch.exists():
-                            self.log("killswitch present (PAUSED) — not spawning new workers")
-                        else:
-                            self.reconcile_projects(now)  # pick up added/removed/resized projects live
+                    if not self._draining:
+                        paused = self.killswitch.exists()
+                        # Project discovery (backlog read + clone) stays on the slow cadence;
+                        # spawning runs every cycle so the one-per-pass stagger ramps quickly.
+                        if (time.monotonic() - last_discover) >= self.poll_interval:
+                            if paused:
+                                self.log("killswitch present (PAUSED) — not spawning new workers")
+                            else:
+                                self.reconcile_projects(now)  # added/removed/resized projects
+                            last_discover = time.monotonic()
+                        if not paused:
                             self._fill_all(now)
-                        last_fill = time.monotonic()
                 except Exception as e:
                     self.log(f"ERROR in loop: {e!r}")
                 if self._draining and not self._busy_total():
@@ -456,24 +462,39 @@ class HostManager:
             m.reconcile(now)
 
     def _fill_all(self, now: datetime) -> None:
-        """Hot projects fill their warm slots freely (those stacks are already counted in
-        the budget). Cold projects share the leftover WEIGHTED budget, provisioning new
-        stacks only while total weighted cost stays under max_slots."""
+        """Spawn workers under three limits: `max_concurrent_workers` caps how many claudes
+        RUN at once host-wide (auth-safety — concurrent claudes race the shared OAuth refresh
+        and can trip session revocation), the weighted `max_slots` budget caps live-stack RAM,
+        and a one-worker-per-pass stagger keeps a fresh fleet from authing all at once. Runs on
+        the fast reconcile cadence, so the next worker starts ~reconcile_interval later — a
+        staggered ramp rather than a thundering herd. Cold provisioning still respects the
+        weighted budget."""
+        if self._busy_total() >= self.host.max_concurrent_workers:
+            return
+        budget = 1  # stagger: at most one new worker per pass
         hot = [m for m in self.managers if m.pool.hot]
         cold = [m for m in self.managers if not m.pool.hot]
         for m in hot:
-            m.fill(now)
+            if budget <= 0:
+                break
+            before = m.busy_count()
+            m.fill(now, max_new=budget)
+            budget -= m.busy_count() - before
         reserved_hot = sum(len(m.pool.slots) * self._weights.get(m.project_id, 1.0) for m in hot)
         cold_busy = sum(m.busy_count() * self._weights.get(m.project_id, 1.0) for m in cold)
         remaining = self.host.max_slots - reserved_hot - cold_busy
         for m in cold:
+            if budget <= 0:
+                break
             weight = self._weights.get(m.project_id, 1.0)
             affordable = _affordable(remaining, weight)
             if affordable <= 0:
                 continue
             before = m.busy_count()
-            m.fill(now, max_new=affordable)
-            remaining -= (m.busy_count() - before) * weight
+            m.fill(now, max_new=min(budget, affordable))
+            started = m.busy_count() - before
+            budget -= started
+            remaining -= started * weight
 
     def _reap_all(self, reason: str) -> None:
         for m in self.managers:
@@ -490,6 +511,8 @@ class HostManager:
             "paused": self.killswitch.exists(),
             "poll_interval": self.poll_interval,
             "max_slots": self.host.max_slots,
+            "max_concurrent_workers": self.host.max_concurrent_workers,
+            "busy_total": self._busy_total(),
             "projects": [m.snapshot() for m in self.managers],
             "log": list(self.log_lines),
         }

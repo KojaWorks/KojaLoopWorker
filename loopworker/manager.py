@@ -198,7 +198,12 @@ class Manager:
                 continue
             card = self.adapter.get_card(slot.card_num)
             alive = tmux.worker_running(slot.session)
-            action, reason = classify(slot, card, alive, now, self.wallclock_cap)
+            # Only scrape the pane while the process is alive but the card's still open —
+            # that's the wedge case (a dead process is already CRASH_RECLAIM). Catches a
+            # worker that authed fine at spawn but hit a mid-session auth failure, which
+            # AuthGate's spawn-time preflight can't see.
+            auth_failed = alive and tmux.looks_like_auth_failure(tmux.capture(slot.session, lines=40))
+            action, reason = classify(slot, card, alive, now, self.wallclock_cap, auth_failed)
 
             if action == SlotAction.KEEP:
                 slot.done_since = None
@@ -211,7 +216,7 @@ class Manager:
                     self.log(f"slot {slot.index} ~{slot.card_num}: {reason}; reap grace started")
                 elif now - slot.done_since >= self.grace:
                     self._reap(slot, reason)
-            elif action in (SlotAction.CRASH_RECLAIM, SlotAction.HUNG_RECLAIM):
+            elif action in (SlotAction.CRASH_RECLAIM, SlotAction.HUNG_RECLAIM, SlotAction.AUTH_RECLAIM):
                 slot.activity = f"reclaiming — {reason}"
                 self.log(f"slot {slot.index} ~{slot.card_num}: {reason} — reclaiming card")
                 if card is not None:

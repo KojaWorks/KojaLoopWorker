@@ -7,6 +7,11 @@ clones_dir     = "~/Dev/loopworker-clones"
 max_slots      = 4                  # host-wide RAM budget, in weighted slot-cost units
                                      # (a project's "weight" column, default 1, is its
                                      # relative cost per slot, see the projects table)
+# max_concurrent_workers = 3       # host-wide cap on claudes RUNNING at once (defaults to
+                                   # max_slots). Set lower to keep lots of cold capacity but
+                                   # few concurrent auths — concurrent claudes on one account
+                                   # race the shared OAuth refresh and can trip session
+                                   # revocation. Starts stagger ~reconcile_interval apart.
 # base_port    = 54400             # first slot's stack port (projects get 1000-apart bands)
 # port_step    = 100              # port gap between a project's own slots
 # notify_command receives an alert message on stdin (worker auth failure, a slot
