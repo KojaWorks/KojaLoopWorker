@@ -144,6 +144,10 @@ def test_discover_builds_managers_and_applies_row(tmp_path, monkeypatch):
     assert b.pool.base_ref == "origin/master"                                      # default_branch wired
     # distinct port bands wide enough for the host budget — no overlap
     assert b.pool.base_port - a.pool.base_port >= h.host.max_slots * h.host.port_step
+    # both projects share ONE auth gate + notifier — a dead login pauses dispatch
+    # host-wide, not per project (they all draw on the same forwarded claude login)
+    assert a.auth is h.auth_gate and b.auth is h.auth_gate
+    assert a._notify == h.notifier.send and b._notify == h.notifier.send
 
 
 def test_host_mode_build_prompt_uses_injected_brief(tmp_path):

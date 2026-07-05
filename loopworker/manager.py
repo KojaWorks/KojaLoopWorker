@@ -129,7 +129,7 @@ class Manager:
         # only __main__.py's real CLI entrypoints turn it on for an unattended run.
         self.auth = auth_gate if auth_gate is not None else AuthGate(log=self.log)
         self._notify = notify or (lambda key, message: None)
-        self._broken_notified: set[int] = set()  # slot indices already notified BROKEN
+        self._broken_notified: set[int] = set()  # id(slot) of slots already notified BROKEN
 
     # --- lifecycle ---------------------------------------------------------
     def run(self) -> None:
@@ -230,17 +230,25 @@ class Manager:
 
     def _notify_broken(self) -> None:
         """Fire the notify hook once per slot transition into BROKEN — not every
-        reconcile tick, so a slot stuck BROKEN across many ticks doesn't spam."""
+        reconcile tick, so a slot stuck BROKEN across many ticks doesn't spam.
+
+        Tracked by object identity (id(slot)), not slot.index: SlotPool.resize() can
+        retire a BROKEN slot and later hand a freshly-added Slot the same (now free)
+        index (see slots.py _free_index/_add_slot). An index-keyed set would wrongly
+        treat that brand-new slot as already notified if it happens to go BROKEN too."""
+        live = {id(s) for s in self.pool.slots}
+        self._broken_notified &= live  # drop entries for slots no longer in the pool
         for slot in self.pool.slots:
             broken = slot.state == SlotState.BROKEN
-            if broken and slot.index not in self._broken_notified:
-                self._broken_notified.add(slot.index)
+            key = id(slot)
+            if broken and key not in self._broken_notified:
+                self._broken_notified.add(key)
                 self._notify(
                     f"slot-broken:{self.manifest.project_name}:{slot.index}",
                     f"LoopWorker: {self.manifest.project_name} slot {slot.index} is BROKEN — {slot.activity}",
                 )
             elif not broken:
-                self._broken_notified.discard(slot.index)
+                self._broken_notified.discard(key)
 
     # --- fill --------------------------------------------------------------
     def _fill_idle(self, now: datetime, max_new: int | None = None) -> None:

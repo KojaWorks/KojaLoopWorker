@@ -77,10 +77,7 @@ class HostManager:
         # dispatch host-wide, not per project. enabled=True here (unlike a bare
         # Manager's own default): HostManager is the real spawn point, never ticked
         # with a real Manager in tests (only FakeMgr stand-ins).
-        self.auth_gate = AuthGate(
-            enabled=True, log=self.log,
-            notify=lambda msg: self.notifier.send("auth-failure", msg),
-        )
+        self.auth_gate = AuthGate(enabled=True, log=self.log, notify=self.notifier.send)
         self.managers: list[Manager] = []
         self._bands: dict[str, int] = {}   # project_id -> port-band index (freed on retire, reused)
         self._weights: dict[str, float] = {}  # project_id -> slot cost (see _project_weight)
