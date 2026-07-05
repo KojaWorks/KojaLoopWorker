@@ -4,19 +4,34 @@ from __future__ import annotations
 
 import html
 import json
+import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
 
 SnapshotProvider = Callable[[], dict]
 
+_CARD_REF = re.compile(r"~(\d+)")
 
-def _slots_table(slots: list[dict]) -> str:
+
+def _linkify(text: str, card_links: dict[str, str]) -> str:
+    """HTML-escape `text`, then turn each ~NNN whose card resolves in `card_links` into
+    an anchor. Unresolved refs stay plain text (no broken links)."""
+    def repl(m: re.Match) -> str:
+        url = card_links.get(m.group(1))
+        if not url:
+            return m.group(0)
+        return f'<a href="{html.escape(url, quote=True)}" target="_blank">{m.group(0)}</a>'
+    return _CARD_REF.sub(repl, html.escape(text))
+
+
+def _slots_table(slots: list[dict], card_links: dict[str, str]) -> str:
     rows = "".join(
         f"<tr><td>{s['index']}</td><td>{s['state']}</td>"
-        f"<td>{html.escape(s.get('activity') or '—')}</td><td>{s.get('port') or '—'}</td>"
+        f"<td>{_linkify(s['activity'], card_links) if s.get('activity') else '—'}</td>"
+        f"<td>{s.get('port') or '—'}</td>"
         f"<td>{html.escape(s.get('model') or '—')}</td>"
-        f"<td>{'~' + str(s['card']) if s['card'] else '—'}</td>"
+        f"<td>{_linkify('~' + str(s['card']), card_links) if s['card'] else '—'}</td>"
         f"<td>{html.escape(s['session'] or '—')}</td>"
         f"<td>{s['started_at'] or '—'}</td>"
         f"<td class=thinking>{html.escape(s.get('thinking') or '—')}</td></tr>"
@@ -28,13 +43,14 @@ def _slots_table(slots: list[dict]) -> str:
 
 
 def _render_host(snap: dict) -> str:
+    card_links = snap.get("card_links") or {}
     paused = " · <b style='color:#c0392b'>PAUSED</b>" if snap["paused"] else ""
     sections = "".join(
         f"<h3>{html.escape(p['project'])} · {'hot' if p.get('hot') else 'cold'}"
-        f"{' · PAUSED' if p.get('paused') else ''}</h3>{_slots_table(p['slots'])}"
+        f"{' · PAUSED' if p.get('paused') else ''}</h3>{_slots_table(p['slots'], card_links)}"
         for p in snap["projects"]
     )
-    log = "".join(f"<div>{html.escape(line)}</div>" for line in reversed(snap["log"]))
+    log = "".join(f"<div>{_linkify(line, card_links)}</div>" for line in reversed(snap["log"]))
     return f"""<!doctype html><meta charset=utf-8>
 <meta http-equiv=refresh content=5>
 <title>LoopWorker · host {html.escape(snap['worker_manager'])}</title>
@@ -55,7 +71,8 @@ def _render_host(snap: dict) -> str:
 def _render(snap: dict) -> str:
     if "projects" in snap:
         return _render_host(snap)
-    log = "".join(f"<div>{html.escape(line)}</div>" for line in reversed(snap["log"]))
+    card_links = snap.get("card_links") or {}
+    log = "".join(f"<div>{_linkify(line, card_links)}</div>" for line in reversed(snap["log"]))
     paused = " · <b style='color:#c0392b'>PAUSED</b>" if snap["paused"] else ""
     return f"""<!doctype html><meta charset=utf-8>
 <meta http-equiv=refresh content=5>
@@ -69,7 +86,7 @@ def _render(snap: dict) -> str:
 </style>
 <h2>LoopWorker · {html.escape(snap['project'])}{paused}</h2>
 <div>started {snap['started_at']} · poll every {snap['poll_interval']}s</div>
-{_slots_table(snap["slots"])}
+{_slots_table(snap["slots"], card_links)}
 <h3>log</h3><div class=log>{log}</div>
 """
 

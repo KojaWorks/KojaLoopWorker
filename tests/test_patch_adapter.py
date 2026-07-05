@@ -258,6 +258,26 @@ def test_runtime_refresh_fails_fast_not_retried(monkeypatch):
     assert sleeps == []                              # no backoff on the runtime path
 
 
+def test_card_links_empty_without_config(adapter):
+    # app_base/roadmap_page_id unset -> the dashboard gets no links (plain ~NNN).
+    adapter._to_card(_row(1))
+    assert adapter.card_links() == {}
+
+
+def test_card_links_built_from_reads(monkeypatch):
+    monkeypatch.setenv("PATCH_PAT", "pat_test")
+    monkeypatch.setattr(PatchAdapter, "_ensure_token", lambda self, force=False, retry=False: None)
+    m = _manifest()
+    m.backlog.options.update({"app_base": "https://patch.example/", "roadmap_page_id": "PAGE"})
+    a = PatchAdapter(m)
+    a._to_card(_row(772))                        # every read remembers num -> uuid
+    a._to_card(_row(801))
+    links = a.card_links()
+    # trailing slash on app_base is trimmed; row uuid comes from the card's id
+    assert links["772"] == "https://patch.example/app/PAGE?row=u772&rowpage=1"
+    assert links["801"].endswith("row=u801&rowpage=1")
+
+
 def test_card_status_parse_tolerates_unknown():
     assert CardStatus.parse("Backlog") == CardStatus.BACKLOG
     assert CardStatus.parse("In progress") == CardStatus.IN_PROGRESS

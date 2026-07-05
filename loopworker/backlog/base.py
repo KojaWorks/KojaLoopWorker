@@ -57,6 +57,13 @@ class BacklogAdapter(ABC):
     def get_brief(self) -> str:
         """The worker brief / loop instructions, resolved per manifest [brief]."""
 
+    # --- dashboard ---------------------------------------------------------
+    def card_links(self) -> dict[str, str]:
+        """Map of str(card num) -> a clickable backlog URL for that card, for the
+        dashboard to linkify ~NNN references. Default: no links (an adapter that can
+        build them overrides this)."""
+        return {}
+
     # --- shared helpers ----------------------------------------------------
     def _read_brief_generic(self, brief: BriefConfig) -> str | None:
         """Handle the backend-independent brief sources. Returns None for sources a

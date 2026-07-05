@@ -77,6 +77,11 @@ class HostConfig:
     roadmap_table: str = "roadmap"
     workers_table: str = "loop_workers"
     projects_table: str = "projects"
+    # Dashboard ~NNN linkifier: the Patch APP origin (e.g. https://patch.d.nevyn.dev — NOT
+    # api_base, the API host) and the roadmap table's patch_items id. Both must be set for
+    # links to render; otherwise ~NNN stays plain text.
+    app_base: str = ""
+    roadmap_page_id: str = ""
     brief_page: str = ""               # the shared generic loop page (url or id) all workers read
     notify_command: str = ""           # shell template receiving an alert message on stdin
     #                                   (worker auth failure, a slot marked BROKEN); empty = no-op
@@ -115,6 +120,8 @@ class HostConfig:
             roadmap_table=backlog.get("roadmap_table", "roadmap"),
             workers_table=backlog.get("workers_table", "loop_workers"),
             projects_table=backlog.get("projects_table", "projects"),
+            app_base=backlog.get("app_base", ""),
+            roadmap_page_id=backlog.get("roadmap_page_id", ""),
             brief_page=backlog.get("brief_page", ""),
             notify_command=raw.get("notify_command", ""),
         )

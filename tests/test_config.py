@@ -101,6 +101,23 @@ def test_host_config_loads(tmp_path):
     assert h.brief_page == "https://patch/app/loop"
     assert h.notify_command == ""                      # default: no-op
     assert h.max_concurrent_workers == 6               # unset -> defaults to max_slots
+    assert h.app_base == "" and h.roadmap_page_id == ""  # dashboard links off by default
+
+
+def test_host_config_loads_dashboard_link_keys(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(textwrap.dedent("""
+        worker_manager = "miquon"
+        clones_dir = "~/clones"
+        [backlog]
+        api_base = "https://api.patch/"
+        anon_key = "anon-public"
+        app_base = "https://patch.d.nevyn.dev"
+        roadmap_page_id = "ea3c65fb-9038-4dcb-8223-34dd395b2af8"
+    """))
+    h = HostConfig.load(cfg)
+    assert h.app_base == "https://patch.d.nevyn.dev"
+    assert h.roadmap_page_id == "ea3c65fb-9038-4dcb-8223-34dd395b2af8"
 
 
 def test_max_concurrent_workers_explicit_override(tmp_path):

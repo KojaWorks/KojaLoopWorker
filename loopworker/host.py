@@ -517,6 +517,7 @@ class HostManager:
             "busy_total": self._busy_total(),
             "projects": [m.snapshot() for m in self.managers],
             "log": list(self.log_lines),
+            "card_links": self.adapter.card_links(),
         }
 
     # --- plumbing ----------------------------------------------------------

@@ -21,6 +21,11 @@ max_slots      = 4                  # host-wide RAM budget, in weighted slot-cos
 [backlog]
 api_base   = "https://api.patch.d.nevyn.dev"
 anon_key   = "<deployment public anon key>"   # PostgREST/Kong apikey header; grants nothing alone
+# app_base and roadmap_page_id let the dashboard turn ~NNN card refs into links to Patch.
+# app_base is the APP origin (not api_base); roadmap_page_id is the roadmap table's
+# patch_items id. Leave unset to keep ~NNN as plain text.
+# app_base        = "https://patch.d.nevyn.dev"
+# roadmap_page_id = "ea3c65fb-9038-4dcb-8223-34dd395b2af8"
 # brief_page = "https://patch.d.nevyn.dev/app/b5b7a703-63eb-4159-8fc9-e2b4963586f5"  # shared loop page
 # roadmap_table  = "roadmap"
 # workers_table  = "loop_workers"
