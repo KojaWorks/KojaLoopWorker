@@ -5,6 +5,11 @@
 worker_manager = "miquon"          # this host's id (match the projects table's Worker manager)
 clones_dir     = "~/Dev/loopworker-clones"
 max_slots      = 4                  # host-wide cap on live Supabase stacks (RAM budget)
+# max_concurrent_workers = 3       # host-wide cap on claudes RUNNING at once (defaults to max_slots).
+                                   # Lower than max_slots to keep lots of cold capacity but few
+                                   # concurrent auths — concurrent claudes on one account race the
+                                   # shared OAuth refresh and can trip session revocation. Starts
+                                   # stagger ~reconcile_interval apart regardless.
 # base_port    = 54400             # first slot's stack port (projects get 1000-apart bands)
 # port_step    = 100              # port gap between a project's own slots
 

@@ -15,6 +15,7 @@ def _host(tmp_path, **kw):
     cfg = HostConfig(
         worker_manager="miquon", api_base="https://api", anon_key="anon",
         clones_dir=tmp_path / "clones", max_slots=kw.get("max_slots", 4),
+        max_concurrent_workers=kw.get("max_concurrent_workers", 0),
         brief_page=kw.get("brief_page", ""),
     )
     # Don't build a real (network) adapter in __init__.
@@ -86,28 +87,47 @@ def test_build_caps_hot_pools_to_budget(tmp_path):
     assert len(h.managers[1].pool.slots) == 0     # B gets nothing left
 
 
-def test_fill_all_hot_unbounded_cold_shares_leftover(tmp_path):
-    h = _host(tmp_path, max_slots=3)
-    hot = FakeMgr("A", hot=True, nslots=1, will_take=1)
-    cold1 = FakeMgr("C", hot=False, nslots=5, will_take=1)   # takes 1
-    cold2 = FakeMgr("D", hot=False, nslots=5, will_take=5)   # would take the rest
-    h.managers = [hot, cold1, cold2]
+def test_fill_all_starts_one_worker_per_pass_hot_first(tmp_path):
+    # Stagger: even with plenty of headroom and work everywhere, only ONE worker starts per
+    # pass so a fresh fleet ramps up ~reconcile_interval apart, not all authing at once.
+    h = _host(tmp_path, max_slots=8)           # max_concurrent defaults to 8 — lots of room
+    hot = FakeMgr("A", hot=True, nslots=2, will_take=2)
+    cold = FakeMgr("C", hot=False, nslots=5, will_take=5)
+    h.managers = [hot, cold]
     h._fill_all(now=None)
-    assert hot.fills == [None]                  # hot fills its warm slots freely
-    # budget = 3 - reserved_hot(1) - cold_busy(0) = 2; C takes 1, D offered the remaining 1
-    assert cold1.fills == [2]
-    assert cold2.fills == [1]
+    assert hot.fills == [1] and hot.busy_count() == 1   # offered + took exactly one
+    assert cold.fills == []                             # budget spent on hot; cold not offered
 
 
-def test_fill_all_stops_cold_when_budget_exhausted(tmp_path):
-    h = _host(tmp_path, max_slots=2)
-    hot = FakeMgr("A", hot=True, nslots=1, will_take=1)
-    cold1 = FakeMgr("C", hot=False, nslots=5, will_take=5)   # grabs all remaining
-    cold2 = FakeMgr("D", hot=False, nslots=5, will_take=5)
-    h.managers = [hot, cold1, cold2]
+def test_fill_all_falls_through_to_cold_when_hot_has_no_work(tmp_path):
+    h = _host(tmp_path, max_slots=8)
+    hot = FakeMgr("A", hot=True, nslots=2, will_take=0)   # warm but no workable cards
+    cold = FakeMgr("C", hot=False, nslots=5, will_take=5)
+    h.managers = [hot, cold]
     h._fill_all(now=None)
-    assert cold1.fills == [1]    # budget = 2 - 1 = 1; C takes it
-    assert cold2.fills == []     # nothing left -> D never offered
+    assert hot.busy_count() == 0
+    assert cold.fills == [1] and cold.busy_count() == 1  # the one start goes to cold
+
+
+def test_fill_all_respects_concurrency_cap(tmp_path):
+    # max_concurrent_workers bounds in-flight workers host-wide, independent of free slots.
+    h = _host(tmp_path, max_slots=8, max_concurrent_workers=3)
+    a = FakeMgr("A", hot=True, nslots=4, busy=2, will_take=4)
+    b = FakeMgr("B", hot=False, nslots=4, busy=1, will_take=4)
+    h.managers = [a, b]                          # busy_total = 3 == cap
+    h._fill_all(now=None)
+    assert a.fills == [] and b.fills == []       # at the cap: nothing new starts
+
+
+def test_fill_all_cold_blocked_when_stacks_full(tmp_path):
+    # The RAM/stack budget still holds: a cold project can't provision a stack when hot
+    # warm pools already reserve all of max_slots, even with concurrency headroom to spare.
+    h = _host(tmp_path, max_slots=2, max_concurrent_workers=5)
+    hot = FakeMgr("A", hot=True, nslots=2, will_take=0)   # reserves both stacks, no work
+    cold = FakeMgr("C", hot=False, nslots=5, will_take=5)
+    h.managers = [hot, cold]
+    h._fill_all(now=None)
+    assert cold.fills == []                      # stack_room = 2 - 2 - 0 = 0 -> blocked
 
 
 def test_discover_builds_managers_and_applies_row(tmp_path, monkeypatch):

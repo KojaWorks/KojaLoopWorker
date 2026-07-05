@@ -101,6 +101,19 @@ def test_host_config_loads(tmp_path):
     assert h.brief_page == "https://patch/app/loop"
 
 
+def test_max_concurrent_workers_defaults_to_max_slots(tmp_path):
+    cfg = tmp_path / "config.toml"
+    backlog = '[backlog]\napi_base="https://a"\nanon_key="k"\n'
+
+    def top(extra=""):
+        return f'worker_manager = "m"\nclones_dir = "/x"\nmax_slots = 8\n{extra}{backlog}'
+
+    cfg.write_text(top())
+    assert HostConfig.load(cfg).max_concurrent_workers == 8   # unset -> as many as there are stacks
+    cfg.write_text(top("max_concurrent_workers = 3\n"))
+    assert HostConfig.load(cfg).max_concurrent_workers == 3   # explicit cap honored
+
+
 def test_host_config_missing_required_key(tmp_path):
     cfg = tmp_path / "config.toml"
     cfg.write_text('worker_manager = "miquon"\nclones_dir = "/x"\n[backlog]\napi_base="https://a"\n')

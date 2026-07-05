@@ -64,12 +64,22 @@ class HostConfig:
     anon_key: str
     clones_dir: Path                   # where project repos are cloned
     max_slots: int = 4                 # host-wide cap on concurrent live stacks (RAM budget)
+    # host-wide cap on concurrently RUNNING workers (cards in flight), independent of
+    # max_slots: lets a host hold many cold slots for capacity but only auth/run a few
+    # claudes at once. Concurrent claudes on one account race the shared OAuth refresh and
+    # trip session-revocation, so keeping this low is an auth-safety measure, not just RAM.
+    # 0 → default to max_slots at load.
+    max_concurrent_workers: int = 0
     base_port: int = 54400
     port_step: int = 100
     roadmap_table: str = "roadmap"
     workers_table: str = "loop_workers"
     projects_table: str = "projects"
     brief_page: str = ""               # the shared generic loop page (url or id) all workers read
+
+    def __post_init__(self) -> None:
+        if self.max_concurrent_workers <= 0:  # unset → run as many at once as there are stacks
+            self.max_concurrent_workers = self.max_slots
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "HostConfig":
@@ -95,6 +105,7 @@ class HostConfig:
             anon_key=anon_key,
             clones_dir=Path(clones_dir).expanduser(),
             max_slots=raw.get("max_slots", 4),
+            max_concurrent_workers=raw.get("max_concurrent_workers", 0),
             base_port=raw.get("base_port", 54400),
             port_step=raw.get("port_step", 100),
             roadmap_table=backlog.get("roadmap_table", "roadmap"),
