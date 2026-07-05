@@ -15,6 +15,7 @@ def _slots_table(slots: list[dict]) -> str:
     rows = "".join(
         f"<tr><td>{s['index']}</td><td>{s['state']}</td>"
         f"<td>{html.escape(s.get('activity') or '—')}</td><td>{s.get('port') or '—'}</td>"
+        f"<td>{html.escape(s.get('model') or '—')}</td>"
         f"<td>{'~' + str(s['card']) if s['card'] else '—'}</td>"
         f"<td>{html.escape(s['session'] or '—')}</td>"
         f"<td>{s['started_at'] or '—'}</td>"
@@ -22,7 +23,7 @@ def _slots_table(slots: list[dict]) -> str:
         for s in slots
     )
     return ("<table><tr><th>slot</th><th>state</th><th>activity</th><th>port</th>"
-            "<th>card</th><th>session</th><th>started</th><th>thinking</th></tr>"
+            "<th>model</th><th>card</th><th>session</th><th>started</th><th>thinking</th></tr>"
             f"{rows}</table>")
 
 

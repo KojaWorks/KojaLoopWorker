@@ -158,6 +158,22 @@ def test_launch_falls_back_to_project_default_model(mgr):
     assert 'exec claude --permission-mode auto --model sonnet "$PROMPT"' in launch
 
 
+def test_snapshot_carries_resolved_model(mgr):
+    m, *_ = mgr
+    m._project_model = "sonnet"
+    m.adapter.cards[1].model = "opus"               # card override wins
+    m.tick()
+    busy = next(s for s in m.snapshot()["slots"] if s["state"] == SlotState.BUSY.value)
+    assert busy["model"] == "opus"
+
+    # once the card ships and the slot is reaped, the model clears with the rest of the slot
+    m.adapter.cards[1].status = CardStatus.SHIPPED
+    m.tick()  # reap grace
+    m.tick()  # reap
+    idle = next(s for s in m.snapshot()["slots"] if s["index"] == busy["index"])
+    assert idle["model"] is None
+
+
 def test_launch_shell_quotes_a_hostile_model_value(mgr):
     # model is a Patch select column (opus/fable/sonnet/haiku) so this shouldn't occur in
     # practice, but the launch script must not be one shell escape away from injection if a

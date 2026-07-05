@@ -207,6 +207,7 @@ class SlotPool:
         slot.session = None
         slot.card_num = None
         slot.worker_id = None
+        slot.model = None
         slot.started_at = None
         slot.done_since = None
 

@@ -341,6 +341,7 @@ class Manager:
         slot.session = session
         slot.card_num = card.num
         slot.worker_id = worker.id
+        slot.model = self._resolve_model(card)
         slot.started_at = now
         slot.done_since = None
         self.log(f"spawned {name} on ~{card.num} ({card.title!r}) in slot {slot.index} (tmux: {session})")
@@ -484,6 +485,8 @@ class Manager:
                     "thinking": tmux.summary_line(s.session) if (s.session and s.state == SlotState.BUSY) else "",
                     # only projects that echo LOOPWORKER_PORT bind one; hide it for native/stackless
                     "port": s.port if s.port_reported else None,
+                    # resolved model alias while BUSY (card/project override; None = CLI default)
+                    "model": s.model if s.state == SlotState.BUSY else None,
                     "card": s.card_num,
                     "session": s.session,
                     "started_at": s.started_at.isoformat() if s.started_at else None,
