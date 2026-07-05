@@ -59,7 +59,7 @@ def mgr(tmp_path, monkeypatch):
     # Manager() builds a real PatchAdapter; don't exchange the PAT over the network
     # (this test swaps in FakeBacklog right after, but construction runs first).
     monkeypatch.setattr("loopworker.backlog.patch.PatchAdapter._ensure_token",
-                        lambda self, force=False: None)
+                        lambda self, force=False, retry=False: None)
     project = tmp_path / "proj"
     project.mkdir()
     manifest = Manifest(

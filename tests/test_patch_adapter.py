@@ -31,7 +31,7 @@ def adapter(monkeypatch):
     monkeypatch.setenv("PATCH_PAT", "pat_test")
     # Don't hit the network exchanging the PAT at construction; the mapping/selection
     # tests stub _get/_patch directly, above the auth layer.
-    monkeypatch.setattr(PatchAdapter, "_ensure_token", lambda self, force=False: None)
+    monkeypatch.setattr(PatchAdapter, "_ensure_token", lambda self, force=False, retry=False: None)
     return PatchAdapter(_manifest())
 
 
@@ -239,6 +239,23 @@ def test_exchange_gives_up_and_notifies_after_budget(monkeypatch):
         PatchAdapter(_manifest(), retry_budget_seconds=25,
                      notify=lambda key, msg: alerts.append((key, msg)))
     assert alerts and alerts[0][0] == "patch-unreachable"
+
+
+def test_runtime_refresh_fails_fast_not_retried(monkeypatch):
+    # A mid-run token refresh hitting a 5xx must surface at once — the retry loop is
+    # startup-only, so the single-threaded host isn't blocked for minutes on a refresh.
+    monkeypatch.setenv("PATCH_PAT", "pat_abc")
+    monkeypatch.setattr("loopworker.backlog.patch.httpx.post",
+                        lambda url, json, headers, timeout: _Resp(200))
+    a = PatchAdapter(_manifest())                    # startup exchange ok
+    sleeps = []
+    monkeypatch.setattr("loopworker.backlog.patch.time.sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr("loopworker.backlog.patch.httpx.post",
+                        lambda url, json, headers, timeout: _Resp(503))
+    a._access_exp = 0.0                              # force a re-exchange on next request
+    with pytest.raises(RuntimeError, match="unreachable during PAT exchange"):
+        a._get("roadmap", {})
+    assert sleeps == []                              # no backoff on the runtime path
 
 
 def test_card_status_parse_tolerates_unknown():

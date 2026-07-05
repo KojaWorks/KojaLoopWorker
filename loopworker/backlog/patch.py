@@ -112,7 +112,7 @@ class PatchAdapter(BacklogAdapter):
             headers={"apikey": anon_key, "Content-Type": "application/json"},
             timeout=30,
         )
-        self._ensure_token()  # fail fast at startup if the PAT is bad
+        self._ensure_token(retry=True)  # wait out a transient backend at startup; a bad PAT still fails fast
 
     @classmethod
     def from_host(
@@ -272,12 +272,17 @@ class PatchAdapter(BacklogAdapter):
         )
 
     # Auth ----
-    def _ensure_token(self, *, force: bool = False) -> None:
+    def _ensure_token(self, *, force: bool = False, retry: bool = False) -> None:
         """Exchange the PAT for a fresh owner JWT when missing/near-expiry/forced.
-        Re-exchanging (vs. silently reusing) is how revocation takes effect. Transient
-        backend errors (5xx / connect failures) are retried with capped exponential
-        backoff — a Manager (re)start colliding with a prod redeploy shouldn't be fatal.
-        A genuine auth rejection (401/403) still fails fast: the PAT is bad."""
+        Re-exchanging (vs. silently reusing) is how revocation takes effect. A genuine
+        auth rejection (401/403) always fails fast: the PAT is bad.
+
+        With retry=True (the startup call) a transient backend error (5xx / connect
+        failure) is waited out with capped exponential backoff — a Manager (re)start
+        colliding with a prod redeploy shouldn't be fatal. On the runtime request path
+        retry=False: a transient failure surfaces immediately so the single-threaded host
+        isn't blocked for minutes on a mid-run token refresh; the caller retries on its
+        next cadence (see reconcile_projects)."""
         if not force and self._access_token and time.time() < self._access_exp - 60:
             return
         elapsed = 0.0
@@ -286,6 +291,8 @@ class PatchAdapter(BacklogAdapter):
             err = self._try_exchange()
             if err is None:
                 return
+            if not retry:  # runtime path: fail fast, let the caller retry on its cadence
+                raise RuntimeError(f"Patch backend unreachable during PAT exchange ({err}).")
             if elapsed >= self._retry_budget:
                 msg = (f"Patch backend still unreachable ({err}) after ~{int(elapsed)}s of "
                        "retries — giving up.")
