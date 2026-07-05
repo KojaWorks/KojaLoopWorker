@@ -231,3 +231,25 @@ def test_broken_slot_notifies_once(mgr):
     slot.state = SlotState.BROKEN
     m._reconcile_busy(m.started_at)  # broken again after recovering — fires again
     assert len(notified) == 2
+
+
+def test_broken_slot_notifies_again_after_index_reuse(mgr):
+    # SlotPool.resize() can retire a BROKEN slot and later hand a brand-new Slot the
+    # same (now free) index (slots.py _free_index/_add_slot). An index-keyed
+    # "already notified" set would wrongly swallow the new slot's own BROKEN alert —
+    # tracking must be by slot identity, not slot.index.
+    from loopworker.models import Slot
+    m, *_ = mgr
+    notified = []
+    m._notify = lambda key, message: notified.append((key, message))
+    old = m.pool.slots[0]
+
+    old.state = SlotState.BROKEN
+    m._reconcile_busy(m.started_at)
+    assert len(notified) == 1
+
+    m.pool.slots.remove(old)  # simulate _retire() dropping the old slot
+    new = Slot(index=old.index, dir=old.dir, port=old.port, state=SlotState.BROKEN)
+    m.pool.slots.append(new)  # simulate _add_slot() reusing the freed index
+    m._reconcile_busy(m.started_at)
+    assert len(notified) == 2  # a genuinely new BROKEN slot — must notify again

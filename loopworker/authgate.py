@@ -33,7 +33,7 @@ class AuthGate:
         timeout_seconds: float = 20.0,
         ttl_seconds: float = 180.0,
         log: Callable[[str], None] = lambda msg: None,
-        notify: Callable[[str], None] = lambda msg: None,
+        notify: Callable[[str, str], None] = lambda key, msg: None,
     ):
         self.enabled = enabled
         self._cmd = cmd
@@ -60,10 +60,12 @@ class AuthGate:
         self._checked_at = now
         if was_ok is not False and not self._ok:
             self._log(f"auth preflight failed - pausing dispatch: {reason}")
-            self._notify(f"LoopWorker: claude login check failing ({reason}) - dispatch paused")
+            self._notify("auth-failure", f"LoopWorker: claude login check failing ({reason}) - dispatch paused")
         elif was_ok is False and self._ok:
             self._log("auth preflight recovered - resuming dispatch")
-            self._notify("LoopWorker: claude login recovered - dispatch resumed")
+            # distinct key from the failure notify above: same key would dedupe this
+            # recovery notification away if it lands inside the failure's dedupe window
+            self._notify("auth-recovered", "LoopWorker: claude login recovered - dispatch resumed")
         return self._ok
 
     def _check(self) -> tuple[bool, str]:
@@ -78,8 +80,11 @@ class AuthGate:
             )
         except subprocess.TimeoutExpired:
             return False, "preflight timed out"
-        except FileNotFoundError:
-            return False, "claude binary not found"
+        except Exception as e:
+            # A preflight check must never itself crash the reconcile loop (host mode
+            # shares one gate across every project) — treat any failure to even run
+            # the command (missing binary, a permissions error, ...) as "not ok".
+            return False, f"preflight failed to run: {e!r}"
         if r.returncode != 0:
             detail = (r.stderr or r.stdout or "").strip().splitlines()
             return False, (detail[-1] if detail else f"exit {r.returncode}")
