@@ -375,6 +375,11 @@ class Manager:
             # SessionEnd hook leaves the WARM slot stack up when we reap the worker
             # (otherwise reaping tears down the stack the next card needs).
             "export LOOPWORKER=1\n"
+            # claude-code 2.1.201 regression: an interactive session with USER in its env
+            # 401s ("Invalid authentication credentials") on the first API call after MCP
+            # tools load via ToolSearch — with USER stripped the same session works. Workers
+            # always load MCP tools, so strip it until upstream fixes it (bisected 2026-07-05).
+            "unset USER\n"
             # auto mode: the Worker runs unattended, so it must not block on
             # per-tool permission prompts (acceptEdits still prompts for MCP/bash).
             'exec claude --permission-mode auto "$PROMPT"\n'
