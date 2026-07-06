@@ -23,6 +23,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from .config import Manifest
+from .engine import EngineRecovery, looks_like_engine_down
 from .models import Slot, SlotState
 
 _PORT_LINE = re.compile(r"^LOOPWORKER_PORT=(\d+)\s*$", re.MULTILINE)
@@ -66,11 +67,16 @@ class SlotError(RuntimeError):
 class SlotPool:
     def __init__(self, manifest: Manifest, base_port: int = 54400, port_step: int = 100,
                  log: Callable[[str], None] = lambda _m: None, hot: bool = True,
-                 base_ref: str = "origin/main", clock: Callable[[], float] = time.monotonic):
+                 base_ref: str = "origin/main", clock: Callable[[], float] = time.monotonic,
+                 engine_recovery: EngineRecovery | None = None):
         self.manifest = manifest
         self.base_port = base_port
         self.port_step = port_step
         self.log = log
+        # Optional container-engine (Docker/OrbStack) recovery, shared host-wide by the
+        # HostManager so one `orb start` backs off every pool. None → no auto-recovery
+        # (single-project/local runs), and a slot broken by a down engine just backs off.
+        self._engine = engine_recovery
         # monotonic clock, injectable so tests can drive the hot-revive backoff deterministically.
         self._clock = clock
         # the upstream ref worktrees branch off and reset to (a project's default branch);
@@ -206,6 +212,7 @@ class SlotPool:
         self.log(f"slot {slot.index}: worktree at {self.base_ref} @ {head}, branch claude/{branch_slug}")
         rc, out = self._run_script("reset", slot, check=False)
         if rc != 0:
+            slot.engine_down = looks_like_engine_down(out)
             raise SlotError(f"reset.sh failed for slot {slot.index} (rc={rc})")
         self._capture_port(slot, out)
 
@@ -265,7 +272,21 @@ class SlotPool:
         lands. Hot slots have no on-demand path, so they're RE-PROVISIONED here in place: on
         success they return to warm IDLE; on failure they stay BROKEN and back off
         _HOT_REPROVISION_COOLDOWN before the next attempt, so a genuinely dead stack isn't
-        re-run every fill."""
+        re-run every fill.
+
+        A hot slot broken by a down container engine (engine_down) can't be re-provisioned
+        until the engine is back, so — if an EngineRecovery is configured — we try to restart
+        it first (one attempt recovers every such slot). If it stays down, those slots back off
+        rather than spin re-provisioning into an unreachable daemon."""
+        if self.hot and self._engine is not None:
+            due = [s for s in self.slots if s.state == SlotState.BROKEN
+                   and s.engine_down and self._clock() >= s.retry_after]
+            if due and not self._engine.recover():
+                for s in due:
+                    s.retry_after = self._clock() + _HOT_REPROVISION_COOLDOWN
+                self.log(f"engine still down — {len(due)} hot slot(s) stay BROKEN, backing off "
+                         f"{_fmt_dur(_HOT_REPROVISION_COOLDOWN)}")
+                return 0
         n = 0
         for s in self.slots:
             if s.state != SlotState.BROKEN:
@@ -332,7 +353,11 @@ class SlotPool:
         slot.activity = "provisioning"  # the project's provision.sh — its output streams to the log
         rc, out = self._run_script("provision", slot, check=False)
         if rc != 0:
+            # Record whether this looked like a down container engine, so revive_broken can
+            # try to restart it (vs an ordinary provision bug a restart won't fix).
+            slot.engine_down = looks_like_engine_down(out)
             raise SlotError(f"provision.sh failed (rc={rc}) — see the [slot {slot.index} provision] log above")
+        slot.engine_down = False
         self._capture_port(slot, out)
 
     def _capture_port(self, slot: Slot, stdout: str) -> None:

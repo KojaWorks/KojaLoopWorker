@@ -91,6 +91,77 @@ def test_revive_broken_hot_failure_backs_off_before_retrying(tmp_path, monkeypat
     assert hot.revive_broken() == 0 and len(attempts) == 2  # retried once the backoff elapsed
 
 
+class _FakeEngine:
+    """Stands in for EngineRecovery — records recover() calls, returns a scripted result."""
+    def __init__(self, result=True):
+        self.result = result
+        self.calls = 0
+
+    def recover(self):
+        self.calls += 1
+        return self.result
+
+
+def test_revive_broken_recovers_engine_then_reprovisions(tmp_path, monkeypatch):
+    # A hot slot broken by a down engine: revive_broken restarts the engine first, then
+    # re-provisions the slot back to IDLE.
+    hot = _hot_pool(tmp_path, monkeypatch)
+    hot._engine = _FakeEngine(result=True)
+    provisioned: list[int] = []
+    monkeypatch.setattr(hot, "_provision", lambda s: provisioned.append(s.index))
+    hot.slots[0].state = SlotState.BROKEN
+    hot.slots[0].engine_down = True
+    assert hot.revive_broken() == 1
+    assert hot._engine.calls == 1                     # engine restart attempted
+    assert hot.slots[0].state == SlotState.IDLE and provisioned == [0]
+
+
+def test_revive_broken_skips_engine_recovery_for_non_engine_break(tmp_path, monkeypatch):
+    # A slot broken by an ordinary provision bug (engine_down False) must NOT trigger an
+    # `orb start` — restarting the engine wouldn't fix it.
+    hot = _hot_pool(tmp_path, monkeypatch)
+    hot._engine = _FakeEngine(result=True)
+    monkeypatch.setattr(hot, "_provision", lambda s: None)
+    hot.slots[0].state = SlotState.BROKEN
+    hot.slots[0].engine_down = False
+    assert hot.revive_broken() == 1
+    assert hot._engine.calls == 0                     # engine left alone
+
+
+def test_revive_broken_backs_off_when_engine_stays_down(tmp_path, monkeypatch):
+    # If the engine can't be recovered, the engine_down slot stays BROKEN and backs off —
+    # revive_broken must NOT go on to re-provision into an unreachable daemon.
+    clock = [1000.0]
+    hot = _hot_pool(tmp_path, monkeypatch)
+    hot._clock = lambda: clock[0]
+    hot._engine = _FakeEngine(result=False)
+    provisioned: list[int] = []
+    monkeypatch.setattr(hot, "_provision", lambda s: provisioned.append(s.index))
+    hot.slots[0].state = SlotState.BROKEN
+    hot.slots[0].engine_down = True
+    assert hot.revive_broken() == 0
+    assert provisioned == []                          # never re-provisioned
+    assert hot.slots[0].state == SlotState.BROKEN
+    assert hot.slots[0].retry_after > clock[0]        # backed off before the next attempt
+
+
+def test_provision_failure_flags_engine_down(tmp_path, monkeypatch):
+    # A provision whose output looks like a down docker daemon sets engine_down; an
+    # ordinary failure leaves it clear.
+    logs: list[str] = []
+    hot = _pool(tmp_path, "true\n", logs)       # real _provision (not the _hot_pool stub)
+    monkeypatch.setattr(hot, "_run_script",
+                        lambda which, s, **k: (1, "Cannot connect to the Docker daemon at unix://..."))
+    slot = hot.slots[0]
+    with pytest.raises(SlotError):
+        hot._provision(slot)
+    assert slot.engine_down is True
+    monkeypatch.setattr(hot, "_run_script", lambda which, s, **k: (1, "migration 0007 failed"))
+    with pytest.raises(SlotError):
+        hot._provision(slot)
+    assert slot.engine_down is False
+
+
 def test_redact_scrubs_stack_secrets():
     jwt = "eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIn0.abcdef123456"
     assert _redact(f"service_role key {jwt}") == "service_role key [redacted]"
