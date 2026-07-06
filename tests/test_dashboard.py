@@ -1,6 +1,16 @@
 """The dashboard's ~NNN linkifier: resolvable card refs become anchors, unresolved
 ones stay plain (escaped) text, and no rendering path trusts raw log/card content."""
-from loopworker.dashboard import _linkify, _render, _render_host
+import json
+
+from loopworker import __version__
+from loopworker.dashboard import (
+    CONTRACT_VERSION,
+    _health,
+    _linkify,
+    _render,
+    _render_host,
+    _response,
+)
 
 _LINKS = {"772": "https://patch.example/app/PAGE?row=u772&rowpage=1"}
 
@@ -65,3 +75,48 @@ def test_render_host_links_slots_and_log():
     out = _render_host(snap)
     # slot activity cell + slot card cell + host log line
     assert out.count("row=u772") == 3
+
+
+# --- status contract: /json version stamps + /health compact summary ---------------
+
+
+def _host_snap():
+    return {"worker_manager": "miquon", "started_at": "t", "paused": True,
+            "poll_interval": 30, "busy_total": 1,
+            "projects": [{"project": "Patch", "hot": True, "slots": [_slot(772), _idle_slot()]}],
+            "log": [], "card_links": {}}
+
+
+def _idle_slot():
+    return {"index": 1, "state": "idle", "activity": "", "thinking": "", "port": None,
+            "model": None, "card": None, "session": None, "started_at": None}
+
+
+def test_json_carries_version_stamps():
+    body, ctype = _response("/json", _single_snap())
+    assert ctype == "application/json"
+    payload = json.loads(body)
+    assert payload["contract_version"] == CONTRACT_VERSION
+    assert payload["loopworker_version"] == __version__
+    assert payload["project"] == "demo"          # original snapshot preserved
+
+
+def test_health_host_shape():
+    body, ctype = _response("/health", _host_snap())
+    assert ctype == "application/json"
+    h = json.loads(body)
+    assert h["mode"] == "host" and h["worker_manager"] == "miquon"
+    assert h["paused"] is True and h["busy"] == 1 and h["slots"] == 2
+    assert h["contract_version"] == CONTRACT_VERSION and h["loopworker_version"] == __version__
+
+
+def test_health_single_shape_counts_busy_from_slots():
+    h = _health(_single_snap())                  # single-project snapshot, one busy slot
+    assert h["mode"] == "single" and h["worker_manager"] == "demo"
+    assert h["slots"] == 1 and h["busy"] == 1
+
+
+def test_unknown_path_renders_html():
+    body, ctype = _response("/", _single_snap())
+    assert ctype.startswith("text/html")
+    assert b"LoopWorker" in body

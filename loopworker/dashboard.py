@@ -9,7 +9,14 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
 
+from . import __version__
+
 SnapshotProvider = Callable[[], dict]
+
+# Bump when the /json or /health shape changes in a way a client must notice. Shells (the
+# Mac app, a Koja publisher) read this to refuse an incompatible Manager rather than
+# misparse it.
+CONTRACT_VERSION = 1
 
 _CARD_REF = re.compile(r"~(\d+)")
 
@@ -92,16 +99,44 @@ def _render(snap: dict) -> str:
 """
 
 
+def _health(snap: dict) -> dict:
+    """A compact, cheap liveness/state summary for frequent polling (the Mac app's status
+    line). Derived purely from the snapshot — no subprocess work, unlike `doctor`. Robust to
+    both snapshot shapes: host (`projects[].slots[]`) and single-project (top-level `slots`)."""
+    is_host = "projects" in snap
+    slots = ([s for p in snap.get("projects", []) for s in p.get("slots", [])]
+             if is_host else snap.get("slots", []))
+    return {
+        "contract_version": CONTRACT_VERSION,
+        "loopworker_version": __version__,
+        "ok": True,
+        "mode": "host" if is_host else "single",
+        "worker_manager": snap.get("worker_manager") or snap.get("project"),
+        "paused": snap.get("paused", False),
+        "started_at": snap.get("started_at"),
+        "poll_interval": snap.get("poll_interval"),
+        "slots": len(slots),
+        "busy": snap.get("busy_total", sum(1 for s in slots if s.get("state") == "busy")),
+    }
+
+
+def _response(path: str, snap: dict) -> tuple[bytes, str]:
+    """Route a GET path to (body, content-type). Pure, so the contract is unit-testable
+    without binding a socket. `/json` = full snapshot + version stamps; `/health` = compact
+    state; anything else = the HTML page."""
+    path = path.rstrip("/")
+    if path == "/json":
+        stamped = {**snap, "contract_version": CONTRACT_VERSION, "loopworker_version": __version__}
+        return json.dumps(stamped, indent=2).encode(), "application/json"
+    if path == "/health":
+        return json.dumps(_health(snap), indent=2).encode(), "application/json"
+    return _render(snap).encode(), "text/html; charset=utf-8"
+
+
 def serve(provider: SnapshotProvider, port: int = 8787) -> threading.Thread:
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802
-            snap = provider()
-            if self.path.rstrip("/") == "/json":
-                body = json.dumps(snap, indent=2).encode()
-                ctype = "application/json"
-            else:
-                body = _render(snap).encode()
-                ctype = "text/html; charset=utf-8"
+            body, ctype = _response(self.path, provider())
             self.send_response(200)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
