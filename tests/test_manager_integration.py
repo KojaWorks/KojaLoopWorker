@@ -133,6 +133,40 @@ def test_auth_wedged_worker_is_reclaimed(mgr):
     assert m.pool.slots[0].state == SlotState.IDLE  # slot freed, not stuck until wallclock
 
 
+def test_auth_reclaim_arms_gate_backoff_and_pauses_respawn(mgr, monkeypatch):
+    # A wedged worker's reclaim must arm the shared gate's backoff so the SAME tick's fill
+    # step doesn't storm a fresh worker straight back into the broken auth — even though the
+    # headless preflight still passes (the reclaim is the real signal auth is down).
+    m, state, spawned, _killed = mgr
+    m.auth.enabled = True
+    monkeypatch.setattr(m.auth, "_check", lambda: (True, ""))  # -p preflight passes
+
+    m.tick()                                   # spawn a worker; card 1 -> In progress
+    assert m.pool.slots[0].state == SlotState.BUSY
+    spawned.clear()
+
+    state["pane"] = "⏺ Please run /login · API Error: 401 Invalid authentication credentials"
+    m.tick()                                   # reconcile reclaims; fill in the same tick is paused
+    assert m.adapter.releases == [1]           # card reclaimed
+    assert spawned == []                       # backoff blocked the respawn (no storm)
+    assert m.auth.ok() is False                # gate now backing off host-wide
+
+
+def test_clean_reap_clears_auth_backoff(mgr, monkeypatch):
+    m, state, _spawned, _killed = mgr
+    m.auth.enabled = True
+    monkeypatch.setattr(m.auth, "_check", lambda: (True, ""))
+    m.tick()                                   # spawn worker on card 1
+    m.auth.note_auth_reclaim()                 # a prior storm armed the backoff
+    assert m.auth.ok() is False
+
+    m.adapter.cards[1].status = CardStatus.SHIPPED
+    m.tick()                                   # REAP grace starts (grace=0)
+    m.tick()                                   # grace elapsed -> clean reap
+    assert m.pool.slots[0].state == SlotState.IDLE
+    assert m.auth.ok() is True                 # the clean completion cleared the streak
+
+
 def test_launch_omits_model_flag_when_unset(mgr):
     m, *_ = mgr
     m.tick()

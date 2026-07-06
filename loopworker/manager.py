@@ -215,6 +215,9 @@ class Manager:
                     slot.done_since = now
                     self.log(f"slot {slot.index} ~{slot.card_num}: {reason}; reap grace started")
                 elif now - slot.done_since >= self.grace:
+                    # A worker ran its card to a clean finish — interactive auth is healthy,
+                    # so clear any auth-reclaim backoff the shared gate had armed.
+                    self.auth.note_clean_completion()
                     self._reap(slot, reason)
             elif action in (SlotAction.CRASH_RECLAIM, SlotAction.HUNG_RECLAIM, SlotAction.AUTH_RECLAIM):
                 slot.activity = f"reclaiming — {reason}"
@@ -224,6 +227,10 @@ class Manager:
                         self.adapter.release(card, note=reason)
                     except Exception as e:
                         self.log(f"  release failed: {e!r}")
+                # A login-prompt wedge means interactive auth is broken even if the spawn-time
+                # preflight passes — arm the gate's backoff so we don't storm respawns into it.
+                if action == SlotAction.AUTH_RECLAIM:
+                    self.auth.note_auth_reclaim()
                 self._reap(slot, reason)
 
     def _reap(self, slot: Slot, reason: str) -> None:
