@@ -49,6 +49,40 @@ cp config.toml.example ~/.loopworker/config.toml   # set worker_manager, backlog
 ./.venv/bin/loopworker                     # host mode: serve every project assigned to this host
 ```
 
+## Run as a service (Linux)
+
+For a headless fleet box, install with `pipx` and supervise with `systemd --user` instead
+of a hand-run `tmux`:
+
+```bash
+git clone https://github.com/KojaWorks/KojaLoopWorker.git && cd KojaLoopWorker
+bash packaging/install.sh          # pipx install + drop the systemd --user unit + enable it
+```
+
+Then, before the first start:
+
+- `cp config.toml.example ~/.loopworker/config.toml` and edit it (worker_manager, backlog,
+  clones_dir, max_slots).
+- Put `PATCH_PAT=…` in `~/.loopworker/.env` (the service runs from there, so its `.env`
+  loader picks it up). Mint the token in Patch → Settings → Tokens.
+- `loopworker doctor` to confirm every host prerequisite (claude login, container engine,
+  tmux, git, backlog) is green.
+
+Day-to-day:
+
+```bash
+systemctl --user start loopworker         # start (Restart=on-failure keeps it up)
+systemctl --user status loopworker        # or: loopworker status
+journalctl --user -u loopworker -f        # follow the log
+systemctl --user kill -s INT --kill-whom=main loopworker   # graceful drain (workers finish, none new spawn)
+systemctl --user stop loopworker          # force-stop (releases in-flight cards to Backlog)
+sudo loginctl enable-linger $USER         # keep it running after logout / across reboot
+```
+
+**Updating** is re-running `bash packaging/install.sh` (a `--force` pipx reinstall pulls the
+latest commit), then `systemctl --user restart loopworker`. `pipx install loopworker` from
+PyPI will replace the git URL once there's a second operator.
+
 **Host mode (default).** `~/.loopworker/config.toml` is the source of truth: the backlog
 connection, this host's `worker_manager` id, where to clone projects, and `max_slots` (the
 host-wide RAM budget, in weighted slot-cost units). The Manager reads the **projects**
