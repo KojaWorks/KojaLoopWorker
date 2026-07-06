@@ -43,6 +43,33 @@ def test_doctor_json_is_machine_readable(monkeypatch, capsys):
                                     "detail": "git not on PATH", "remedy": "install git"}
 
 
+def test_doctor_surfaces_malformed_config_not_missing(monkeypatch, capsys):
+    # A present-but-broken config raises ValueError from HostConfig.load; doctor must show
+    # the real parse error as its own check, not collapse it to "no config".
+    monkeypatch.setattr(HostConfig, "load",
+                        classmethod(lambda cls, path=None: (_ for _ in ()).throw(
+                            ValueError("/x/config.toml: missing required key 'api_base'"))))
+    monkeypatch.setattr(readiness, "check_all", lambda *a, **k: [Check("claude", True, "ok")])
+    rc = cli._cmd_doctor(["--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == 1
+    cfg = next(c for c in payload["checks"] if c["name"] == "config")
+    assert "api_base" in cfg["detail"] and cfg["ok"] is False
+
+
+def test_status_empty_host_shows_no_phantom_project(monkeypatch, capsys):
+    snap = {"worker_manager": "miquon", "started_at": "t", "poll_interval": 300,
+            "paused": False, "projects": []}  # host serving zero projects
+
+    class Resp:
+        def json(self):
+            return snap
+    monkeypatch.setattr(httpx, "get", lambda url, timeout: Resp())
+    assert cli._cmd_status([]) == 0
+    out = capsys.readouterr().out
+    assert "no projects assigned" in out and "None" not in out
+
+
 def test_status_reports_no_manager_when_unreachable(monkeypatch, capsys):
     def refused(url, timeout):
         raise httpx.ConnectError("connection refused")

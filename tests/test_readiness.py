@@ -77,6 +77,22 @@ def test_engine_missing_binary_is_fail(monkeypatch):
     assert not c.ok and "not found" in c.detail
 
 
+def test_engine_malformed_probe_is_fail_not_crash():
+    # A mismatched quote in engine.probe_command is operator misconfig doctor exists to
+    # diagnose — it must return a FAIL Check, never raise ValueError out of the sweep.
+    c = check_engine('docker "ps', runner=_ok)
+    assert not c.ok and "bad probe command" in c.detail and "config.toml" in c.remedy
+
+
+def test_probe_detail_is_redacted(monkeypatch):
+    # doctor streams check details to stdout/--json; a secret-shaped token in probe stderr
+    # must be scrubbed, same as every other streaming surface.
+    monkeypatch.setattr(readiness.shutil, "which", lambda b: "/usr/bin/docker")
+    jwt = "eyJhbGciOiJIUzI1.eyJzdWIiOiJ1c2Vy.SflKxwRJSMeKKF2"
+    c = check_engine("docker ps", runner=_fail(f"auth failed with {jwt}"))
+    assert not c.ok and jwt not in c.detail and "[redacted]" in c.detail
+
+
 def test_tool_present_and_absent(monkeypatch):
     monkeypatch.setattr(readiness.shutil, "which", lambda b: "/usr/bin/tmux")
     assert check_tool("tmux", "tmux", "install it").ok

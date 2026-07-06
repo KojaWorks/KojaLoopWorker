@@ -19,6 +19,8 @@ import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
+from .slots import _redact  # same secret-scrub every streaming surface uses
+
 # Same headless probe AuthGate uses — a cheap call that fails fast on a dead login.
 CLAUDE_PREFLIGHT = ("claude", "-p", "ok", "--model", "haiku")
 
@@ -50,7 +52,10 @@ def _default_http_probe(url: str) -> int:
 
 def _last_line(r: subprocess.CompletedProcess) -> str:
     detail = (r.stderr or r.stdout or "").strip().splitlines()
-    return detail[-1] if detail else f"exit {r.returncode}"
+    # doctor streams this to stdout / --json (the Mac panel) — redact secret-shaped tokens
+    # first, same as filelog/slots. Today's probes emit no secrets, but the gate is by
+    # construction, not by trusting that stays true.
+    return _redact(detail[-1] if detail else f"exit {r.returncode}")
 
 
 def check_claude(runner: Runner = _default_runner, timeout: float = 20.0) -> Check:
@@ -77,7 +82,11 @@ def check_engine(probe: str = "docker ps", start_hint: str = "orb start",
                  runner: Runner = _default_runner, timeout: float = 15.0) -> Check:
     """The container engine most projects' provision/reset scripts drive. A stopped
     Docker/OrbStack is the classic "everything goes BROKEN" cause."""
-    cmd = shlex.split(probe)
+    try:
+        cmd = shlex.split(probe)  # operator config — a mismatched quote must FAIL, not raise
+    except ValueError as e:
+        return Check("engine", False, f"bad probe command {probe!r}: {e}",
+                     "fix engine.probe_command in ~/.loopworker/config.toml")
     if not cmd or not shutil.which(cmd[0]):
         return Check("engine", False, f"{probe!r}: command not found",
                      "install a container engine (Docker / OrbStack)")

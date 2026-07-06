@@ -105,11 +105,18 @@ def _cmd_doctor(argv: list[str]) -> int:
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     ap.add_argument("--config", type=Path, default=None, help="host config path (default ~/.loopworker/config.toml)")
     a = ap.parse_args(argv)
+    config = None
+    config_error = None
     try:
         config = HostConfig.load(a.config)
-    except (FileNotFoundError, ValueError):
-        config = None  # no host config yet — checks still run; backlog reports it
+    except FileNotFoundError:
+        pass  # no host config yet — checks still run; backlog reports it's missing
+    except ValueError as e:
+        config_error = str(e)  # present but malformed — surface the REAL reason, not "missing"
     checks = readiness.check_all(config)
+    if config_error:
+        checks.insert(0, readiness.Check("config", False, config_error,
+                                         "fix ~/.loopworker/config.toml (see README)"))
     all_ok = all(c.ok for c in checks)
     if a.json:
         print(json.dumps({"ok": all_ok, "checks": [c.as_dict() for c in checks]}, indent=2))
@@ -140,9 +147,14 @@ def _cmd_status(argv: list[str]) -> int:
     who = snap.get("worker_manager") or snap.get("project", "?")
     paused = "  [PAUSED]" if snap.get("paused") else ""
     print(f"LoopWorker · {who}{paused} · started {snap.get('started_at')} · poll {snap.get('poll_interval')}s")
-    projects = snap.get("projects") or [snap]  # host: list; single: wrap the top level
-    for p in projects:
-        if "projects" in snap:
+    # Decide host-vs-single by shape (key presence), not truthiness: a host serving zero
+    # projects has `projects: []` and must read as an empty host, not a phantom single one.
+    is_host = "projects" in snap
+    sections = snap["projects"] if is_host else [snap]
+    if is_host and not sections:
+        print("  (no projects assigned to this host)")
+    for p in sections:
+        if is_host:
             print(f"\n{p.get('project')} · {'hot' if p.get('hot') else 'cold'}")
         for s in p.get("slots", []):
             card = f"~{s['card']}" if s.get("card") else "—"
