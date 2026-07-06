@@ -267,7 +267,6 @@ class SlotPool:
         _HOT_REPROVISION_COOLDOWN before the next attempt, so a genuinely dead stack isn't
         re-run every fill."""
         n = 0
-        now = self._clock()
         for s in self.slots:
             if s.state != SlotState.BROKEN:
                 continue
@@ -277,14 +276,19 @@ class SlotPool:
                 s.retiring = False
                 n += 1
                 continue
-            if now < s.retry_after:
+            # Read the clock fresh per slot: a re-provision below blocks (up to provision.sh's
+            # timeout), so a shared pass-start timestamp would be stale for later slots.
+            if self._clock() < s.retry_after:
                 continue  # backing off — not yet time to retry this hot slot
-            s.retry_after = now + _HOT_REPROVISION_COOLDOWN
             try:
                 s.activity = "re-provisioning (retry after earlier failure)"
                 self._ensure_worktree(s)
                 self._provision(s)
             except SlotError as e:
+                # Measure the cooldown from when the attempt FINISHED, not when it started —
+                # a slow-hanging provision (up to its timeout) would otherwise already be past
+                # a start-relative deadline and be retried immediately, defeating the backoff.
+                s.retry_after = self._clock() + _HOT_REPROVISION_COOLDOWN
                 s.activity = f"broken: {e}"
                 self.log(f"slot {s.index}: re-provision failed, backing off "
                          f"{_fmt_dur(_HOT_REPROVISION_COOLDOWN)} — {e}")

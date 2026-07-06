@@ -64,8 +64,10 @@ def test_revive_broken_reprovisions_hot_in_place(tmp_path, monkeypatch):
 
 
 def test_revive_broken_hot_failure_backs_off_before_retrying(tmp_path, monkeypatch):
-    # A re-provision that keeps failing must not re-run the slow provision.sh every fill:
-    # it stays BROKEN and backs off until the cooldown elapses.
+    # A re-provision that keeps failing must not re-run the slow provision.sh every fill: it
+    # stays BROKEN and backs off. Crucially the cooldown is measured from when the attempt
+    # FINISHED — a slow-hanging provision (here 300s, > the cooldown) must NOT be instantly
+    # retryable just because wall-clock passed during the attempt itself.
     clock = [1000.0]
     hot = _hot_pool(tmp_path, monkeypatch)
     hot._clock = lambda: clock[0]
@@ -73,17 +75,19 @@ def test_revive_broken_hot_failure_backs_off_before_retrying(tmp_path, monkeypat
 
     def boom(_s):
         attempts.append(clock[0])
+        clock[0] += 300.0                                 # the failing provision itself burns 300s
         raise SlotError("docker down")
     monkeypatch.setattr(hot, "_provision", boom)
 
     hot.slots[0].state = SlotState.BROKEN
     assert hot.revive_broken() == 0 and hot.slots[0].state == SlotState.BROKEN
-    assert len(attempts) == 1                              # first attempt ran
+    assert len(attempts) == 1                              # first attempt ran (clock now 1300)
 
-    clock[0] += 60.0                                       # still inside the cooldown
-    assert hot.revive_broken() == 0 and len(attempts) == 1  # backed off — no second attempt
+    # Even though 300s (> cooldown) elapsed DURING the attempt, the next pass must NOT retry:
+    # the backoff clock starts at attempt end, not attempt start.
+    assert hot.revive_broken() == 0 and len(attempts) == 1
 
-    clock[0] += 200.0                                      # past the 180s cooldown
+    clock[0] += 200.0                                      # past the 180s cooldown after the attempt
     assert hot.revive_broken() == 0 and len(attempts) == 2  # retried once the backoff elapsed
 
 
