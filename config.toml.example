@@ -15,8 +15,11 @@ max_slots      = 4                  # host-wide RAM budget, in weighted slot-cos
 # base_port    = 54400             # first slot's stack port (projects get 1000-apart bands)
 # port_step    = 100              # port gap between a project's own slots
 # notify_command receives an alert message on stdin (worker auth failure, a slot
-# marked BROKEN) - any CLI push tool works, e.g. Pushover via curl:
-# notify_command = "curl -s -F token=$PUSHOVER_TOKEN -F user=$PUSHOVER_USER -F message=@- https://api.pushover.net/1/messages.json"
+# marked BROKEN) - any CLI push tool works, e.g. Pushover via curl. NOTE the curl
+# form is 'message=<-' (read stdin as the field VALUE), quoted so the shell doesn't
+# treat < as a redirect. 'message=@-' uploads stdin as a FILE part, which Pushover
+# rejects as a blank message.
+# notify_command = "curl -s -F token=$PUSHOVER_TOKEN -F user=$PUSHOVER_USER -F 'message=<-' https://api.pushover.net/1/messages.json"
 
 # [engine] auto-recovers a down container engine: when a hot slot's provision/reset
 # fails because Docker/OrbStack is unreachable, the Manager runs start_command and waits
