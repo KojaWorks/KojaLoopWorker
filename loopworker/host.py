@@ -24,7 +24,7 @@ from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import tmux
+from . import filelog, tmux
 from .authgate import AuthGate
 from .backlog.patch import PatchAdapter, brief_pointer
 from .config import HostConfig, Manifest
@@ -529,6 +529,7 @@ class HostManager:
             "busy_total": self._busy_total(),
             "projects": [m.snapshot() for m in self.managers],
             "log": list(self.log_lines),
+            "log_file": str(filelog.path()) if filelog.path() else None,
             "card_links": self.adapter.card_links(),
         }
 
@@ -537,6 +538,7 @@ class HostManager:
         line = f"{datetime.now(timezone.utc).strftime('%H:%M:%S')} {msg}"
         self.log_lines.append(line)
         print(line, flush=True)
+        filelog.log(f"host: {msg}")  # durable, redacted
 
     def _sleep(self, seconds: int) -> None:
         deadline = time.monotonic() + seconds
