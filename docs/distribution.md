@@ -60,9 +60,15 @@ What it is:
   unexpected exit, starts at login (opt-in). Quitting the app *is* the off switch the
   operator wants.
 - **Lifecycle maps onto the existing signals — invent nothing new.**
-  - **Quit** → `SIGINT` (graceful drain; the app stays alive showing "draining…" until the
-    Manager exits, then quits).
-  - **Force stop** (explicit menu item, and Force-Quit) → `SIGTERM` (reap + release cards).
+  - **Quit** → `SIGINT` (graceful drain; via `applicationShouldTerminate` → `.terminateLater`
+    the app stays alive showing "draining…" until the Manager exits, then quits — with a long
+    safety timeout that escalates to `SIGTERM`/`SIGKILL` so a wedged Manager can't block Quit).
+  - **Force stop** (explicit menu item) → `SIGTERM` (reap + release cards).
+  - *Caveat:* a hard **Force-Quit** sends `SIGKILL`, which no app can intercept — so use *Force
+    stop*, not Force-Quit, when you want cards released. A normal quit/logout won't orphan the
+    Manager (`applicationWillTerminate` sends a best-effort `SIGTERM`); an app *crash* can leave
+    a still-running, crash-safe Manager behind — adopting/force-stopping such an orphan on next
+    launch is a known Phase 1 follow-up.
 - **Status panel — a native render of `/json`.** Slots, current cards, per-slot activity,
   the recent log tail. Icon state reflects fleet health (idle / working / error) so the
   menu bar itself is the at-a-glance signal.
