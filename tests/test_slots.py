@@ -300,6 +300,36 @@ def test_resize_shrink_defers_a_busy_slot_until_recycled(tmp_path, monkeypatch):
     assert torn == [1] and [s.index for s in pool.slots] == [0]
 
 
+def test_reap_orphans_tears_down_dirs_beyond_the_pool(tmp_path, monkeypatch):
+    # Pool tracks slot-0 only; slot-1/slot-2 are on-disk orphans (count lowered while the
+    # Manager was down, or a crashed resize) — reap tears each down and prunes worktrees.
+    pool = _hot_pool(tmp_path, monkeypatch)             # one slot: index 0
+    for name in ("slot-0", "slot-1", "slot-2", "not-a-slot"):
+        (pool.root / name).mkdir(parents=True)
+    torn: list[str] = []
+    git: list = []
+    monkeypatch.setattr(pool, "teardown_slot", lambda s: torn.append(s.dir))
+    monkeypatch.setattr(pool, "_git", lambda cwd, *a, **k: git.append(a))
+    pool._reap_orphans()
+    assert torn == [str(pool.root / "slot-1"), str(pool.root / "slot-2")]  # orphans only
+    assert str(pool.root / "slot-0") not in torn        # tracked slot kept
+    assert ("worktree", "prune") in git                 # unregisters removed worktrees
+
+
+def test_reap_orphans_keeps_a_busy_slots_worktree(tmp_path, monkeypatch):
+    # A slot count lowered while slot-1 is BUSY leaves it in self.slots (retiring) — reap
+    # must never yank a running worker's worktree.
+    pool = _hot_pool(tmp_path, monkeypatch, start=2)
+    pool.slots[1].state = SlotState.BUSY
+    for name in ("slot-0", "slot-1"):
+        (pool.root / name).mkdir(parents=True)
+    torn: list[str] = []
+    monkeypatch.setattr(pool, "teardown_slot", lambda s: torn.append(s.dir))
+    monkeypatch.setattr(pool, "_git", lambda *a, **k: None)
+    pool._reap_orphans()
+    assert torn == []                                   # both dirs back live pool slots
+
+
 def test_resize_up_revives_a_retiring_slot(tmp_path, monkeypatch):
     pool = _hot_pool(tmp_path, monkeypatch, start=2)
     pool.slots[1].state = SlotState.BUSY
