@@ -1,0 +1,21 @@
+[Unit]
+Description=LoopWorker Manager (polls the backlog, spawns disposable workers)
+Documentation=https://github.com/KojaWorks/KojaLoopWorker
+
+[Service]
+Type=simple
+# Run from ~/.loopworker so config.toml, state/, and manager.log land here, and the
+# app's own .env loader picks up ~/.loopworker/.env (PATCH_PAT) with no extra wiring.
+WorkingDirectory=%h/.loopworker
+ExecStart=%h/.local/bin/loopworker
+# systemctl --user stop -> SIGTERM -> the Manager force-stops: reaps workers and releases
+# their cards back to Backlog. For a graceful drain instead, run
+#   systemctl --user kill -s INT loopworker
+# and wait for it to exit (current workers finish, none new spawn).
+KillSignal=SIGTERM
+TimeoutStopSec=180
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
