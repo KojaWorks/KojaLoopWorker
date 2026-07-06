@@ -509,7 +509,7 @@ def test_notify_self_test_pings_on_boot(tmp_path, monkeypatch):
                         lambda cmd, **k: (sent.append(k.get("input")),
                                           notify_mod.subprocess.CompletedProcess(cmd, 0, stdout='{"status":1}'))[1])
     h = _host(tmp_path)
-    h.host.notify_command = "curl -F message=@- https://pushover"
+    h.host.notify_command = "curl -F 'message=<-' https://pushover"
     h.notifier = notify_mod.Notifier(h.host.notify_command, log=h.log)
     h._notify_self_test()
     assert sent and "notify healthy" in sent[0] and "miquon" in sent[0]
@@ -531,7 +531,7 @@ def test_build_time_broken_hot_slot_alerts_through_wired_notifier(tmp_path, monk
                         lambda cmd, **k: (sent.append(k.get("input")),
                                           notify_mod.subprocess.CompletedProcess(cmd, 0, stdout='{"status":1}'))[1])
     h = _host(tmp_path)
-    h.notifier = notify_mod.Notifier("curl -F message=@- https://pushover", log=h.log)
+    h.notifier = notify_mod.Notifier("curl -F 'message=<-' https://pushover", log=h.log)
 
     proj = tmp_path / "proj"
     proj.mkdir()

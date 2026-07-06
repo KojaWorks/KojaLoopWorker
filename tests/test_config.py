@@ -139,13 +139,13 @@ def test_host_config_notify_command(tmp_path):
     cfg.write_text(textwrap.dedent("""
         worker_manager = "miquon"
         clones_dir = "~/clones"
-        notify_command = "curl -s -F message=@- https://example/notify"
+        notify_command = "curl -s -F 'message=<-' https://example/notify"
         [backlog]
         api_base = "https://api.patch/"
         anon_key = "anon-public"
     """))
     h = HostConfig.load(cfg)
-    assert h.notify_command == "curl -s -F message=@- https://example/notify"
+    assert h.notify_command == "curl -s -F 'message=<-' https://example/notify"
 
 
 def test_host_config_engine_defaults(tmp_path):

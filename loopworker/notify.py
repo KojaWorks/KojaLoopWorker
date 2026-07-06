@@ -4,8 +4,9 @@ promptly instead of discovering cold in the dashboard.
 
 No baked-in integration: `notify_command` (host config) is a shell command template
 that receives the message on stdin, so Pushover is just a curl one-liner
-(`curl -s -F token=... -F user=... -F message=@- https://api.pushover.net/1/messages.json`)
-and any other CLI push tool works the same way.
+(`curl -s -F token=... -F user=... -F 'message=<-' https://api.pushover.net/1/messages.json`)
+and any other CLI push tool works the same way. (Quoted `'message=<-'`: curl reads
+stdin as the field value; `@-` would upload it as a file part Pushover reads as blank.)
 """
 from __future__ import annotations
 
