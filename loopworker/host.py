@@ -425,6 +425,7 @@ class HostManager:
         signal.signal(signal.SIGINT, self._on_signal)
         signal.signal(signal.SIGTERM, self._on_signal)
         try:
+            self._notify_self_test()
             self.discover()
             if not self.managers:
                 self.log("no serviceable projects — nothing to do")
@@ -459,6 +460,17 @@ class HostManager:
             self._reap_all("host shutting down")
             self._release_lock()
             self.log("host stopped (warm slots left up)")
+
+    def _notify_self_test(self) -> None:
+        """Boot-time proof the alert channel actually works. A one-shot ping on startup so a
+        misconfigured notify_command or missing Pushover env surfaces immediately (and its
+        API status is logged by the Notifier), instead of being discovered during an incident
+        when the first real BROKEN alert silently fails to arrive."""
+        if not self.host.notify_command:
+            self.log("notify: no notify_command configured — Manager alerts are DISABLED")
+            return
+        self.log("notify: sending startup self-test ping")
+        self.notifier.send("startup", f"LoopWorker: Manager up on {self.host.worker_manager}, notify healthy")
 
     def tick(self) -> None:
         """One reconcile + fill pass (for --once / tests)."""

@@ -9,6 +9,7 @@ and any other CLI push tool works the same way.
 """
 from __future__ import annotations
 
+import json
 import subprocess
 import time
 from collections.abc import Callable
@@ -40,9 +41,30 @@ class Notifier:
             return
         self._last_sent[key] = now
         try:
-            subprocess.run(
+            result = subprocess.run(
                 self._command, shell=True, input=message, text=True,
                 capture_output=True, timeout=20,
             )
         except Exception as e:
             self._log(f"notify command failed: {e!r}")
+            return
+        self._check(key, result)
+
+    def _check(self, key: str, result) -> None:
+        """Surface a send that failed WITHOUT raising a subprocess exception. curl -s exits
+        0 even on an API rejection, so the incident (a Pushover status:0) left no trace. A
+        non-zero exit, or a JSON body whose `status` isn't 1 (Pushover's ok marker), is now
+        logged. Non-JSON output from some other notify tool is left alone."""
+        if result is None:
+            return
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()[:200]
+            self._log(f"notify {key!r} command exited {result.returncode}: {detail}")
+            return
+        body = (result.stdout or "").strip()
+        try:
+            parsed = json.loads(body)
+        except (ValueError, TypeError):
+            return  # not a JSON API response — nothing to validate
+        if isinstance(parsed, dict) and "status" in parsed and parsed.get("status") != 1:
+            self._log(f"notify {key!r} rejected by API: {body[:200]}")

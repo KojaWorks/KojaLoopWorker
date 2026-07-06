@@ -495,6 +495,61 @@ def test_fill_all_cold_blocked_by_weighted_budget(tmp_path):
     assert cold.fills == []
 
 
+def test_notify_self_test_warns_when_disabled(tmp_path):
+    h = _host(tmp_path)                       # no notify_command configured
+    h._notify_self_test()
+    assert any("alerts are DISABLED" in line for line in h.log_lines)
+
+
+def test_notify_self_test_pings_on_boot(tmp_path, monkeypatch):
+    # Boot-time proof the alert channel works: a startup ping is actually shelled out.
+    from loopworker import notify as notify_mod
+    sent = []
+    monkeypatch.setattr(notify_mod.subprocess, "run",
+                        lambda cmd, **k: (sent.append(k.get("input")),
+                                          notify_mod.subprocess.CompletedProcess(cmd, 0, stdout='{"status":1}'))[1])
+    h = _host(tmp_path)
+    h.host.notify_command = "curl -F message=@- https://pushover"
+    h.notifier = notify_mod.Notifier(h.host.notify_command, log=h.log)
+    h._notify_self_test()
+    assert sent and "notify healthy" in sent[0] and "miquon" in sent[0]
+
+
+def test_build_time_broken_hot_slot_alerts_through_wired_notifier(tmp_path, monkeypatch):
+    # Incident regression: hot slots broke at BUILD time (Docker down), before the first
+    # reconcile, and no Pushover arrived. Prove the host's per-cycle reconcile drives a real
+    # Manager's BROKEN slot all the way out through the wired Notifier's shell command — the
+    # path the card suspected the bug hid in.
+    from loopworker import notify as notify_mod
+    from loopworker.config import (BacklogConfig, BriefConfig, Manifest,
+                                   ScriptsConfig, WorkerConfig)
+    from loopworker.manager import Manager
+    from loopworker.models import SlotState
+
+    sent = []
+    monkeypatch.setattr(notify_mod.subprocess, "run",
+                        lambda cmd, **k: (sent.append(k.get("input")),
+                                          notify_mod.subprocess.CompletedProcess(cmd, 0, stdout='{"status":1}'))[1])
+    h = _host(tmp_path)
+    h.notifier = notify_mod.Notifier("curl -F message=@- https://pushover", log=h.log)
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    manifest = Manifest(
+        project_name="patch", project_dir=proj,
+        backlog=BacklogConfig("patch", "", {}), brief=BriefConfig("repo-file", "B.md"),
+        worker=WorkerConfig(), slots=1, scripts=ScriptsConfig(),
+    )
+    m = Manager(manifest, adapter=h.adapter, project_id="p1", brief="B",
+                state_dir=tmp_path / "s", notify=h.notifier.send)
+    m.pool.slots[0].state = SlotState.BROKEN   # the build-time break, before any reconcile
+    h.managers = [m]
+
+    h._reconcile_all(now=None)                  # exactly what the run loop calls each cycle
+
+    assert sent and "BROKEN" in sent[0]         # the alert reached the shell, not swallowed
+
+
 def test_fill_all_broken_hot_slot_frees_budget_for_cold(tmp_path):
     # A BROKEN hot slot runs no stack, so it must not reserve budget: with the hot pool's
     # two slots BROKEN, the whole budget frees up and the heavy cold project can start —

@@ -47,3 +47,39 @@ def test_notify_command_failure_is_logged_not_raised(monkeypatch):
     logged = []
     Notifier("echo", log=logged.append).send("k", "hello")
     assert logged and "notify command failed" in logged[0]
+
+
+def test_pushover_rejection_is_logged(monkeypatch):
+    # The incident: curl -s exits 0 even when Pushover rejects the message with a
+    # status:0 body, so the send silently failed. The Notifier must now surface it.
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(
+        cmd, 0, stdout='{"status":0,"errors":["application token is invalid"]}'))
+    logged = []
+    Notifier("curl -F message=@- https://pushover", log=logged.append).send("k", "hi")
+    assert logged and "rejected" in logged[0] and "invalid" in logged[0]
+
+
+def test_pushover_success_is_silent(monkeypatch):
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(
+        cmd, 0, stdout='{"status":1,"request":"abc"}'))
+    logged = []
+    Notifier("curl -F message=@- https://pushover", log=logged.append).send("k", "hi")
+    assert logged == []
+
+
+def test_nonzero_exit_is_logged(monkeypatch):
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(
+        cmd, 7, stdout="", stderr="curl: (6) could not resolve host"))
+    logged = []
+    Notifier("curl https://nope", log=logged.append).send("k", "hi")
+    assert logged and "exited 7" in logged[0] and "resolve host" in logged[0]
+
+
+def test_non_json_output_is_left_alone(monkeypatch):
+    # A different notify tool (not Pushover) may print human text on success — don't
+    # mistake it for a rejection.
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(
+        cmd, 0, stdout="notification sent"))
+    logged = []
+    Notifier("my-push-tool", log=logged.append).send("k", "hi")
+    assert logged == []
