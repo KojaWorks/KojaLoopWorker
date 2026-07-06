@@ -27,6 +27,7 @@ from .engine import EngineRecovery, looks_like_engine_down
 from .models import Slot, SlotState
 
 _PORT_LINE = re.compile(r"^LOOPWORKER_PORT=(\d+)\s*$", re.MULTILINE)
+_SLOT_DIR = re.compile(r"^slot-(\d+)$")
 
 # Coarse watchdog: log that a script is still running once it passes this (or half its
 # timeout, whichever is sooner), so a slow-but-alive script is visible before the kill.
@@ -103,12 +104,12 @@ class SlotPool:
 
         Cold pools provision nothing here — their slots stay COLD until a card arrives,
         then acquire() provisions on demand and recycle() tears down after."""
+        self.root.mkdir(parents=True, exist_ok=True)
+        self._reap_orphans()
         if not self.hot:
             self.log(f"cold pool: {len(self.slots)} slot(s) provision on demand (no warm stacks)")
-            self.root.mkdir(parents=True, exist_ok=True)
             return
         self.log(f"building warm pool: {len(self.slots)} slot(s) — first run provisions a Supabase stack each (slow)")
-        self.root.mkdir(parents=True, exist_ok=True)
         for slot in self.slots:
             try:
                 self._ensure_worktree(slot)
@@ -149,6 +150,34 @@ class SlotPool:
         elif count < len(active):
             for slot in sorted(active, key=lambda s: s.index, reverse=True)[: len(active) - count]:
                 self._retire(slot)
+        self._reap_orphans()
+
+    def _reap_orphans(self) -> None:
+        """Tear down on-disk slot-* worktrees the pool no longer tracks. build() only ever
+        creates/reuses slot-0..N-1, so a slot count lowered while the Manager was DOWN — or
+        a crashed/interrupted resize — leaves a slot-N worktree AND its running stack leaking
+        disk + RAM forever. Enumerate {root}/slot-* and, for any dir not backing a live pool
+        slot, stop its stack (teardown.sh) and git-worktree-remove it.
+
+        Keyed on actual pool membership, never a count, so a BUSY/retiring slot (still in
+        self.slots) is always kept. Best-effort + idempotent: a failure on one orphan is
+        logged, never raised, so it can't block startup or a resize.
+
+        Safe against a hard-crashed Manager leaving a worker alive in a now-untracked slot:
+        the Manager reaps stranded worker sessions (Manager._reap_orphans) BEFORE build(),
+        so no live worker holds an orphan dir by the time we tear one down."""
+        if not self.root.is_dir():
+            return
+        keep = {Path(s.dir) for s in self.slots}
+        for child in sorted(self.root.iterdir()):
+            m = _SLOT_DIR.match(child.name)
+            if not m or not child.is_dir() or child in keep:
+                continue
+            idx = int(m.group(1))
+            self.log(f"slot {idx}: orphan worktree {child} — reaping (stack down + worktree removed)")
+            orphan = Slot(index=idx, dir=str(child), port=self.base_port + idx * self.port_step)
+            self.teardown_slot(orphan)
+        self._git(self.manifest.project_dir, "worktree", "prune", check=False)
 
     def _add_slot(self) -> Slot:
         idx = self._free_index()
