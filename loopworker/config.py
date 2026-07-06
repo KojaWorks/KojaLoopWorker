@@ -85,6 +85,14 @@ class HostConfig:
     brief_page: str = ""               # the shared generic loop page (url or id) all workers read
     notify_command: str = ""           # shell template receiving an alert message on stdin
     #                                   (worker auth failure, a slot marked BROKEN); empty = no-op
+    # Container-engine auto-recovery: when a hot slot's provision/reset fails with a
+    # daemon-unreachable error (a stopped Docker/OrbStack), the Manager runs engine_start_command
+    # and waits for engine_probe_command to succeed before re-provisioning. Defaults to OrbStack
+    # (the known engine on this fleet); set engine_recover = false to disable, or point the
+    # commands at another engine.
+    engine_recover: bool = True
+    engine_start_command: str = "orb start"
+    engine_probe_command: str = "docker ps"
 
     def __post_init__(self) -> None:
         if self.max_concurrent_workers <= 0:  # unset → run as many at once as the budget allows
@@ -101,6 +109,7 @@ class HostConfig:
         with path.open("rb") as f:
             raw = tomllib.load(f)
         backlog = raw.get("backlog", {})
+        eng = raw.get("engine", {})
         try:
             worker_manager = raw["worker_manager"]
             api_base = backlog["api_base"]
@@ -124,6 +133,9 @@ class HostConfig:
             roadmap_page_id=backlog.get("roadmap_page_id", ""),
             brief_page=backlog.get("brief_page", ""),
             notify_command=raw.get("notify_command", ""),
+            engine_recover=eng.get("recover", True),
+            engine_start_command=eng.get("start_command", "orb start"),
+            engine_probe_command=eng.get("probe_command", "docker ps"),
         )
 
 

@@ -52,10 +52,114 @@ def test_revive_broken_resets_cold(tmp_path):
     assert cold.revive_broken() == 1 and cold.slots[0].state == SlotState.COLD
 
 
-def test_revive_broken_leaves_hot(tmp_path, monkeypatch):
-    hot = _hot_pool(tmp_path, monkeypatch)                 # hot needs a rebuilt stack, not a bare retry
+def test_revive_broken_reprovisions_hot_in_place(tmp_path, monkeypatch):
+    # A hot slot has no on-demand provision path, so revive_broken must re-provision it live
+    # (the self-heal after e.g. a paused Docker) — success returns it to warm IDLE.
+    hot = _hot_pool(tmp_path, monkeypatch)                 # _provision stubbed to succeed
+    provisioned: list[int] = []
+    monkeypatch.setattr(hot, "_provision", lambda s: provisioned.append(s.index))
+    hot.slots[0].state = SlotState.BROKEN
+    assert hot.revive_broken() == 1
+    assert hot.slots[0].state == SlotState.IDLE and provisioned == [0]
+
+
+def test_revive_broken_hot_failure_backs_off_before_retrying(tmp_path, monkeypatch):
+    # A re-provision that keeps failing must not re-run the slow provision.sh every fill: it
+    # stays BROKEN and backs off. Crucially the cooldown is measured from when the attempt
+    # FINISHED — a slow-hanging provision (here 300s, > the cooldown) must NOT be instantly
+    # retryable just because wall-clock passed during the attempt itself.
+    clock = [1000.0]
+    hot = _hot_pool(tmp_path, monkeypatch)
+    hot._clock = lambda: clock[0]
+    attempts: list[float] = []
+
+    def boom(_s):
+        attempts.append(clock[0])
+        clock[0] += 300.0                                 # the failing provision itself burns 300s
+        raise SlotError("docker down")
+    monkeypatch.setattr(hot, "_provision", boom)
+
     hot.slots[0].state = SlotState.BROKEN
     assert hot.revive_broken() == 0 and hot.slots[0].state == SlotState.BROKEN
+    assert len(attempts) == 1                              # first attempt ran (clock now 1300)
+
+    # Even though 300s (> cooldown) elapsed DURING the attempt, the next pass must NOT retry:
+    # the backoff clock starts at attempt end, not attempt start.
+    assert hot.revive_broken() == 0 and len(attempts) == 1
+
+    clock[0] += 200.0                                      # past the 180s cooldown after the attempt
+    assert hot.revive_broken() == 0 and len(attempts) == 2  # retried once the backoff elapsed
+
+
+class _FakeEngine:
+    """Stands in for EngineRecovery — records recover() calls, returns a scripted result."""
+    def __init__(self, result=True):
+        self.result = result
+        self.calls = 0
+
+    def recover(self):
+        self.calls += 1
+        return self.result
+
+
+def test_revive_broken_recovers_engine_then_reprovisions(tmp_path, monkeypatch):
+    # A hot slot broken by a down engine: revive_broken restarts the engine first, then
+    # re-provisions the slot back to IDLE.
+    hot = _hot_pool(tmp_path, monkeypatch)
+    hot._engine = _FakeEngine(result=True)
+    provisioned: list[int] = []
+    monkeypatch.setattr(hot, "_provision", lambda s: provisioned.append(s.index))
+    hot.slots[0].state = SlotState.BROKEN
+    hot.slots[0].engine_down = True
+    assert hot.revive_broken() == 1
+    assert hot._engine.calls == 1                     # engine restart attempted
+    assert hot.slots[0].state == SlotState.IDLE and provisioned == [0]
+
+
+def test_revive_broken_skips_engine_recovery_for_non_engine_break(tmp_path, monkeypatch):
+    # A slot broken by an ordinary provision bug (engine_down False) must NOT trigger an
+    # `orb start` — restarting the engine wouldn't fix it.
+    hot = _hot_pool(tmp_path, monkeypatch)
+    hot._engine = _FakeEngine(result=True)
+    monkeypatch.setattr(hot, "_provision", lambda s: None)
+    hot.slots[0].state = SlotState.BROKEN
+    hot.slots[0].engine_down = False
+    assert hot.revive_broken() == 1
+    assert hot._engine.calls == 0                     # engine left alone
+
+
+def test_revive_broken_backs_off_when_engine_stays_down(tmp_path, monkeypatch):
+    # If the engine can't be recovered, the engine_down slot stays BROKEN and backs off —
+    # revive_broken must NOT go on to re-provision into an unreachable daemon.
+    clock = [1000.0]
+    hot = _hot_pool(tmp_path, monkeypatch)
+    hot._clock = lambda: clock[0]
+    hot._engine = _FakeEngine(result=False)
+    provisioned: list[int] = []
+    monkeypatch.setattr(hot, "_provision", lambda s: provisioned.append(s.index))
+    hot.slots[0].state = SlotState.BROKEN
+    hot.slots[0].engine_down = True
+    assert hot.revive_broken() == 0
+    assert provisioned == []                          # never re-provisioned
+    assert hot.slots[0].state == SlotState.BROKEN
+    assert hot.slots[0].retry_after > clock[0]        # backed off before the next attempt
+
+
+def test_provision_failure_flags_engine_down(tmp_path, monkeypatch):
+    # A provision whose output looks like a down docker daemon sets engine_down; an
+    # ordinary failure leaves it clear.
+    logs: list[str] = []
+    hot = _pool(tmp_path, "true\n", logs)       # real _provision (not the _hot_pool stub)
+    monkeypatch.setattr(hot, "_run_script",
+                        lambda which, s, **k: (1, "Cannot connect to the Docker daemon at unix://..."))
+    slot = hot.slots[0]
+    with pytest.raises(SlotError):
+        hot._provision(slot)
+    assert slot.engine_down is True
+    monkeypatch.setattr(hot, "_run_script", lambda which, s, **k: (1, "migration 0007 failed"))
+    with pytest.raises(SlotError):
+        hot._provision(slot)
+    assert slot.engine_down is False
 
 
 def test_redact_scrubs_stack_secrets():
