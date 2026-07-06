@@ -17,7 +17,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import tmux
+from . import filelog, tmux
 from .authgate import AuthGate
 from .backlog import build_adapter
 from .config import Manifest
@@ -496,6 +496,7 @@ class Manager:
                 for s in self.pool.slots
             ],
             "log": list(self.log_lines),
+            "log_file": str(filelog.path()) if filelog.path() else None,
             "card_links": self.adapter.card_links(),
         }
 
@@ -504,6 +505,7 @@ class Manager:
         line = f"{datetime.now(timezone.utc).strftime('%H:%M:%S')} {msg}"
         self.log_lines.append(line)
         print(line, flush=True)
+        filelog.log(f"{self.manifest.project_name}: {msg}")  # durable, redacted, project-tagged
 
     def _sleep(self, seconds: int) -> None:
         deadline = time.monotonic() + seconds

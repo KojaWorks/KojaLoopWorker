@@ -14,7 +14,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import dashboard
+from . import dashboard, filelog
 from .config import HostConfig, Manifest
 from .host import HostManager
 from .manager import Manager
@@ -58,6 +58,7 @@ def _run_single(args) -> int:
     # here (that config lives on HostConfig, host-mode only) — single-project mode
     # still pauses dispatch on a dead login, it just doesn't push an alert about it.
     manager.auth.enabled = True
+    manager.log(f"file log: {filelog.path()}")
     if not args.no_dashboard:
         dashboard.serve(manager.snapshot, port=args.dashboard_port)
         manager.log(f"dashboard at http://127.0.0.1:{args.dashboard_port}")
@@ -82,6 +83,7 @@ def _run_host(args) -> int:
         grace_seconds=args.grace,
         state_dir=args.state_dir,
     )
+    manager.log(f"file log: {filelog.path()}")
     if not args.no_dashboard:
         dashboard.serve(manager.snapshot, port=args.dashboard_port)
         manager.log(f"dashboard at http://127.0.0.1:{args.dashboard_port}")
@@ -107,9 +109,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dashboard-port", type=int, default=8787)
     p.add_argument("--no-dashboard", action="store_true")
     p.add_argument("--state-dir", type=Path, default=None)
+    p.add_argument("--log-file", type=Path, default=Path("state") / "manager.log",
+                   help="rotating on-disk log (default state/manager.log); the durable record of "
+                        "the Manager's decisions, redacted. Also on stdout + the dashboard.")
     p.add_argument("--once", action="store_true", help="run a single tick then exit (after building the pool)")
     args = p.parse_args(argv)
 
+    filelog.configure(args.log_file)
     return _run_single(args) if args.project else _run_host(args)
 
 
