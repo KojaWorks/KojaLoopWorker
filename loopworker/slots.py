@@ -385,7 +385,8 @@ class SlotPool:
             # Record whether this looked like a down container engine, so revive_broken can
             # try to restart it (vs an ordinary provision bug a restart won't fix).
             slot.engine_down = looks_like_engine_down(out)
-            raise SlotError(f"provision.sh failed (rc={rc}) — see the [slot {slot.index} provision] log above")
+            raise SlotError(f"provision.sh failed (rc={rc}) — see the "
+                            f"[{self.manifest.project_name} slot {slot.index} provision] log above")
         slot.engine_down = False
         self._capture_port(slot, out)
 
@@ -412,6 +413,9 @@ class SlotPool:
         if not path.is_file():
             raise SlotError(f"missing {which} script: {path}")
         timeout = self._script_timeout(which)
+        # Project name in the tag so streams don't collide in host mode: every project has
+        # a "slot 0", so "[slot 0 provision]" alone can't tell whose provision is failing.
+        tag = f"  [{self.manifest.project_name} slot {slot.index} {which}]"
         env = {
             **os.environ,
             "LOOPWORKER_SLOT_DIR": slot.dir,
@@ -438,7 +442,7 @@ class SlotPool:
                 line = line.rstrip("\n")
                 lines.append(line)
                 if line.strip():
-                    self.log(f"  [slot {slot.index} {which}] {_redact(line)}")
+                    self.log(f"{tag} {_redact(line)}")
 
         reader = threading.Thread(target=pump, daemon=True, name=f"slot{slot.index}-{which}-pump")
         reader.start()
@@ -448,13 +452,13 @@ class SlotPool:
         try:
             rc = proc.wait(timeout=soft)
         except subprocess.TimeoutExpired:
-            self.log(f"  [slot {slot.index} {which}] still running after {_fmt_dur(soft)}"
+            self.log(f"{tag} still running after {_fmt_dur(soft)}"
                      f" (killed at {_fmt_dur(timeout)})")
             try:
                 rc = proc.wait(timeout=timeout - soft)
             except subprocess.TimeoutExpired:
                 timed_out = True
-                self.log(f"  [slot {slot.index} {which}] timed out after {_fmt_dur(timeout)}"
+                self.log(f"{tag} timed out after {_fmt_dur(timeout)}"
                          " — killing its process group")
                 try:
                     os.killpg(proc.pid, signal.SIGKILL)
@@ -464,7 +468,7 @@ class SlotPool:
         reader.join(timeout=5)  # EOF follows the group's death; don't hang on a stuck pipe
         if reader.is_alive():
             abandoned.set()
-            self.log(f"  [slot {slot.index} {which}] output pipe still open after exit"
+            self.log(f"{tag} output pipe still open after exit"
                      " (orphaned child?) — abandoning the reader")
         out = "\n".join(lines)
         if timed_out:

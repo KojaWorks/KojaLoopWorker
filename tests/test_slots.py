@@ -33,6 +33,8 @@ def test_run_script_streams_and_captures_port(tmp_path):
     rc, out = pool._run_script("provision", slot)
     assert rc == 0
     assert any("doing-a-thing" in line for line in logs)      # streamed live
+    # tag carries the project name so host-mode streams don't collide (every project has a slot 0)
+    assert any("[demo slot 0 provision] doing-a-thing" in line for line in logs)
     pool._capture_port(slot, out)
     assert slot.port == 31999                                 # handshake parsed from captured output
     assert slot.port_reported is True                         # project bound a port → dashboard shows it
