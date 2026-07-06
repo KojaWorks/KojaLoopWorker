@@ -10,8 +10,10 @@ WorkingDirectory=%h/.loopworker
 ExecStart=%h/.local/bin/loopworker
 # systemctl --user stop -> SIGTERM -> the Manager force-stops: reaps workers and releases
 # their cards back to Backlog. For a graceful drain instead, run
-#   systemctl --user kill -s INT loopworker
-# and wait for it to exit (current workers finish, none new spawn).
+#   systemctl --user kill -s INT --kill-whom=main loopworker
+# and wait for it to exit (current workers finish, none new spawn). --kill-whom=main is
+# required: the default sprays SIGINT to the whole cgroup, killing the tmux workers too.
+# (Pre-252 systemd spells the flag --kill-who=main.)
 KillSignal=SIGTERM
 TimeoutStopSec=180
 Restart=on-failure

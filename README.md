@@ -74,7 +74,7 @@ Day-to-day:
 systemctl --user start loopworker         # start (Restart=on-failure keeps it up)
 systemctl --user status loopworker        # or: loopworker status
 journalctl --user -u loopworker -f        # follow the log
-systemctl --user kill -s INT loopworker   # graceful drain (workers finish, none new spawn)
+systemctl --user kill -s INT --kill-whom=main loopworker   # graceful drain (workers finish, none new spawn)
 systemctl --user stop loopworker          # force-stop (releases in-flight cards to Backlog)
 sudo loginctl enable-linger $USER         # keep it running after logout / across reboot
 ```

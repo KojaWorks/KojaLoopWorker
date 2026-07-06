@@ -42,7 +42,7 @@ LoopWorker installed. Before the first start, make sure:
 Start:   systemctl --user start loopworker
 Status:  systemctl --user status loopworker      (or:  loopworker status)
 Logs:    journalctl --user -u loopworker -f
-Drain:   systemctl --user kill -s INT loopworker  (graceful; current workers finish first)
+Drain:   systemctl --user kill -s INT --kill-whom=main loopworker  (graceful; workers finish first)
 Stop:    systemctl --user stop loopworker         (force; releases in-flight cards to Backlog)
 Boot:    sudo loginctl enable-linger $USER        (keep running after logout / across reboot)
 EOF
