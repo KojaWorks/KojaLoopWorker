@@ -13,6 +13,16 @@ add a row to the **projects** table.
 
 See [DESIGN.md](DESIGN.md) for the full architecture and the decisions behind it.
 
+## North star
+
+LoopWorker is heading toward a **releasable, fully self-managing product**: a Manager you
+start once that runs indefinitely and recovers from *most errors on its own* — a paused
+Docker engine, a revoked credential, a hung provision, a wedged worker, an orphaned stack —
+with no human restart or manual cleanup. Every failure mode should grow its own detection
+and recovery in the same change that introduces it, and the dashboard/log should make the
+rare thing a human *does* need to handle obvious. Self-healing and automation are the core
+of the product, not polish — weigh that work accordingly.
+
 ## Status
 
 Running in production (autonomously shipping Patch cards), built and unit-tested:
