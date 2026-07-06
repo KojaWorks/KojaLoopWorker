@@ -263,9 +263,9 @@ class Manager:
             return
         if not self.auth.ok():
             return  # claude login failing — dispatch paused (AuthGate logs/notifies on transition)
-        revived = self.pool.revive_broken()  # retry slots a fixable failure (e.g. a missing tool) broke
+        revived = self.pool.revive_broken()  # retry slots a fixable failure (e.g. a paused Docker) broke
         if revived:
-            self.log(f"revived {revived} broken cold slot(s) to retry provisioning")
+            self.log(f"revived {revived} broken slot(s) to retry provisioning")
         available = self.pool.available_slots()
         if not available:
             return

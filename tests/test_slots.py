@@ -52,10 +52,39 @@ def test_revive_broken_resets_cold(tmp_path):
     assert cold.revive_broken() == 1 and cold.slots[0].state == SlotState.COLD
 
 
-def test_revive_broken_leaves_hot(tmp_path, monkeypatch):
-    hot = _hot_pool(tmp_path, monkeypatch)                 # hot needs a rebuilt stack, not a bare retry
+def test_revive_broken_reprovisions_hot_in_place(tmp_path, monkeypatch):
+    # A hot slot has no on-demand provision path, so revive_broken must re-provision it live
+    # (the self-heal after e.g. a paused Docker) — success returns it to warm IDLE.
+    hot = _hot_pool(tmp_path, monkeypatch)                 # _provision stubbed to succeed
+    provisioned: list[int] = []
+    monkeypatch.setattr(hot, "_provision", lambda s: provisioned.append(s.index))
+    hot.slots[0].state = SlotState.BROKEN
+    assert hot.revive_broken() == 1
+    assert hot.slots[0].state == SlotState.IDLE and provisioned == [0]
+
+
+def test_revive_broken_hot_failure_backs_off_before_retrying(tmp_path, monkeypatch):
+    # A re-provision that keeps failing must not re-run the slow provision.sh every fill:
+    # it stays BROKEN and backs off until the cooldown elapses.
+    clock = [1000.0]
+    hot = _hot_pool(tmp_path, monkeypatch)
+    hot._clock = lambda: clock[0]
+    attempts: list[float] = []
+
+    def boom(_s):
+        attempts.append(clock[0])
+        raise SlotError("docker down")
+    monkeypatch.setattr(hot, "_provision", boom)
+
     hot.slots[0].state = SlotState.BROKEN
     assert hot.revive_broken() == 0 and hot.slots[0].state == SlotState.BROKEN
+    assert len(attempts) == 1                              # first attempt ran
+
+    clock[0] += 60.0                                       # still inside the cooldown
+    assert hot.revive_broken() == 0 and len(attempts) == 1  # backed off — no second attempt
+
+    clock[0] += 200.0                                      # past the 180s cooldown
+    assert hot.revive_broken() == 0 and len(attempts) == 2  # retried once the backoff elapsed
 
 
 def test_redact_scrubs_stack_secrets():

@@ -18,6 +18,7 @@ import re
 import signal
 import subprocess
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -29,6 +30,11 @@ _PORT_LINE = re.compile(r"^LOOPWORKER_PORT=(\d+)\s*$", re.MULTILINE)
 # Coarse watchdog: log that a script is still running once it passes this (or half its
 # timeout, whichever is sooner), so a slow-but-alive script is visible before the kill.
 _SOFT_WARN_SECS = 300.0
+
+# A BROKEN hot slot is re-provisioned live by revive_broken once its cause clears, but at
+# most once per this cooldown — the AuthGate-style backoff that keeps a persistently-failing
+# provision (a genuinely dead stack) from re-running the slow provision.sh on every fill.
+_HOT_REPROVISION_COOLDOWN = 180.0
 
 
 def _fmt_dur(secs: float) -> str:
@@ -60,11 +66,13 @@ class SlotError(RuntimeError):
 class SlotPool:
     def __init__(self, manifest: Manifest, base_port: int = 54400, port_step: int = 100,
                  log: Callable[[str], None] = lambda _m: None, hot: bool = True,
-                 base_ref: str = "origin/main"):
+                 base_ref: str = "origin/main", clock: Callable[[], float] = time.monotonic):
         self.manifest = manifest
         self.base_port = base_port
         self.port_step = port_step
         self.log = log
+        # monotonic clock, injectable so tests can drive the hot-revive backoff deterministically.
+        self._clock = clock
         # the upstream ref worktrees branch off and reset to (a project's default branch);
         # "origin/main" for most, "origin/master" etc. for others.
         self.base_ref = base_ref
@@ -249,18 +257,51 @@ class SlotPool:
         return [s for s in self.slots if s.state == SlotState.IDLE]
 
     def revive_broken(self) -> int:
-        """Return BROKEN cold slots to COLD so a transient provision failure (a missing host
-        tool, a busy port) retries on the next fill instead of stranding the slot until a
-        Manager restart. Hot broken slots are left alone — they need a re-provisioned warm
-        stack, which is build()/restart's job. Returns how many were revived."""
+        """Return BROKEN slots to service so a transient provision failure (a paused Docker,
+        a missing host tool, a busy port) self-heals on a later fill instead of stranding the
+        slot until a Manager restart. Returns how many slots were returned to service.
+
+        Cold slots flip back to COLD — acquire() re-provisions them on demand once a card
+        lands. Hot slots have no on-demand path, so they're RE-PROVISIONED here in place: on
+        success they return to warm IDLE; on failure they stay BROKEN and back off
+        _HOT_REPROVISION_COOLDOWN before the next attempt, so a genuinely dead stack isn't
+        re-run every fill."""
         n = 0
+        now = self._clock()
         for s in self.slots:
-            if s.state == SlotState.BROKEN and not self.hot:
+            if s.state != SlotState.BROKEN:
+                continue
+            if not self.hot:
                 s.state = SlotState.COLD
                 s.activity = "cold (retry after earlier failure)"
                 s.retiring = False
                 n += 1
+                continue
+            if now < s.retry_after:
+                continue  # backing off — not yet time to retry this hot slot
+            s.retry_after = now + _HOT_REPROVISION_COOLDOWN
+            try:
+                s.activity = "re-provisioning (retry after earlier failure)"
+                self._ensure_worktree(s)
+                self._provision(s)
+            except SlotError as e:
+                s.activity = f"broken: {e}"
+                self.log(f"slot {s.index}: re-provision failed, backing off "
+                         f"{_fmt_dur(_HOT_REPROVISION_COOLDOWN)} — {e}")
+                continue
+            s.state = SlotState.IDLE
+            s.activity = "idle"
+            s.retry_after = 0.0
+            self.log(f"slot {s.index}: re-provisioned and back to idle on port {s.port}")
+            n += 1
         return n
+
+    def live_slot_count(self) -> int:
+        """Slots that hold (or are being brought up to hold) a warm stack — everything but
+        BROKEN. The host's hot-budget reservation counts these: a BROKEN slot runs no stack,
+        so it must not reserve RAM budget a cold project could use (revive_broken brings it
+        back live once its cause clears)."""
+        return sum(1 for s in self.slots if s.state != SlotState.BROKEN)
 
     def active_count(self) -> int:
         """The pool's effective size for resize decisions: slots not being retired. A
