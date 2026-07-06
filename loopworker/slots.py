@@ -161,7 +161,11 @@ class SlotPool:
 
         Keyed on actual pool membership, never a count, so a BUSY/retiring slot (still in
         self.slots) is always kept. Best-effort + idempotent: a failure on one orphan is
-        logged, never raised, so it can't block startup or a resize."""
+        logged, never raised, so it can't block startup or a resize.
+
+        Safe against a hard-crashed Manager leaving a worker alive in a now-untracked slot:
+        the Manager reaps stranded worker sessions (Manager._reap_orphans) BEFORE build(),
+        so no live worker holds an orphan dir by the time we tear one down."""
         if not self.root.is_dir():
             return
         keep = {Path(s.dir) for s in self.slots}
