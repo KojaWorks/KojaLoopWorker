@@ -482,7 +482,9 @@ class HostManager:
             before = m.busy_count()
             m.fill(now, max_new=budget)
             budget -= m.busy_count() - before
-        reserved_hot = sum(len(m.pool.slots) * self._weights.get(m.project_id, 1.0) for m in hot)
+        # BROKEN hot slots run no stack (revive_broken re-provisions them live once their
+        # cause clears), so they don't reserve budget a cold project could otherwise spend.
+        reserved_hot = sum(m.pool.live_slot_count() * self._weights.get(m.project_id, 1.0) for m in hot)
         cold_busy = sum(m.busy_count() * self._weights.get(m.project_id, 1.0) for m in cold)
         remaining = self.host.max_slots - reserved_hot - cold_busy
         for m in cold:

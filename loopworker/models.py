@@ -107,3 +107,5 @@ class Slot:
     port_reported: bool = False  # the project's provision/reset echoed LOOPWORKER_PORT, i.e.
     #                              it actually binds a port (a web stack). Native/stackless
     #                              projects never set this, so the dashboard hides the port.
+    retry_after: float = 0.0     # monotonic deadline before which a BROKEN hot slot won't be
+    #                              re-provisioned again (revive_broken's backoff between retries)

@@ -32,9 +32,10 @@ def _host(tmp_path, **kw):
 
 
 class FakePool:
-    def __init__(self, hot, nslots):
+    def __init__(self, hot, nslots, broken=0):
         self.hot = hot
         self.slots = list(range(nslots))
+        self.broken = broken          # how many of those slots are BROKEN (reserve no budget)
         self.torn = False
 
     def build(self):
@@ -49,12 +50,15 @@ class FakePool:
     def active_count(self):
         return len(self.slots)
 
+    def live_slot_count(self):
+        return len(self.slots) - self.broken
+
 
 class FakeMgr:
     """Stands in for a per-project Manager for scheduling tests."""
-    def __init__(self, name, hot, nslots, busy=0, will_take=0, project_id=None):
+    def __init__(self, name, hot, nslots, busy=0, will_take=0, project_id=None, broken=0):
         self.manifest = types.SimpleNamespace(project_name=name, slots=nslots)
-        self.pool = FakePool(hot, nslots)
+        self.pool = FakePool(hot, nslots, broken=broken)
         self.project_id = project_id
         self._busy = busy
         self._will_take = will_take
@@ -489,3 +493,17 @@ def test_fill_all_cold_blocked_by_weighted_budget(tmp_path):
     h._fill_all(now=None)
     # remaining = 2 - reserved_hot(2) = 0; heavy cold (weight 2) affords 0 -> blocked
     assert cold.fills == []
+
+
+def test_fill_all_broken_hot_slot_frees_budget_for_cold(tmp_path):
+    # A BROKEN hot slot runs no stack, so it must not reserve budget: with the hot pool's
+    # two slots BROKEN, the whole budget frees up and the heavy cold project can start —
+    # instead of being starved indefinitely by a slot that does no work.
+    h = _host(tmp_path, max_slots=2, max_concurrent_workers=5)
+    hot = FakeMgr("A", hot=True, nslots=2, will_take=0, project_id="p1", broken=2)  # both slots broken
+    cold = FakeMgr("C", hot=False, nslots=5, will_take=5, project_id="p2")
+    h.managers = [hot, cold]
+    h._weights = {"p1": 1.0, "p2": 2.0}
+    h._fill_all(now=None)
+    # reserved_hot = live_slot_count(0) = 0; remaining = 2; weight 2 affords floor(2/2)=1
+    assert cold.fills == [1] and cold.busy_count() == 1
