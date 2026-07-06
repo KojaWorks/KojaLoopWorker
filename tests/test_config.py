@@ -148,6 +148,40 @@ def test_host_config_notify_command(tmp_path):
     assert h.notify_command == "curl -s -F message=@- https://example/notify"
 
 
+def test_host_config_engine_defaults(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(textwrap.dedent("""
+        worker_manager = "miquon"
+        clones_dir = "~/clones"
+        [backlog]
+        api_base = "https://api.patch/"
+        anon_key = "anon-public"
+    """))
+    h = HostConfig.load(cfg)
+    assert h.engine_recover is True                     # on by default (OrbStack fleet)
+    assert h.engine_start_command == "orb start"
+    assert h.engine_probe_command == "docker ps"
+
+
+def test_host_config_engine_override(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(textwrap.dedent("""
+        worker_manager = "miquon"
+        clones_dir = "~/clones"
+        [backlog]
+        api_base = "https://api.patch/"
+        anon_key = "anon-public"
+        [engine]
+        recover = false
+        start_command = "colima start"
+        probe_command = "docker info"
+    """))
+    h = HostConfig.load(cfg)
+    assert h.engine_recover is False
+    assert h.engine_start_command == "colima start"
+    assert h.engine_probe_command == "docker info"
+
+
 def test_host_config_missing_required_key(tmp_path):
     cfg = tmp_path / "config.toml"
     cfg.write_text('worker_manager = "miquon"\nclones_dir = "/x"\n[backlog]\napi_base="https://a"\n')

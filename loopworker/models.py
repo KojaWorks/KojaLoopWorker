@@ -109,3 +109,6 @@ class Slot:
     #                              projects never set this, so the dashboard hides the port.
     retry_after: float = 0.0     # monotonic deadline before which a BROKEN hot slot won't be
     #                              re-provisioned again (revive_broken's backoff between retries)
+    engine_down: bool = False    # this slot's last provision/reset failed with a container-engine-
+    #                              unreachable error (a down Docker/OrbStack) — revive_broken tries
+    #                              to restart the engine before re-provisioning it

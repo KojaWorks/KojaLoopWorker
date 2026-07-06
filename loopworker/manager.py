@@ -91,6 +91,7 @@ class Manager:
         base_ref: str = "origin/main",
         auth_gate: AuthGate | None = None,
         notify: Callable[[str, str], None] | None = None,
+        engine_recovery=None,
     ):
         self.manifest = manifest
         self.poll_interval = poll_interval
@@ -114,7 +115,8 @@ class Manager:
         # own `model` (roadmap.model) overrides it. Neither set -> omit --model (CLI default).
         self._project_model = project_model
         self.pool = SlotPool(manifest, base_port=base_port, port_step=port_step,
-                             log=self.log, hot=hot, base_ref=base_ref)
+                             log=self.log, hot=hot, base_ref=base_ref,
+                             engine_recovery=engine_recovery)
         self.state_dir = (state_dir or Path("state") / manifest.project_name).resolve()
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.lockfile = self.state_dir / "manager.lock"

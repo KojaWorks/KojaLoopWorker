@@ -28,6 +28,7 @@ from . import tmux
 from .authgate import AuthGate
 from .backlog.patch import PatchAdapter, brief_pointer
 from .config import HostConfig, Manifest
+from .engine import EngineRecovery
 from .manager import _DEFAULT_WORKER_ENV, Manager, _pid_alive, _slug, watch_trust
 from .models import ProjectRow
 from .notify import Notifier
@@ -80,6 +81,14 @@ class HostManager:
         # Manager's own default): HostManager is the real spawn point, never ticked
         # with a real Manager in tests (only FakeMgr stand-ins).
         self.auth_gate = AuthGate(enabled=True, log=self.log, notify=self.notifier.send)
+        # One shared engine-recovery across every pool: the container engine is a host
+        # singleton, so a single `orb start` (and its backoff) must cover all of them.
+        # Disabled → None, so a slot broken by a down engine just backs off as before.
+        self.engine_recovery = (
+            EngineRecovery(host.engine_start_command, host.engine_probe_command,
+                           log=self.log, notify=self.notifier.send)
+            if host.engine_recover else None
+        )
         self.managers: list[Manager] = []
         self._bands: dict[str, int] = {}   # project_id -> port-band index (freed on retire, reused)
         self._weights: dict[str, float] = {}  # project_id -> slot cost (see _project_weight)
@@ -387,6 +396,7 @@ class HostManager:
             project_model=row.model,
             auth_gate=self.auth_gate,
             notify=self.notifier.send,
+            engine_recovery=self.engine_recovery,
         )
 
     # --- lifecycle ---------------------------------------------------------
