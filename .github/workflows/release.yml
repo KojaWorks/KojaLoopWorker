@@ -131,7 +131,7 @@ jobs:
           # generate_appcast reads the update's version from the .app's CFBundleVersion, which comes
           # from GENERATE_INFOPLIST_FILE merging over our partial Info.plist. If that merge ever breaks
           # the version goes empty and Sparkle silently stops seeing updates — fail loud here instead.
-          built="macapp/build/release-dd/Build/Products/Release/LoopWorker.app"
+          built="macapp/build/release-dd/Build/Products/Release/Koja Loops Manager.app"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$built/Contents/Info.plist" | grep -q . \
             || { echo "::error::built app has no CFBundleVersion — the Info.plist merge broke"; exit 1; }
           out="$RUNNER_TEMP/appcast"

@@ -19,7 +19,11 @@ settings:
     # + INFOPLIST_KEY_* still merge on top. See Info.plist.
     INFOPLIST_FILE: Info.plist
     PRODUCT_BUNDLE_IDENTIFIER: works.koja.loopworker
-    # User-facing name (menu-bar menu, About, Finder). The target/bundle stay "LoopWorker".
+    # The bundle's on-disk name is what Finder shows (NOT CFBundleDisplayName), so the shipped app
+    # must literally be "Koja Loops Manager.app". PRODUCT_NAME sets that (+ the executable). The
+    # xcodegen target/scheme stay "LoopWorker" (so -scheme LoopWorker keeps working) and the bundle
+    # id stays works.koja.loopworker.
+    PRODUCT_NAME: "Koja Loops Manager"
     INFOPLIST_KEY_CFBundleDisplayName: "Koja Loops Manager"
     # Koja's Apple team, for signing/notarization (card ~824). Signing is still gated on the
     # Developer ID cert + notarization creds; this just wires the team so a signed build works.
