@@ -6,6 +6,9 @@ struct MenuContentView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Header()
+            if let reason = appState.stopReason {
+                Banner(text: reason, symbol: "exclamationmark.triangle.fill", tint: .red)
+            }
             if appState.contractMismatch {
                 Banner(text: "This app is too old for the running Manager. Update the app.",
                        symbol: "exclamationmark.triangle.fill", tint: .orange)
@@ -203,9 +206,9 @@ private struct Banner: View {
     let symbol: String
     let tint: Color
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(alignment: .top, spacing: 6) {
             Image(systemName: symbol).foregroundStyle(tint)
-            Text(text).font(.caption)
+            Text(text).font(.caption).fixedSize(horizontal: false, vertical: true)
         }
     }
 }

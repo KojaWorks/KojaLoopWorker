@@ -130,4 +130,11 @@ final class AppState: NSObject, ObservableObject, NSApplicationDelegate {
     var allSlots: [SlotSnapshot] { snapshot?.sections.flatMap { $0.slots } ?? [] }
     var anySlotBroken: Bool { allSlots.contains { $0.state == "broken" } }
     var needsAttention: Bool { contractMismatch || doctor?.ok == false || anySlotBroken }
+
+    /// The Manager's exit reason when it stopped UNEXPECTEDLY (nil for a clean/asked stop) —
+    /// surfaced so a crash is visible in the UI, not silently read as "stale".
+    var stopReason: String? {
+        if case .stopped(let reason) = controller.state { return reason }
+        return nil
+    }
 }
