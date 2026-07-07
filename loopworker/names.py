@@ -4,10 +4,12 @@ One STABLE name per slot (slot 0 = ada, slot 1 = babbage, …), reused across ca
 the worker row is upserted per name, so the loop_workers table stays N rows (one per
 slot) instead of growing by one every card.
 
-A per-project offset rotates the starting name so two projects' slot 0 don't both read
-"ada" in the dashboard/loop_workers. The offset is ADDED to the slot index (not a direct
-hash of project+slot), so within a project consecutive slots still get distinct names —
-that per-(project,slot) uniqueness is what keeps each slot's worker row stable and reused."""
+A per-project offset rotates the starting name so two projects' slot 0 usually don't both
+read "ada" in the dashboard/loop_workers (the name_prefix is what actually guarantees the
+rows differ; the offset is cosmetic legibility, and two projects can share an offset). The
+offset is ADDED to the slot index (not a direct hash of project+slot), so within a project
+consecutive slots still get distinct names — that per-(project,slot) uniqueness is what
+keeps each slot's worker row stable and reused."""
 from __future__ import annotations
 
 import hashlib
