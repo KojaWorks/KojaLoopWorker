@@ -1,11 +1,17 @@
 import SwiftUI
 
+/// The menu-bar popover — deliberately minimal (see the minimal-popover card): run state, slots,
+/// Start/Stop, Quit. The readiness checklist, the token form, and the Dashboard link all moved to
+/// the Setup window; a failing check shows here only as a one-line "Needs attention → Open Setup".
 struct MenuContentView: View {
     @EnvironmentObject var appState: AppState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             Header()
+            if case .draining = appState.controller.state {
+                DrainingBanner()
+            }
             if let reason = appState.stopReason {
                 Banner(text: reason, symbol: "exclamationmark.triangle.fill", tint: .red)
             }
@@ -13,12 +19,7 @@ struct MenuContentView: View {
                 Banner(text: "This app is too old for the running Manager. Update the app.",
                        symbol: "exclamationmark.triangle.fill", tint: .orange)
             }
-            if !appState.loopworkerFound {
-                Banner(text: "loopworker not found on PATH. Install it (pipx) or set its path.",
-                       symbol: "questionmark.folder", tint: .orange)
-            }
-            Divider()
-            ReadinessPanel()
+            AttentionLine()
             Divider()
             SlotsPanel()
             Divider()
@@ -53,53 +54,55 @@ private struct Header: View {
     }
 }
 
-// MARK: - Readiness (loopworker doctor)
+// MARK: - Draining (the visible, legible Quit/Stop drain — see the drain card)
 
-private struct ReadinessPanel: View {
+private struct DrainingBanner: View {
     @EnvironmentObject var appState: AppState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Readiness").font(.subheadline).bold()
-                Spacer()
-                Button("Re-check") { appState.runDoctorNow() }
-                    .buttonStyle(.borderless).font(.caption)
-            }
-            if let checks = appState.doctor?.checks {
-                ForEach(checks) { CheckRow(check: $0) }
-            } else {
-                Text(appState.doctorNote ?? "Running host checks…")
-                    .font(.caption).foregroundStyle(.secondary)
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "hourglass").foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(appState.controller.isQuitting
+                     ? "Quitting — workers are finishing. No new work starts."
+                     : "Draining — workers are finishing. No new work starts.")
+                    .font(.caption).fixedSize(horizontal: false, vertical: true)
+                Button(appState.controller.isQuitting ? "Quit now" : "Stop now") {
+                    appState.controller.forceStop()
+                }
+                .controlSize(.small).foregroundStyle(.red)
             }
         }
+        .padding(8)
+        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
-private struct CheckRow: View {
-    let check: ReadinessCheck
+// MARK: - Attention (readiness lives in Setup; here it's one line that opens it)
+
+private struct AttentionLine: View {
+    @EnvironmentObject var appState: AppState
 
     var body: some View {
-        HStack(alignment: .top, spacing: 6) {
-            Image(systemName: symbol).foregroundStyle(tint)
-            VStack(alignment: .leading, spacing: 1) {
-                HStack {
-                    Text(check.name).font(.caption).bold()
-                    Text(check.detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
-                if !check.ok, !check.remedy.isEmpty {
-                    Text("→ \(check.remedy)").font(.caption2).foregroundStyle(.orange)
-                }
-            }
+        if !appState.isConfigured {
+            line("Not connected — open Setup", tint: .orange)
+        } else if !appState.loopworkerFound {
+            line("loopworker not found — open Setup", tint: .orange)
+        } else if appState.doctorHasFailure {
+            line("Needs attention — open Setup", tint: appState.doctorHasRequiredFailure ? .red : .orange)
         }
     }
 
-    // A failed REQUIRED check is a red blocker; a failed recommended one is an orange warning.
-    private var symbol: String {
-        check.ok ? "checkmark.circle.fill" : (check.required ? "xmark.octagon.fill" : "exclamationmark.triangle.fill")
-    }
-    private var tint: Color {
-        check.ok ? .green : (check.required ? .red : .orange)
+    private func line(_ text: String, tint: Color) -> some View {
+        Button { appState.openSetup() } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(tint)
+                Text(text).font(.caption).foregroundStyle(tint)
+                Spacer()
+                Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -154,13 +157,15 @@ private struct Controls: View {
 
     var body: some View {
         HStack {
-            if appState.controller.isRunning {
+            switch appState.controller.state {
+            case .draining:
+                EmptyView()                 // the draining banner owns the stop affordance
+            case .running, .starting:
                 Button("Stop (drain)") { appState.controller.drain() }
-                Button("Force stop") { appState.controller.forceStop() }
-                    .foregroundStyle(.red)
-            } else {
+                Button("Force stop") { appState.controller.forceStop() }.foregroundStyle(.red)
+            case .stopped:
                 Button("Start Manager") { appState.controller.startFresh() }
-                    .disabled(!appState.loopworkerFound)
+                    .disabled(!appState.loopworkerFound || !appState.isConfigured)
             }
             Spacer()
         }
@@ -174,16 +179,18 @@ private struct Footer: View {
 
     var body: some View {
         HStack {
-            Button("Dashboard") {
-                if let url = URL(string: "http://127.0.0.1:8787") { NSWorkspace.shared.open(url) }
-            }.buttonStyle(.borderless).font(.caption)
-            Button("Connect…") { appState.showConnect = true }.buttonStyle(.borderless).font(.caption)
+            Button("Setup…") { appState.openSetup() }.buttonStyle(.borderless).font(.caption)
             UpdateButton()
             Spacer()
             // Quit routes through applicationShouldTerminate, which drains the Manager and holds
-            // termination until it actually exits (see AppState) — no orphaned headless Manager.
-            Button("Quit") { NSApplication.shared.terminate(nil) }
-                .buttonStyle(.borderless).font(.caption)
+            // termination until it exits (see AppState). While draining, the banner above owns the
+            // messaging + the "Quit now" fast path, so we drop Quit here to avoid a dead button.
+            if case .draining = appState.controller.state {
+                EmptyView()
+            } else {
+                Button("Quit") { NSApplication.shared.terminate(nil) }
+                    .buttonStyle(.borderless).font(.caption)
+            }
         }
     }
 }
