@@ -76,15 +76,21 @@ enum ConfigStore {
         scrubEnvToken()
     }
 
+    /// True if a .env line assigns PATCH_PAT (bare or `export PATCH_PAT=`), so both the migration
+    /// and the scrub agree on which lines carry the cleartext token.
+    private static func isTokenLine(_ line: Substring) -> Bool {
+        var t = line.trimmingCharacters(in: .whitespaces)
+        if t.hasPrefix("export ") { t = String(t.dropFirst("export ".count)).trimmingCharacters(in: .whitespaces) }
+        return t.hasPrefix("PATCH_PAT=")
+    }
+
     /// The PATCH_PAT value from a plaintext .env, if present (legacy installs only).
     private static func envToken() -> String? {
         guard let text = try? String(contentsOf: envPath, encoding: .utf8) else { return nil }
-        for line in text.split(whereSeparator: \.isNewline) {
-            let t = line.trimmingCharacters(in: .whitespaces)
-            if t.hasPrefix("PATCH_PAT=") {
-                return String(t.dropFirst("PATCH_PAT=".count))
-                    .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-            }
+        for line in text.split(whereSeparator: \.isNewline) where isTokenLine(line) {
+            let value = line.split(separator: "=", maxSplits: 1).last.map(String.init) ?? ""
+            return value.trimmingCharacters(in: .whitespaces)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
         }
         return nil
     }
@@ -94,7 +100,7 @@ enum ConfigStore {
     private static func scrubEnvToken() {
         guard let text = try? String(contentsOf: envPath, encoding: .utf8) else { return }
         let kept = text.split(separator: "\n", omittingEmptySubsequences: false)
-            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("PATCH_PAT=") }
+            .filter { !isTokenLine($0) }
         let remaining = kept.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         if remaining.isEmpty {
             try? FileManager.default.removeItem(at: envPath)

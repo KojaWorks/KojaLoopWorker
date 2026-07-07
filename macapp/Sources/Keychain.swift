@@ -28,6 +28,9 @@ enum Keychain {
         if status == errSecItemNotFound {
             var add = baseQuery
             add[kSecValueData as String] = data
+            // Available once the user has unlocked the login keychain this session — a menu-bar
+            // daemon reads it at Manager launch, well after login. (Also the SecItem default.)
+            add[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
             try check(SecItemAdd(add as CFDictionary, nil))
         } else {
             try check(status)
