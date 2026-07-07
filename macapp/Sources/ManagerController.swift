@@ -65,6 +65,10 @@ final class ManagerController: ObservableObject {
             p.standardOutput = logHandle
             p.standardError = logHandle
         }
+        // A GUI-launched process can have a closed stdin (fd 0). The Manager tolerates it, but a
+        // `python` a lifecycle script spawns (provision.sh) dies at startup on the bad descriptor.
+        // Hand it a real /dev/null so nothing downstream inherits a broken fd 0.
+        p.standardInput = FileHandle.nullDevice
         p.terminationHandler = { [weak self] proc in
             let status = proc.terminationStatus
             Task { @MainActor in self?.handleExit(status: status) }

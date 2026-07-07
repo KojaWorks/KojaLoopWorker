@@ -40,6 +40,25 @@ def test_run_script_streams_and_captures_port(tmp_path):
     assert slot.port_reported is True                         # project bound a port → dashboard shows it
 
 
+def test_run_script_gives_the_script_a_real_stdin(tmp_path):
+    # The scar: a GUI-launched Manager (the Mac app) can hand us a CLOSED fd 0, and a `python`
+    # a lifecycle script spawns (provision.sh: `python3 -m venv`) then dies at startup with
+    # "init_sys_streams: Bad file descriptor". _run_script must give the script its own
+    # /dev/null stdin so a closed parent fd 0 can't reach it. Here we close fd 0 to reproduce
+    # the GUI-launch condition; without stdin=DEVNULL the python below fatals and rc != 0.
+    logs: list[str] = []
+    pool = _pool(tmp_path, "python3 -c 'import sys; sys.exit(0)'\n", logs)
+    slot = Slot(index=0, dir=str(tmp_path), port=1)
+    saved = os.dup(0)
+    os.close(0)
+    try:
+        rc, _ = pool._run_script("provision", slot)
+    finally:
+        os.dup2(saved, 0)   # restore before pytest touches fd 0 again
+        os.close(saved)
+    assert rc == 0
+
+
 def test_capture_port_absent_leaves_port_unreported(tmp_path):
     logs: list[str] = []
     pool = _pool(tmp_path, "true\n", logs)

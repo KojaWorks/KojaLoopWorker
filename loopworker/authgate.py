@@ -98,7 +98,8 @@ class AuthGate:
         # daemon we never block on.
         try:
             proc = subprocess.Popen(
-                self._cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                self._cmd, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, env=env, start_new_session=True,
             )
         except Exception as e:
