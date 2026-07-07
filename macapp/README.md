@@ -30,6 +30,8 @@ reimplement any Manager logic; it is a client of the seams the Manager already e
 | `Sources/MenuContentView.swift` | the popover: header, readiness, slots, controls |
 | `Sources/Updater.swift` | Sparkle "Check for Updates…" (guarded by `#if canImport(Sparkle)`) |
 | `Sources/Models.swift` | Codable structs for the status contract |
+| `freeze-manager.sh` | freezes the Python Manager (PyInstaller) into `Resources/loopworker` at build time |
+| `loopworker_entry.py` | PyInstaller entry shim (absolute import so the package is collected) |
 
 ## Build & run
 
@@ -42,8 +44,13 @@ xcodebuild -project LoopWorker.xcodeproj -scheme LoopWorker -configuration Debug
   -destination 'generic/platform=macOS' CODE_SIGNING_ALLOWED=NO build
 ```
 
-The app finds `loopworker` on your `PATH` (a `pipx install` or `pip install -e .` works). To
-override, set the `loopworkerPath` user default to an absolute path.
+**Self-contained.** A build phase (`freeze-manager.sh`) freezes the Python Manager with
+PyInstaller and drops it into `Resources/loopworker`, so the app runs with **no `loopworker`
+installed on the machine at all** — that's what "update the app == update the Manager" buys.
+Because of that, the *build machine* needs **python 3.11+** on PATH (the freeze is skipped on
+rebuilds when the binary is already fresh, so only the first build pays for it). The app
+resolves the Manager in order: a `loopworkerPath` user-default override → the bundled
+`Resources/loopworker` → `loopworker` on `PATH` (handy for `pip install -e .` dev loops).
 
 ## Status: scaffold — compiles, not yet verified as a running app
 
@@ -59,8 +66,7 @@ that needs a logged-in desktop session and a human. To verify manually:
 
 - **Sparkle**: add the SPM package (`https://github.com/sparkle-project/Sparkle`) to `project.yml`;
   the code activates via `#if canImport(Sparkle)`. Needs an appcast (`SUFeedURL`) + hosting.
-- **Frozen Python in the bundle**: today the app supervises a PATH-resolved `loopworker`; a
-  shipped app must embed a frozen Manager (PyInstaller) so "update the app" == "update the
-  Manager" (see the distribution doc's "one update mechanism" principle).
 - **Developer ID signing + notarization**: required before distributing outside your own machine.
+  Note: the embedded frozen Manager (`Resources/loopworker`) is a Mach-O that must be signed too
+  (sign it before the outer `.app`, then notarize the whole bundle).
 - **Login-item toggle** and **settings UI** (dashboard port, loopworker path).
