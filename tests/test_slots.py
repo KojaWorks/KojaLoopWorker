@@ -69,8 +69,11 @@ def test_capture_port_absent_leaves_port_unreported(tmp_path):
 
 def test_revive_broken_resets_cold(tmp_path):
     cold = _cold_pool(tmp_path)
-    cold.slots[0].state = SlotState.BROKEN
+    cold.slots[0].mark_broken("provision.sh failed (rc=1)")
     assert cold.revive_broken() == 1 and cold.slots[0].state == SlotState.COLD
+    # Re-arming a cold slot does NOT heal it (acquire re-provisions on the next card), so the
+    # reason must persist — else a persistently-failing cold provision goes silent again (~844).
+    assert cold.slots[0].last_error == "provision.sh failed (rc=1)"
 
 
 def test_revive_broken_reprovisions_hot_in_place(tmp_path, monkeypatch):
