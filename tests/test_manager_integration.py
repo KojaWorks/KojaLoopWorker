@@ -12,6 +12,7 @@ from loopworker.config import (BacklogConfig, BriefConfig, Manifest,
                                ScriptsConfig, WorkerConfig)
 from loopworker.manager import Manager
 from loopworker.models import Card, CardStatus, SlotState, Worker
+from loopworker.reconciler import SlotAction
 
 
 class FakeBacklog(BacklogAdapter):
@@ -131,6 +132,74 @@ def test_auth_wedged_worker_is_reclaimed(mgr):
     assert killed == [sess]                     # wedged worker reaped immediately (grace=0)
     assert m.adapter.releases == [1]            # card returned to Backlog for a fresh worker
     assert m.pool.slots[0].state == SlotState.IDLE  # slot freed, not stuck until wallclock
+
+
+def test_auth_reclaim_arms_gate_backoff_and_pauses_respawn(mgr, monkeypatch):
+    # A wedged worker's reclaim must arm the shared gate's backoff so the SAME tick's fill
+    # step doesn't storm a fresh worker straight back into the broken auth — even though the
+    # headless preflight still passes (the reclaim is the real signal auth is down).
+    m, state, spawned, _killed = mgr
+    m.auth.enabled = True
+    monkeypatch.setattr(m.auth, "_check", lambda: (True, ""))  # -p preflight passes
+
+    m.tick()                                   # spawn a worker; card 1 -> In progress
+    assert m.pool.slots[0].state == SlotState.BUSY
+    spawned.clear()
+
+    state["pane"] = "⏺ Please run /login · API Error: 401 Invalid authentication credentials"
+    m.tick()                                   # reconcile reclaims; fill in the same tick is paused
+    assert m.adapter.releases == [1]           # card reclaimed
+    assert spawned == []                       # backoff blocked the respawn (no storm)
+    assert m.auth.ok() is False                # gate now backing off host-wide
+
+
+def test_clean_reap_clears_auth_backoff(mgr, monkeypatch):
+    m, state, _spawned, _killed = mgr
+    m.auth.enabled = True
+    monkeypatch.setattr(m.auth, "_check", lambda: (True, ""))
+    m.tick()                                   # spawn worker on card 1
+    m.auth.note_auth_reclaim()                 # a prior storm armed the backoff
+    assert m.auth.ok() is False
+
+    m.adapter.cards[1].status = CardStatus.SHIPPED
+    m.tick()                                   # REAP grace starts (grace=0)
+    m.tick()                                   # grace elapsed -> clean reap
+    assert m.pool.slots[0].state == SlotState.IDLE
+    assert m.auth.ok() is True                 # the clean completion cleared the streak
+
+
+def test_same_pass_auth_reclaim_beats_clean_completion(mgr, monkeypatch):
+    # Two workers reconciled in one pass: one finishes cleanly, one is wedged at the login
+    # prompt. The clean completion must NOT wipe the backoff the wedge arms this same pass —
+    # otherwise the ordering of pool.slots would decide whether the storm guard survives.
+    from datetime import datetime, timezone
+
+    from loopworker.models import Slot
+    m, _state, _spawned, _killed = mgr
+    m.auth.enabled = True
+    monkeypatch.setattr(m.auth, "_check", lambda: (True, ""))  # -p preflight passes (blind spot)
+    monkeypatch.setattr(m, "_reap", lambda slot, reason: None)  # skip pool teardown; isolate the gate
+
+    old = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    clean = Slot(index=0, dir="/x", port=1, state=SlotState.BUSY, session="s-clean",
+                 card_num=1, done_since=old)          # already past its reap grace
+    wedged = Slot(index=1, dir="/y", port=2, state=SlotState.BUSY, session="s-wedged",
+                  card_num=2, done_since=None)
+
+    # Force the two fates regardless of pane/card scraping.
+    def fake_classify(slot, card, alive, now, cap, auth_failed=False):
+        return ((SlotAction.REAP, "card moved to Shipped") if slot is clean
+                else (SlotAction.AUTH_RECLAIM, "login prompt"))
+    monkeypatch.setattr(manager_mod, "classify", fake_classify)
+    monkeypatch.setattr(manager_mod.tmux, "worker_running", lambda sess: True)
+
+    for order in ([clean, wedged], [wedged, clean]):  # both iteration orders
+        m.auth._reclaim_streak = 0
+        m.auth._backoff_until = 0.0
+        m.pool.slots = order
+        m._reconcile_busy(datetime.now(timezone.utc))
+        assert m.auth.ok() is False   # backoff armed by the wedge, not cleared by the clean reap
+        assert m.auth._reclaim_streak == 1
 
 
 def test_launch_omits_model_flag_when_unset(mgr):

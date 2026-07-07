@@ -195,6 +195,11 @@ class Manager:
     # --- reconcile ---------------------------------------------------------
     def _reconcile_busy(self, now: datetime) -> None:
         self._notify_broken()
+        # Auth-reclaim must win over a clean completion within the same pass: if one slot
+        # finishes cleanly while another is wedged at the login prompt, order-of-iteration
+        # must not let the clean reset wipe the just-armed backoff. So we only clear the gate
+        # AFTER the loop, and only if no AUTH_RECLAIM fired this pass.
+        auth_reclaimed = clean_completed = False
         for slot in self.pool.slots:
             if slot.state != SlotState.BUSY:
                 continue
@@ -217,6 +222,9 @@ class Manager:
                     slot.done_since = now
                     self.log(f"slot {slot.index} ~{slot.card_num}: {reason}; reap grace started")
                 elif now - slot.done_since >= self.grace:
+                    # A worker ran its card to a clean finish — interactive auth is healthy.
+                    # Defer clearing the gate's backoff until the whole pass is scanned.
+                    clean_completed = True
                     self._reap(slot, reason)
             elif action in (SlotAction.CRASH_RECLAIM, SlotAction.HUNG_RECLAIM, SlotAction.AUTH_RECLAIM):
                 slot.activity = f"reclaiming — {reason}"
@@ -226,7 +234,15 @@ class Manager:
                         self.adapter.release(card, note=reason)
                     except Exception as e:
                         self.log(f"  release failed: {e!r}")
+                # A login-prompt wedge means interactive auth is broken even if the spawn-time
+                # preflight passes — arm the gate's backoff so we don't storm respawns into it.
+                if action == SlotAction.AUTH_RECLAIM:
+                    auth_reclaimed = True
+                    self.auth.note_auth_reclaim()
                 self._reap(slot, reason)
+        # A clean completion clears the backoff, but never one armed this same pass.
+        if clean_completed and not auth_reclaimed:
+            self.auth.note_clean_completion()
 
     def _reap(self, slot: Slot, reason: str) -> None:
         slot.activity = f"reaping ({reason})"
