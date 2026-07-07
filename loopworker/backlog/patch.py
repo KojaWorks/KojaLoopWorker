@@ -64,6 +64,7 @@ class PatchAdapter(BacklogAdapter):
         worker_manager: str = "",
         roadmap_table: str = "roadmap",
         workers_table: str = "loop_workers",
+        managers_table: str = "loop_managers",
         projects_table: str = "projects",
         app_base: str = "",
         roadmap_page_id: str = "",
@@ -79,6 +80,7 @@ class PatchAdapter(BacklogAdapter):
             worker_manager = manifest.worker_manager
             roadmap_table = opts.get("roadmap_table", "roadmap")
             workers_table = opts.get("workers_table", "loop_workers")
+            managers_table = opts.get("managers_table", "loop_managers")
             projects_table = opts.get("projects_table", "projects")
             app_base = opts.get("app_base", "")
             roadmap_page_id = opts.get("roadmap_page_id", "")
@@ -99,6 +101,7 @@ class PatchAdapter(BacklogAdapter):
             )
         self.roadmap = roadmap_table
         self.workers = workers_table
+        self.managers = managers_table
         self.projects = projects_table
         # App-link parts for the dashboard's ~NNN linkifier: the Patch APP origin (not the
         # api_base, which is the API host) and the roadmap table's patch_items id. Both
@@ -139,6 +142,7 @@ class PatchAdapter(BacklogAdapter):
         return cls(
             api_base=host.api_base, anon_key=host.anon_key, worker_manager=host.worker_manager,
             roadmap_table=host.roadmap_table, workers_table=host.workers_table,
+            managers_table=host.managers_table,
             projects_table=host.projects_table, app_base=host.app_base,
             roadmap_page_id=host.roadmap_page_id, log=log, notify=notify,
         )
@@ -216,6 +220,20 @@ class PatchAdapter(BacklogAdapter):
         else:
             wid = self._post(self.workers, {"name": name, **fields})[0]["id"]
         return Worker(id=wid, name=name, role=role, notes=notes, last_active=now)
+
+    def register_manager(self, name: str, summary: str = "") -> None:
+        """Upsert this host's loop_managers row (one per worker_manager id): heartbeat
+        last_active + a one-line summary, so a human/dashboard can see which Managers are
+        alive and what they're doing. Mirrors register_worker; keyed on name so restarts
+        update in place. Best-effort — the caller must not let a failed heartbeat crash the
+        loop (a Manager that can't register is still a working Manager)."""
+        now = datetime.now(timezone.utc)
+        fields = {"last_active": now.isoformat(), "summary": summary}
+        existing = self._get(self.managers, {"name": f"eq.{name}", "select": "id", "limit": "1"})
+        if existing:
+            self._patch(self.managers, {"id": f"eq.{existing[0]['id']}"}, fields)
+        else:
+            self._post(self.managers, {"name": name, **fields})
 
     def claim(self, card: Card, worker: Worker) -> bool:
         """Atomic claim: the assignee=is.null filter makes the PATCH match zero rows if

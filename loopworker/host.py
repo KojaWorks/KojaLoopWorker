@@ -24,7 +24,7 @@ from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import filelog, tmux
+from . import __version__, filelog, tmux
 from .authgate import AuthGate
 from .backlog.patch import PatchAdapter, brief_pointer
 from .config import HostConfig, Manifest
@@ -420,6 +420,18 @@ class HostManager:
             m._reap_orphans()
             m.pool.build()
 
+    def _register(self) -> None:
+        """Heartbeat this host's row in loop_managers so a human/dashboard can see which
+        Managers are alive and what they're doing — best-effort, NEVER crash the loop (a
+        Manager that can't register is still a working Manager)."""
+        try:
+            busy = self._busy_total()
+            summary = (f"v{__version__} · {len(self.managers)} project(s) · "
+                       f"{busy}/{self.host.max_slots} slot(s) busy")
+            self.adapter.register_manager(self.host.worker_manager, summary)
+        except Exception as e:
+            self.log(f"manager heartbeat failed (non-fatal): {e!r}")
+
     def run(self) -> None:
         self._acquire_lock()
         signal.signal(signal.SIGINT, self._on_signal)
@@ -431,13 +443,18 @@ class HostManager:
                 self.log("no serviceable projects — nothing to do")
                 return
             self.build()
+            self._register()  # announce this Manager is up
             self.log(f"host ready; reconciling + staggered fill every {self.reconcile_interval}s, "
                      f"project discovery every {self.poll_interval}s")
             last_discover = 0.0
+            last_heartbeat = time.monotonic()
             while not self._stop:
                 now = datetime.now(timezone.utc)
                 try:
                     self._reconcile_all(now)
+                    if (time.monotonic() - last_heartbeat) >= self.poll_interval:
+                        self._register()  # heartbeat, incl. while paused/draining — still alive
+                        last_heartbeat = time.monotonic()
                     if not self._draining:
                         paused = self.killswitch.exists()
                         # Project discovery (backlog read + clone) stays on the slow cadence;
