@@ -29,7 +29,8 @@ from .authgate import AuthGate
 from .backlog.patch import PatchAdapter, brief_pointer
 from .config import HostConfig, Manifest
 from .engine import EngineRecovery
-from .manager import _DEFAULT_WORKER_ENV, Manager, _pid_alive, _slug, watch_trust
+from .manager import (_DEFAULT_WORKER_ENV, Manager, _pid_alive, _slug,
+                      parent_gone, watch_trust, watched_parent_pid)
 from .models import ProjectRow
 from .notify import Notifier
 
@@ -95,6 +96,7 @@ class HostManager:
         self._stop = False
         self._draining = False
         self._sigint_count = 0
+        self._parent_pid: int | None = None  # set in run(): die with the app that launched us
 
     # --- discovery / clone -------------------------------------------------
     def discover(self) -> None:
@@ -437,6 +439,7 @@ class HostManager:
         self._acquire_lock()
         signal.signal(signal.SIGINT, self._on_signal)
         signal.signal(signal.SIGTERM, self._on_signal)
+        self._parent_pid = watched_parent_pid()
         try:
             self._notify_self_test()
             self._register()        # register FIRST: projects are filtered by our manager id
@@ -456,6 +459,9 @@ class HostManager:
             last_discover = 0.0
             last_heartbeat = time.monotonic()
             while not self._stop:
+                if parent_gone(self._parent_pid, self.log):
+                    self._stop = True
+                    break
                 now = datetime.now(timezone.utc)
                 try:
                     self._reconcile_all(now)

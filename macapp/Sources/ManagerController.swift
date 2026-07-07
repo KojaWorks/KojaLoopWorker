@@ -60,6 +60,10 @@ final class ManagerController: ObservableObject {
         // Hand the Manager the Patch token from the login Keychain (never a plaintext .env). The
         // Manager already reads PATCH_PAT from its env, so this is all the wiring it needs.
         if let token = Keychain.read() { p.environment?["PATCH_PAT"] = token }
+        // Tie the Manager's lifetime to ours: it polls this pid and shuts itself down (reaping
+        // workers) if we die without cleaning up — e.g. a SIGKILL from Xcode runs no termination
+        // handler, orphaning the Manager to launchd. Belt-and-suspenders over being our child.
+        p.environment?["LOOPWORKER_PARENT_PID"] = String(ProcessInfo.processInfo.processIdentifier)
         // Capture stdout+stderr to a file so a crash reason (a Python traceback goes to stderr,
         // NOT the structured filelog) is never silently swallowed — the app must surface it.
         FileManager.default.createFile(atPath: outURL.path, contents: nil)

@@ -126,6 +126,7 @@ class Manager:
         self._stop = False          # exit the loop; finally reaps any live workers
         self._draining = False      # finish current workers, start no new ones
         self._sigint_count = 0      # ⌃C escalation: 1=drain, 2=force, 3=hard exit
+        self._parent_pid: int | None = None  # set in run(): die with the app that launched us
         # auth_gate=None (the default, unless a HostManager shares its own) builds an
         # inert gate: enabled=False so ok() always returns True and never shells out —
         # only __main__.py's real CLI entrypoints turn it on for an unattended run.
@@ -138,6 +139,7 @@ class Manager:
         self._acquire_lock()
         signal.signal(signal.SIGINT, self._on_signal)
         signal.signal(signal.SIGTERM, self._on_signal)
+        self._parent_pid = watched_parent_pid()
         try:
             self._reap_orphans()  # workers stranded by a previously-dead Manager
             self.log(f"building {self.manifest.slots} slot(s) — provisioning stacks (first run is slow)")
@@ -145,6 +147,9 @@ class Manager:
             self.log(f"pool ready; reconciling every {self.reconcile_interval}s, filling every {self.poll_interval}s")
             last_fill = 0.0  # 0 → fill on the first iteration
             while not self._stop:
+                if parent_gone(self._parent_pid, self.log):
+                    self._stop = True
+                    break
                 now = datetime.now(timezone.utc)
                 try:
                     self._reconcile_busy(now)  # cheap: reap finished workers, refresh dashboard, catch crashes
@@ -585,4 +590,35 @@ def _pid_alive(pid: int) -> bool:
         return False
     except PermissionError:
         return True
+    return True
+
+
+def watched_parent_pid() -> int | None:
+    """Pid whose death should shut the Manager down, so it never outlives the app that
+    launched it. A SIGKILLed Mac app (e.g. stopped from Xcode) runs no atexit handler and
+    orphans the Manager to launchd — leaving stray worker/slot processes behind. macOS has
+    no PR_SET_PDEATHSIG, so the run loop polls this pid instead.
+
+    Strictly opt-in via LOOPWORKER_PARENT_PID (the app passes its own pid). Unset -> no
+    watch, so a supervised service (systemd) or a deliberately-detached `nohup`/`disown`
+    run keeps its normal survival semantics; those stop via SIGTERM/SIGINT. A pid <= 1 or
+    an unparseable value also disables it (defensive: os.kill(0, sig) targets a process
+    group, never what we mean)."""
+    raw = os.environ.get("LOOPWORKER_PARENT_PID")
+    if raw is None:
+        return None
+    try:
+        pid = int(raw)
+    except ValueError:
+        return None
+    return pid if pid > 1 else None
+
+
+def parent_gone(parent_pid: int | None, log: Callable[[str], None]) -> bool:
+    """True once a watched parent pid has died — the app that launched us is gone, so shut
+    down (force-stop: reap workers, release cards) rather than leave orphans. Logs the
+    reason so a human sees why the Manager exited. None (watch disabled) is never gone."""
+    if parent_pid is None or _pid_alive(parent_pid):
+        return False
+    log(f"parent process {parent_pid} gone — shutting down (reaping workers, releasing cards)")
     return True
