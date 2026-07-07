@@ -18,7 +18,9 @@ PROFILE="${LOOPWORKER_NOTARY_PROFILE:-koja-notary}"
 here="$(cd "$(dirname "$0")" && pwd)"
 dd="$here/build/release-dd"
 ent="$here/loopworker.entitlements"
-app="$dd/Build/Products/Release/LoopWorker.app"
+# The product is "Koja Loops Manager.app" (PRODUCT_NAME) so Finder shows the right name; the .zip
+# artifact + scheme stay "LoopWorker" (internal).
+app="$dd/Build/Products/Release/Koja Loops Manager.app"
 inner="$app/Contents/Resources/loopworker"
 
 # Optional version injection — CI passes the git tag; locally we keep project.yml's defaults.
