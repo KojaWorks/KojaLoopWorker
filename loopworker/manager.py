@@ -307,9 +307,10 @@ class Manager:
                 max_new -= 1
 
     def _spawn_worker(self, slot: Slot, card, now: datetime) -> None:
-        # stable per slot; reuses one worker row. name_prefix namespaces it per project
-        # in host mode (so two projects' slot-0 aren't both "ada" in shared loop_workers).
-        name = f"{self.name_prefix}{name_for_slot(slot.index)}"
+        # stable per slot; reuses one worker row. name_prefix namespaces the row per
+        # project, and also rotates the base name so two projects' slot-0 don't both read
+        # "ada" in the shared dashboard/loop_workers.
+        name = f"{self.name_prefix}{name_for_slot(slot.index, self.name_prefix)}"
         try:
             worker = self.adapter.register_worker(
                 name, role="generic", notes=f"~{card.num}: {card.title}"
