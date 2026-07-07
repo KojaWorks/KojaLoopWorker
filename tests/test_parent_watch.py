@@ -2,27 +2,20 @@
 so it never leaves orphaned workers/slot processes behind (a SIGKILLed app runs no
 cleanup). Pure decision logic — no real loop needed."""
 import os
-import subprocess
-import sys
 
+from loopworker import manager as manager_mod
 from loopworker.manager import parent_gone, watched_parent_pid
 
 
-def _dead_pid() -> int:
-    """A pid guaranteed not alive: spawn a trivial process, reap it, reuse its pid."""
-    p = subprocess.Popen([sys.executable, "-c", ""])
-    p.wait()
-    return p.pid
-
-
-def test_watched_pid_prefers_env(monkeypatch):
+def test_watched_pid_from_env(monkeypatch):
     monkeypatch.setenv("LOOPWORKER_PARENT_PID", "4242")
     assert watched_parent_pid() == 4242
 
 
-def test_watched_pid_falls_back_to_real_parent(monkeypatch):
+def test_watched_pid_unset_disables(monkeypatch):
+    # Opt-in only: no env => no watch, so unsupervised/nohup runs keep normal survival.
     monkeypatch.delenv("LOOPWORKER_PARENT_PID", raising=False)
-    assert watched_parent_pid() == os.getppid()
+    assert watched_parent_pid() is None
 
 
 def test_watched_pid_disabled_for_init_parent(monkeypatch):
@@ -49,7 +42,10 @@ def test_parent_gone_false_while_alive():
     assert logs == []
 
 
-def test_parent_gone_true_and_logs_when_dead():
+def test_parent_gone_true_and_logs_when_dead(monkeypatch):
+    # Deterministic: force the liveness probe to report the parent dead (a real reaped
+    # pid can be recycled between reap and check).
+    monkeypatch.setattr(manager_mod, "_pid_alive", lambda pid: False)
     logs: list[str] = []
-    assert parent_gone(_dead_pid(), logs.append) is True
+    assert parent_gone(4242, logs.append) is True
     assert logs and "gone" in logs[0]

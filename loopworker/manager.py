@@ -599,18 +599,18 @@ def watched_parent_pid() -> int | None:
     orphans the Manager to launchd — leaving stray worker/slot processes behind. macOS has
     no PR_SET_PDEATHSIG, so the run loop polls this pid instead.
 
-    LOOPWORKER_PARENT_PID (the app passes its own pid) wins; else our real parent at
-    startup. A pid <= 1 disables the watch: a Manager whose parent is already init/launchd
-    (a launchd- or systemd-started service) is not an orphan — reparenting to pid 1 is its
-    normal state, and SIGTERM already handles a supervised stop."""
+    Strictly opt-in via LOOPWORKER_PARENT_PID (the app passes its own pid). Unset -> no
+    watch, so a supervised service (systemd) or a deliberately-detached `nohup`/`disown`
+    run keeps its normal survival semantics; those stop via SIGTERM/SIGINT. A pid <= 1 or
+    an unparseable value also disables it (defensive: os.kill(0, sig) targets a process
+    group, never what we mean)."""
     raw = os.environ.get("LOOPWORKER_PARENT_PID")
-    if raw is not None:
-        try:
-            pid = int(raw)
-        except ValueError:
-            return None
-    else:
-        pid = os.getppid()
+    if raw is None:
+        return None
+    try:
+        pid = int(raw)
+    except ValueError:
+        return None
     return pid if pid > 1 else None
 
 
