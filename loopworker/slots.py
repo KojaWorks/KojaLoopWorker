@@ -114,12 +114,10 @@ class SlotPool:
             try:
                 self._ensure_worktree(slot)
                 self._provision(slot)
-                slot.state = SlotState.IDLE
-                slot.activity = "idle"
+                slot.mark_idle()
                 self.log(f"slot {slot.index}: ready on port {slot.port}")
             except SlotError as e:
-                slot.state = SlotState.BROKEN
-                slot.activity = f"broken: {e}"
+                slot.mark_broken(str(e))
                 self.log(f"slot {slot.index}: BROKEN — {e}")
         healthy = [s for s in self.slots if s.state != SlotState.BROKEN]
         self.log(f"pool ready: {len(healthy)}/{len(self.slots)} slot(s) healthy")
@@ -189,12 +187,10 @@ class SlotPool:
             try:
                 self._ensure_worktree(slot)
                 self._provision(slot)
-                slot.state = SlotState.IDLE
-                slot.activity = "idle"
+                slot.mark_idle()
                 self.log(f"slot {idx}: added, ready on port {slot.port}")
             except SlotError as e:
-                slot.state = SlotState.BROKEN
-                slot.activity = f"broken: {e}"
+                slot.mark_broken(str(e))
                 self.log(f"slot {idx}: added but BROKEN — {e}")
         else:
             self.log(f"slot {idx}: added (cold — provisions on demand)")
@@ -324,6 +320,10 @@ class SlotPool:
                 s.state = SlotState.COLD
                 s.activity = "cold (retry after earlier failure)"
                 s.retiring = False
+                # Deliberately KEEP last_error: this only re-ARMS the slot (acquire()
+                # re-provisions on the next card), it doesn't heal it — the stack has never
+                # come up. Clearing here would hide why a persistently-failing cold provision
+                # never progresses, the ~844 bug. Only a real _provision success clears it.
                 n += 1
                 continue
             # Read the clock fresh per slot: a re-provision below blocks (up to provision.sh's
@@ -339,12 +339,12 @@ class SlotPool:
                 # a slow-hanging provision (up to its timeout) would otherwise already be past
                 # a start-relative deadline and be retried immediately, defeating the backoff.
                 s.retry_after = self._clock() + _HOT_REPROVISION_COOLDOWN
-                s.activity = f"broken: {e}"
-                self.log(f"slot {s.index}: re-provision failed, backing off "
+                s.retry_count += 1
+                s.mark_broken(str(e))
+                self.log(f"slot {s.index}: re-provision failed (retry {s.retry_count}), backing off "
                          f"{_fmt_dur(_HOT_REPROVISION_COOLDOWN)} — {e}")
                 continue
-            s.state = SlotState.IDLE
-            s.activity = "idle"
+            s.mark_idle()
             s.retry_after = 0.0
             self.log(f"slot {s.index}: re-provisioned and back to idle on port {s.port}")
             n += 1
@@ -361,6 +361,14 @@ class SlotPool:
         """The pool's effective size for resize decisions: slots not being retired. A
         retiring slot is on its way out, so it doesn't count toward the target."""
         return sum(1 for s in self.slots if not s.retiring)
+
+    def retry_in(self, slot: Slot) -> float | None:
+        """Seconds until a backing-off BROKEN hot slot is eligible for its next re-provision,
+        or None if it isn't waiting on a backoff — so the dashboard can show a live
+        "next retry in Ns" beside the persisted failure reason."""
+        if slot.state != SlotState.BROKEN or not self.hot or slot.retry_after <= 0:
+            return None
+        return max(0.0, slot.retry_after - self._clock())
 
     # --- internals ---------------------------------------------------------
     def _ensure_worktree(self, slot: Slot) -> None:
@@ -387,7 +395,10 @@ class SlotPool:
             slot.engine_down = looks_like_engine_down(out)
             raise SlotError(f"provision.sh failed (rc={rc}) — see the "
                             f"[{self.manifest.project_name} slot {slot.index} provision] log above")
+        # A clean provision clears the failure record — the single home for "slot healed".
         slot.engine_down = False
+        slot.last_error = None
+        slot.retry_count = 0
         self._capture_port(slot, out)
 
     def _capture_port(self, slot: Slot, stdout: str) -> None:

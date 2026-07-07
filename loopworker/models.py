@@ -112,3 +112,21 @@ class Slot:
     engine_down: bool = False    # this slot's last provision/reset failed with a container-engine-
     #                              unreachable error (a down Docker/OrbStack) — revive_broken tries
     #                              to restart the engine before re-provisioning it
+    last_error: str | None = None  # WHY the slot last broke. Persists across the retry loop —
+    #                                which overwrites `activity` with "provisioning" — so the reason
+    #                                stays surfaced instead of being buried under retry chatter.
+    #                                Cleared on a clean (re)provision.
+    retry_count: int = 0         # failed re-provision retries since it broke (revive_broken)
+
+    def mark_broken(self, error: str) -> None:
+        """Enter BROKEN, recording the reason in its own field. `activity` gets overwritten
+        by the live "provisioning" step on the next retry, but last_error persists — so the
+        dashboard keeps showing WHY it last failed, not an endless reasonless "provisioning"."""
+        self.state = SlotState.BROKEN
+        self.activity = "broken"
+        self.last_error = error
+
+    def mark_idle(self) -> None:
+        """Return to warm IDLE. The failure record is cleared by _provision on success."""
+        self.state = SlotState.IDLE
+        self.activity = "idle"

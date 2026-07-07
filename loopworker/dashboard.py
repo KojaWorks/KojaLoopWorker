@@ -33,10 +33,30 @@ def _linkify(text: str, card_links: dict[str, str]) -> str:
     return _CARD_REF.sub(repl, html.escape(text))
 
 
+def _fmt_secs(secs: float) -> str:
+    return f"{secs / 60:.0f}m" if secs >= 60 else f"{secs:.0f}s"
+
+
+def _activity_cell(s: dict, card_links: dict[str, str]) -> str:
+    """The activity, plus — when the slot has a persisted failure reason — a red subline
+    with WHY it last broke, how many retries, and when the next. During the retry loop the
+    live `activity` reads "provisioning"; this subline is what keeps the reason visible."""
+    act = _linkify(s["activity"], card_links) if s.get("activity") else "—"
+    err = s.get("last_error")
+    if not err:
+        return act
+    bits = [f"⚠ {html.escape(err)}"]
+    if s.get("retry_count"):
+        bits.append(f"retry {s['retry_count']}")
+    if s.get("retry_in") is not None:
+        bits.append(f"next in {_fmt_secs(s['retry_in'])}")
+    return f"{act}<div class=err>{' · '.join(bits)}</div>"
+
+
 def _slots_table(slots: list[dict], card_links: dict[str, str]) -> str:
     rows = "".join(
         f"<tr><td>{s['index']}</td><td>{s['state']}</td>"
-        f"<td>{_linkify(s['activity'], card_links) if s.get('activity') else '—'}</td>"
+        f"<td>{_activity_cell(s, card_links)}</td>"
         f"<td>{s.get('port') or '—'}</td>"
         f"<td>{html.escape(s.get('model') or '—')}</td>"
         f"<td>{_linkify('~' + str(s['card']), card_links) if s['card'] else '—'}</td>"
@@ -68,6 +88,7 @@ def _render_host(snap: dict) -> str:
  td,th{{border:1px solid #ccc;padding:.3rem .6rem;text-align:left}}
  .log{{background:#f6f6f6;padding:.6rem;max-height:50vh;overflow:auto;white-space:pre-wrap}}
  .thinking{{max-width:34rem;color:#555;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+ .err{{color:#c0392b;font-size:.9em}}
 </style>
 <h2>LoopWorker · host {html.escape(snap['worker_manager'])}{paused}</h2>
 <div>started {snap['started_at']} · poll every {snap['poll_interval']}s · max {snap['max_slots']} slot(s)</div>
@@ -91,6 +112,7 @@ def _render(snap: dict) -> str:
  td,th{{border:1px solid #ccc;padding:.3rem .6rem;text-align:left}}
  .log{{background:#f6f6f6;padding:.6rem;max-height:50vh;overflow:auto;white-space:pre-wrap}}
  .thinking{{max-width:34rem;color:#555;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+ .err{{color:#c0392b;font-size:.9em}}
 </style>
 <h2>LoopWorker · {html.escape(snap['project'])}{paused}</h2>
 <div>started {snap['started_at']} · poll every {snap['poll_interval']}s</div>

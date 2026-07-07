@@ -58,8 +58,19 @@ struct SlotSnapshot: Codable, Identifiable {
     let card: Int?
     let model: String?
     let port: Int?
+    let lastError: String?           // WHY the slot last broke; kept out of `activity` so the
+    //                                 retry loop's "provisioning" line can't bury it
+    let retryCount: Int?
+    let retryIn: Double?             // seconds until the next re-provision, if backing off
 
     var id: Int { index }            // unique within a project section, which is all the UI needs
+
+    enum CodingKeys: String, CodingKey {
+        case index, state, activity, card, model, port
+        case lastError = "last_error"
+        case retryCount = "retry_count"
+        case retryIn = "retry_in"
+    }
 }
 
 /// `loopworker doctor --json` — host-prerequisite sweep.
