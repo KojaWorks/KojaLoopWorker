@@ -13,10 +13,11 @@ import argparse
 import json
 import os
 import sys
+import tomllib
 from pathlib import Path
 
 from . import __version__, dashboard, filelog, readiness
-from .config import HostConfig, Manifest
+from .config import HostConfig, Manifest, config_get, config_set
 from .host import HostManager
 from .manager import Manager
 
@@ -168,6 +169,35 @@ def _cmd_status(argv: list[str]) -> int:
     return 0
 
 
+def _cmd_config(argv: list[str]) -> int:
+    """Non-destructive config.toml editor — the Mac app shells out to `config set` per
+    managed key so it never clobbers a hand-set key. Python owns the TOML format."""
+    ap = argparse.ArgumentParser(prog="loopworker config")
+    sub = ap.add_subparsers(dest="action", required=True)
+    ps = sub.add_parser("set", help="set one key (dotted for tables, e.g. backlog.api_base), preserving all others")
+    ps.add_argument("key")
+    ps.add_argument("value")
+    ps.add_argument("--config", type=Path, default=None, help="config path (default ~/.loopworker/config.toml)")
+    pg = sub.add_parser("get", help="print one key's value (empty if unset)")
+    pg.add_argument("key")
+    pg.add_argument("--config", type=Path, default=None, help="config path (default ~/.loopworker/config.toml)")
+    a = ap.parse_args(argv)
+    path = Path(a.config or "~/.loopworker/config.toml").expanduser()
+    try:
+        if a.action == "set":
+            config_set(path, a.key, a.value)
+            return 0
+        val = config_get(path, a.key)
+    except (ValueError, OSError, tomllib.TOMLDecodeError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    if val is None:
+        return 0
+    print("true" if val is True else "false" if val is False else
+          json.dumps(val) if isinstance(val, (dict, list)) else val)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     raw = sys.argv[1:] if argv is None else argv
     # Load .env before anything dispatches so `doctor`'s claude/backlog checks see the same
@@ -178,6 +208,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_doctor(raw[1:])
     if raw and raw[0] == "status":
         return _cmd_status(raw[1:])
+    if raw and raw[0] == "config":
+        return _cmd_config(raw[1:])
     p = argparse.ArgumentParser(prog="loopworker", description=__doc__)
     p.add_argument("--version", action="version", version=f"loopworker {__version__}")
     p.add_argument("--project", help="single-project mode: path to a LoopWorker working copy")

@@ -67,6 +67,7 @@ final class AppState: NSObject, ObservableObject, NSApplicationDelegate {
     }
 
     var loopworkerFound: Bool { controller.loopworkerPath != nil }
+    var loopworkerPath: String? { controller.loopworkerPath }
 
     func openSetup() { setupWindow.show(appState: self) }
     func closeSetup() { setupWindow.close() }

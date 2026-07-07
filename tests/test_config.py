@@ -1,8 +1,9 @@
 import textwrap
+import tomllib
 
 import pytest
 
-from loopworker.config import HostConfig, Manifest
+from loopworker.config import HostConfig, Manifest, config_get, config_set
 
 
 def _write_manifest(root, body):
@@ -192,3 +193,93 @@ def test_host_config_missing_required_key(tmp_path):
 def test_host_config_missing_file(tmp_path):
     with pytest.raises(FileNotFoundError):
         HostConfig.load(tmp_path / "nope.toml")
+
+
+# --- config set/get: the app shells out to these instead of hand-writing TOML ---------
+
+def test_config_set_creates_file_and_parent(tmp_path):
+    cfg = tmp_path / "sub" / "config.toml"          # parent dir doesn't exist yet
+    config_set(cfg, "worker_manager", "miquon")
+    assert cfg.is_file()
+    assert config_get(cfg, "worker_manager") == "miquon"
+
+
+def test_config_set_nested_key_makes_table(tmp_path):
+    cfg = tmp_path / "config.toml"
+    config_set(cfg, "backlog.api_base", "https://api.patch")
+    assert config_get(cfg, "backlog.api_base") == "https://api.patch"
+    assert tomllib.loads(cfg.read_text())["backlog"]["api_base"] == "https://api.patch"
+
+
+def test_config_set_int_and_bool_coercion(tmp_path):
+    cfg = tmp_path / "config.toml"
+    config_set(cfg, "max_slots", "8")               # arrives as a string, must land as int
+    config_set(cfg, "engine.recover", "false")
+    raw = tomllib.loads(cfg.read_text())
+    assert raw["max_slots"] == 8 and isinstance(raw["max_slots"], int)
+    assert raw["engine"]["recover"] is False
+
+
+def test_config_set_bad_int_rejected(tmp_path):
+    cfg = tmp_path / "config.toml"
+    with pytest.raises(ValueError, match="max_slots"):
+        config_set(cfg, "max_slots", "lots")
+
+
+def test_config_set_preserves_every_hand_set_key(tmp_path):
+    # The scar: an app writing the whole file dropped keys it didn't manage. Setting one
+    # managed key must leave EVERY other key — including unknown/hand-tuned ones — intact.
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(textwrap.dedent("""
+        worker_manager = "miquon"
+        clones_dir = "~/clones"
+        max_slots = 12
+        max_concurrent_workers = 3
+        base_port = 55000
+        notify_command = "push"
+        [backlog]
+        api_base = "https://api.patch"
+        anon_key = "anon-public"
+        [engine]
+        recover = false
+        start_command = "colima start"
+    """))
+    config_set(cfg, "backlog.anon_key", "rotated-key")   # the app changes exactly one thing
+
+    h = HostConfig.load(cfg)
+    assert h.anon_key == "rotated-key"                   # the change applied
+    assert h.max_slots == 12                             # a tuned value survived
+    assert h.max_concurrent_workers == 3
+    assert h.base_port == 55000
+    assert h.notify_command == "push"
+    assert h.engine_recover is False
+    assert h.engine_start_command == "colima start"
+    assert h.api_base == "https://api.patch"
+
+
+def test_config_set_output_reparses(tmp_path):
+    # Whatever we emit must be valid TOML the loader can read back (values with quotes,
+    # backslashes, ints, bools all round-trip).
+    cfg = tmp_path / "config.toml"
+    config_set(cfg, "worker_manager", 'weird"\\name')
+    config_set(cfg, "max_slots", "4")
+    config_set(cfg, "backlog.api_base", "https://api.patch")
+    raw = tomllib.loads(cfg.read_text())
+    assert raw["worker_manager"] == 'weird"\\name'
+    assert raw["max_slots"] == 4
+    assert raw["backlog"]["api_base"] == "https://api.patch"
+
+
+def test_config_get_missing_returns_none(tmp_path):
+    cfg = tmp_path / "config.toml"
+    assert config_get(cfg, "worker_manager") is None     # no file yet
+    config_set(cfg, "worker_manager", "miquon")
+    assert config_get(cfg, "nope") is None
+    assert config_get(cfg, "backlog.api_base") is None    # missing nested
+
+
+def test_config_set_rejects_key_under_a_scalar(tmp_path):
+    cfg = tmp_path / "config.toml"
+    config_set(cfg, "worker_manager", "miquon")
+    with pytest.raises(ValueError, match="not a table"):
+        config_set(cfg, "worker_manager.oops", "x")

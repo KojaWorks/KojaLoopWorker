@@ -42,29 +42,66 @@ enum ConfigStore {
             .lowercased()
     }
 
-    static func write(_ s: ConnectSettings) throws {
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let toml = """
-        # Written by Koja Loops Manager. One Manager per host serves every project in the
-        # shared backlog whose worker_manager is this host's.
-        worker_manager = \(quoted(s.workerManager))
-        clones_dir     = \(quoted(s.clonesDir))
-        max_slots      = \(s.maxSlots)
+    enum WriteError: LocalizedError {
+        case setFailed(key: String, message: String)
+        var errorDescription: String? {
+            switch self {
+            case let .setFailed(key, message):
+                return "loopworker config set \(key) failed: \(message)"
+            }
+        }
+    }
 
-        [backlog]
-        api_base = \(quoted(s.apiBase))
-        anon_key = \(quoted(s.anonKey))
-        app_base = \(quoted(Instance.appBase))
-        roadmap_page_id = \(quoted(Instance.roadmapPageId))
-        brief_page = \(quoted(Instance.briefPage))
-        """
-        try toml.write(to: configPath, atomically: true, encoding: .utf8)
-        // The PAT lives in .env (read by the Manager's dotenv loader), not config.toml.
+    /// The config.toml keys the app manages. It writes ONLY these, via `loopworker config set`,
+    /// so any hand-set key the app doesn't know about (notify_command, engine.*, base_port,
+    /// max_concurrent_workers) survives — Python owns the TOML and does a read-modify-write.
+    private static func managedKeys(_ s: ConnectSettings) -> [(String, String)] {
+        [("worker_manager", s.workerManager),
+         ("clones_dir", s.clonesDir),
+         ("max_slots", String(s.maxSlots)),
+         ("backlog.api_base", s.apiBase),
+         ("backlog.anon_key", s.anonKey),
+         ("backlog.app_base", Instance.appBase),
+         ("backlog.roadmap_page_id", Instance.roadmapPageId),
+         ("backlog.brief_page", Instance.briefPage)]
+    }
+
+    /// Persist the connection settings. `loopworker` is the resolved CLI path (the app already
+    /// supervises this binary); we shell out to it per managed key rather than hand-writing the
+    /// whole file, which used to clobber hand-set keys. The PAT lives in its own .env (a single
+    /// app-owned key, no schema) so it's written directly.
+    static func write(_ s: ConnectSettings, loopworker: String) async throws {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        for (key, value) in managedKeys(s) {
+            let out = try await ProcessRunner.run(
+                loopworker, ["config", "set", key, value, "--config", configPath.path],
+                environment: LoginEnvironment.childEnvironment())
+            guard out.status == 0 else {
+                let msg = out.stderr.isEmpty ? out.stdout : out.stderr
+                throw WriteError.setFailed(key: key, message: msg.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+        }
         try "PATCH_PAT=\(s.token)\n".write(to: envPath, atomically: true, encoding: .utf8)
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: envPath.path)
     }
 
-    private static func quoted(_ s: String) -> String {
-        "\"" + s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
+    /// Read the app-editable fields back from an existing config so the Setup form shows the
+    /// CURRENT values — otherwise a Save would reset a hand-tuned max_slots (or a changed
+    /// clones_dir) to the form's defaults. Best-effort: any read failure leaves the default.
+    /// The token is deliberately not read back (it lives in .env; we never display it).
+    static func read(loopworker: String, into settings: ConnectSettings) async -> ConnectSettings {
+        func get(_ key: String) async -> String? {
+            guard let out = try? await ProcessRunner.run(
+                loopworker, ["config", "get", key, "--config", configPath.path],
+                environment: LoginEnvironment.childEnvironment()), out.status == 0 else { return nil }
+            let v = out.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            return v.isEmpty ? nil : v
+        }
+        var s = settings
+        if let v = await get("worker_manager") { s.workerManager = v }
+        if let v = await get("clones_dir") { s.clonesDir = v }
+        if let v = await get("max_slots"), let n = Int(v) { s.maxSlots = n }
+        if let v = await get("backlog.api_base") { s.apiBase = v }
+        return s
     }
 }

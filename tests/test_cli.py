@@ -104,6 +104,25 @@ def test_status_pretty_prints_a_host_snapshot(monkeypatch, capsys):
     assert "miquon" in out and "Patch" in out and "~772" in out
 
 
+def test_config_set_then_get_via_cli(tmp_path, capsys):
+    cfg = tmp_path / "config.toml"
+    assert cli.main(["config", "set", "max_slots", "5", "--config", str(cfg)]) == 0
+    assert cli.main(["config", "get", "max_slots", "--config", str(cfg)]) == 0
+    assert capsys.readouterr().out.strip() == "5"
+
+
+def test_config_get_missing_key_is_empty_exit_zero(tmp_path, capsys):
+    cfg = tmp_path / "config.toml"
+    assert cli.main(["config", "get", "nope", "--config", str(cfg)]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_config_set_bad_value_exits_two(tmp_path, capsys):
+    cfg = tmp_path / "config.toml"
+    assert cli.main(["config", "set", "max_slots", "heaps", "--config", str(cfg)]) == 2
+    assert "max_slots" in capsys.readouterr().err
+
+
 def test_version_flag(capsys):
     with pytest.raises(SystemExit) as e:
         cli.main(["--version"])

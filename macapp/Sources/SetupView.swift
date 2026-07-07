@@ -87,6 +87,7 @@ private struct ConnectionSection: View {
                     .disabled(settings.token.isEmpty || busy)
             }
         }
+        .task { await prefillFromExisting() }
     }
 
     private var buttonLabel: String {
@@ -94,10 +95,14 @@ private struct ConnectionSection: View {
     }
 
     private func connect() {
+        guard let loopworker = appState.loopworkerPath else {
+            error = "loopworker binary not found — install it (pipx) or set its path, then try again."
+            return
+        }
         busy = true; error = nil
         Task {
             do {
-                try ConfigStore.write(settings)
+                try await ConfigStore.write(settings, loopworker: loopworker)
                 await appState.reloadAfterConnect()   // re-check config + re-run readiness
                 busy = false; showReplace = false
             } catch {
@@ -105,6 +110,14 @@ private struct ConnectionSection: View {
                 busy = false
             }
         }
+    }
+
+    /// Prefill the advanced fields from an existing config so Save preserves a hand-tuned
+    /// max_slots / clones_dir instead of resetting them to the form defaults. First run (no
+    /// config) keeps the defaults. Runs once when the token form is shown.
+    private func prefillFromExisting() async {
+        guard appState.isConfigured, let loopworker = appState.loopworkerPath else { return }
+        settings = await ConfigStore.read(loopworker: loopworker, into: settings)
     }
 
     private func labeledField(_ label: String, _ binding: Binding<String>) -> some View {

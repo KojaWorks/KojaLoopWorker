@@ -141,6 +141,113 @@ class HostConfig:
         )
 
 
+# --- config.toml read-modify-write --------------------------------------------------
+# The Mac app used to hand-write the whole config.toml from a fixed template, silently
+# dropping any key it doesn't manage (notify_command, engine.*, base_port, a tuned
+# max_slots). Instead the app shells out to `loopworker config set` so Python owns the
+# format: read the existing file, change ONE key, re-emit everything else untouched.
+# This module is the one home for which keys are ints/bools; anything else is a string.
+
+_INT_KEYS = frozenset({"max_slots", "max_concurrent_workers", "base_port", "port_step"})
+_BOOL_KEYS = frozenset({"engine.recover"})
+
+
+def _coerce(dotted_key: str, value: str):
+    """A CLI value arrives as a string; give it the type HostConfig expects, so a set of
+    an int/bool key round-trips to a real int/bool in the TOML (not a string that later
+    breaks arithmetic)."""
+    if dotted_key in _BOOL_KEYS:
+        low = value.strip().lower()
+        if low in ("true", "1", "yes", "on"):
+            return True
+        if low in ("false", "0", "no", "off"):
+            return False
+        raise ValueError(f"{dotted_key} expects a boolean, got {value!r}")
+    if dotted_key in _INT_KEYS:
+        try:
+            return int(value)
+        except ValueError:
+            raise ValueError(f"{dotted_key} expects an integer, got {value!r}") from None
+    return value
+
+
+def _toml_value(v) -> str:
+    if isinstance(v, bool):          # before int — bool is an int subclass
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return repr(v) if isinstance(v, float) else str(v)
+    if isinstance(v, str):
+        return '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    if isinstance(v, list):
+        return "[" + ", ".join(_toml_value(x) for x in v) + "]"
+    raise ValueError(f"can't serialize {type(v).__name__} to TOML")
+
+
+def _emit_toml(data: dict) -> str:
+    """Serialize a parsed-TOML dict back to TOML text: top-level scalars first, then a
+    [section] per nested table (dotted headers for deeper nesting). Comments aren't
+    preserved (stdlib has no round-tripping TOML writer) but every key/value is."""
+    lines: list[str] = []
+
+    def emit(path: list[str], d: dict) -> None:
+        scalars = [(k, v) for k, v in d.items() if not isinstance(v, dict)]
+        tables = [(k, v) for k, v in d.items() if isinstance(v, dict)]
+        if path:
+            if lines:
+                lines.append("")
+            lines.append(f"[{'.'.join(path)}]")
+        for k, v in scalars:
+            lines.append(f"{k} = {_toml_value(v)}")
+        for k, v in tables:
+            emit(path + [k], v)
+
+    emit([], data)
+    return "\n".join(lines) + "\n"
+
+
+def _read_config(path: Path) -> dict:
+    if not path.is_file():
+        return {}
+    with path.open("rb") as f:
+        return tomllib.load(f)
+
+
+def _write_config(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    header = "# Managed by loopworker. Any hand-set key is preserved on rewrite.\n"
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(header + _emit_toml(data), encoding="utf-8")
+    tmp.replace(path)   # atomic swap so a crash mid-write never leaves a half file
+
+
+def config_set(path: Path, dotted_key: str, value: str) -> None:
+    """Set one dotted key in config.toml, preserving every other key. Creates the file
+    (and any missing parent table) if absent."""
+    data = _read_config(path)
+    parts = dotted_key.split(".")
+    d = data
+    for i, p in enumerate(parts[:-1]):
+        nxt = d.get(p)
+        if nxt is None:
+            nxt = {}
+            d[p] = nxt
+        elif not isinstance(nxt, dict):
+            raise ValueError(f"{'.'.join(parts[:i + 1])} is a value, not a table")
+        d = nxt
+    d[parts[-1]] = _coerce(dotted_key, value)
+    _write_config(path, data)
+
+
+def config_get(path: Path, dotted_key: str):
+    """Read one dotted key from config.toml; None if the file or key is absent."""
+    d = _read_config(path)
+    for p in dotted_key.split("."):
+        if not isinstance(d, dict) or p not in d:
+            return None
+        d = d[p]
+    return d
+
+
 @dataclass
 class Manifest:
     project_name: str
