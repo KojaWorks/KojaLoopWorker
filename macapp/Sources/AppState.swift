@@ -14,6 +14,8 @@ final class AppState: NSObject, ObservableObject, NSApplicationDelegate {
     @Published var doctorNote: String?
     @Published var statusNote: String?
     @Published var contractMismatch = false
+    @Published var isConfigured = ConfigStore.isConfigured   // ~/.loopworker/config.toml exists
+    @Published var showConnect = false                        // re-open onboarding when configured
 
     let controller: ManagerController
     private let client: StatusClient
@@ -71,6 +73,15 @@ final class AppState: NSObject, ObservableObject, NSApplicationDelegate {
     func runDoctorNow() {
         lastDoctor = .distantPast
         Task { await refreshDoctor() }
+    }
+
+    /// After the Connect sheet writes config: swap back to the status view and re-check readiness
+    /// so the backlog check flips green immediately.
+    func reloadAfterConnect() async {
+        isConfigured = ConfigStore.isConfigured
+        showConnect = false
+        lastDoctor = .distantPast
+        await refreshDoctor()
     }
 
     private func refresh() async {

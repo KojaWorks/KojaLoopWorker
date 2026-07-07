@@ -174,6 +174,7 @@ private struct Footer: View {
             Button("Dashboard") {
                 if let url = URL(string: "http://127.0.0.1:8787") { NSWorkspace.shared.open(url) }
             }.buttonStyle(.borderless).font(.caption)
+            Button("Connect…") { appState.showConnect = true }.buttonStyle(.borderless).font(.caption)
             UpdateButton()
             Spacer()
             // Quit routes through applicationShouldTerminate, which drains the Manager and holds
