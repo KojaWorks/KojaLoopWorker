@@ -5,9 +5,14 @@ name: Release
 # the signed .zip as a workflow artifact. Phase B adds the Sparkle appcast + a public publish
 # target once the open-source-vs-raheth hosting decision lands.
 #
-# Runs on miquon (self-hosted macOS) which already holds the Developer ID cert and the koja-notary
-# notarytool profile in its login keychain — "try the login keychain first" (a Verify step fails
-# fast with a fix hint if the runner can't see the identity).
+# Signing is keychain-INDEPENDENT: the job builds a throwaway keychain from a .p12 secret and
+# notarizes with the ASC API key directly. So it does NOT touch (and doesn't depend on) miquon's
+# login keychain, which is corrupted. Required secrets:
+#   MACOS_CERT_P12_BASE64     base64 of a Developer ID Application .p12 (cert + private key)
+#   MACOS_CERT_PASSWORD       the .p12 export password
+#   MACOS_NOTARY_KEY_P8_BASE64  base64 of the ASC API key .p8 (AuthKey_*.p8)
+#   MACOS_NOTARY_KEY_ID       the key id (e.g. S4RCNDTD37)
+#   MACOS_NOTARY_ISSUER_ID    the issuer uuid
 
 on:
   push:
@@ -48,13 +53,32 @@ jobs:
           echo "build=$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
           echo "Building version $v (build $GITHUB_RUN_NUMBER)"
 
-      - name: Verify signing access (fail fast, before the build)
+      - name: Set up a throwaway signing keychain
+        env:
+          CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
         run: |
-          if ! security find-identity -v -p codesigning | grep -q "Developer ID Application"; then
-            echo "::error::Developer ID identity not visible to the runner's keychain. The login keychain is likely locked for the job — add a 'security unlock-keychain login.keychain-db' step with the password from a GitHub secret."
-            exit 1
-          fi
-          echo "Developer ID identity visible to the runner."
+          set -euo pipefail
+          [ -n "${CERT_P12_BASE64:-}" ] || { echo "::error::secret MACOS_CERT_P12_BASE64 is not set — see release.yml header"; exit 1; }
+          kc="$RUNNER_TEMP/loopworker-signing.keychain-db"
+          kc_pw="$(openssl rand -base64 24)"
+          cert="$RUNNER_TEMP/cert.p12"
+          printf '%s' "$CERT_P12_BASE64" | base64 --decode > "$cert"
+          # Remember the current search list so cleanup restores it; we prepend our own keychain
+          # and never touch the (corrupt) login keychain.
+          security list-keychains -d user | sed 's/[" ]//g' > "$RUNNER_TEMP/orig-keychains.txt"
+          security create-keychain -p "$kc_pw" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"          # don't auto-lock during the build
+          security unlock-keychain -p "$kc_pw" "$kc"
+          security import "$cert" -k "$kc" -P "$CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          # Authorize codesign to use the key with no GUI prompt — the errSecInternalComponent fix.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kc_pw" "$kc" >/dev/null
+          # shellcheck disable=SC2046  # each keychain path is its own arg
+          security list-keychains -d user -s "$kc" $(cat "$RUNNER_TEMP/orig-keychains.txt")
+          rm -f "$cert"
+          echo "SIGNING_KEYCHAIN=$kc" >> "$GITHUB_ENV"
+          echo "Identities in the signing keychain:"
+          security find-identity -v -p codesigning "$kc"
 
       - name: Build · sign · notarize · staple
         working-directory: macapp
@@ -62,7 +86,17 @@ jobs:
           LOOPWORKER_MARKETING_VERSION: ${{ steps.v.outputs.marketing }}
           LOOPWORKER_BUILD_VERSION: ${{ steps.v.outputs.build }}
           LOOPWORKER_SKIP_NOTARIZE: ${{ github.event.inputs.dry_run == 'true' && '1' || '' }}
-        run: ./sign-and-notarize.sh
+          NOTARY_KEY_P8_BASE64: ${{ secrets.MACOS_NOTARY_KEY_P8_BASE64 }}
+          LOOPWORKER_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          LOOPWORKER_NOTARY_ISSUER: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          if [ -n "${NOTARY_KEY_P8_BASE64:-}" ]; then
+            key="$RUNNER_TEMP/notary.p8"
+            printf '%s' "$NOTARY_KEY_P8_BASE64" | base64 --decode > "$key"
+            export LOOPWORKER_NOTARY_KEY="$key"
+          fi
+          ./sign-and-notarize.sh
 
       - name: Upload signed app artifact
         uses: actions/upload-artifact@v4
@@ -70,3 +104,13 @@ jobs:
           name: KojaLoopsManager-${{ steps.v.outputs.marketing }}
           path: macapp/build/release-dd/LoopWorker.zip
           if-no-files-found: error
+
+      - name: Clean up signing keychain
+        if: always()
+        run: |
+          if [ -n "${SIGNING_KEYCHAIN:-}" ]; then security delete-keychain "$SIGNING_KEYCHAIN" 2>/dev/null || true; fi
+          if [ -f "$RUNNER_TEMP/orig-keychains.txt" ]; then
+            # shellcheck disable=SC2046
+            security list-keychains -d user -s $(cat "$RUNNER_TEMP/orig-keychains.txt") || true
+          fi
+          rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/cert.p12" 2>/dev/null || true
