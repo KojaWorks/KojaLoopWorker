@@ -425,9 +425,14 @@ class SlotPool:
         proc = subprocess.Popen(
             ["bash", str(path), slot.dir],
             cwd=slot.dir if Path(slot.dir).is_dir() else str(self.manifest.project_dir),
-            env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+            env=env, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
             start_new_session=True,
         )
+        # stdin=DEVNULL, not inherited: a GUI-launched Manager (the Mac app) can hand us a
+        # closed fd 0, and any `python` a script spawns (provision.sh: `python3 -m venv`) then
+        # dies at startup with "init_sys_streams: Bad file descriptor". A lifecycle script has
+        # no business reading our stdin anyway — give it a real /dev/null.
         lines: list[str] = []
         abandoned = threading.Event()
 
