@@ -12,6 +12,9 @@ venv/
 # Manager runtime state
 /state/
 *.log
+# Worker launch artifacts the Manager writes into a slot's worktree root at spawn;
+# self-hosting once swept them into this repo. Runtime, not source.
+/.loopworker-*
 
 # macOS
 .DS_Store
