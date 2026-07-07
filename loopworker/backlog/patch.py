@@ -177,19 +177,33 @@ class PatchAdapter(BacklogAdapter):
         )
 
     # --- reads -------------------------------------------------------------
-    def _project_filter(self) -> dict:
-        """PostgREST filter for the projects this host serves: those linked to our loop_managers
-        row via the `manager` relation. (projects.worker_manager, the old string column, was
-        dropped in favour of this relation.) Empty in single-project legacy mode. Requires a
-        registered manager row — host.run registers BEFORE discover so our id is known."""
+    @staticmethod
+    def _rel_ids(value) -> set[str]:
+        """A relation cell as a set of linked-row ids, tolerant of BOTH cardinalities: a to-one
+        relation is a scalar uuid (or None); a to-many is a JSON array of uuids (or []). Lets the
+        Manager keep working whether projects.manager is a single link or many — the latter is how
+        several hosts share one project (~de489ec1)."""
+        if value is None:
+            return set()
+        if isinstance(value, (list, tuple)):
+            return {str(v) for v in value if v}
+        return {str(value)}
+
+    def _served_rows(self, rows: list[dict]) -> list[dict]:
+        """Filter fetched project rows to those this host serves: our loop_managers id is among the
+        row's `manager` link(s). Done CLIENT-SIDE (not a PostgREST `eq`) so it's independent of the
+        relation's cardinality — an `eq` matches a single-link uuid but never a to-many jsonb array.
+        (projects.worker_manager, the old string column, was dropped for this relation.) Empty
+        worker_manager = single-project legacy = serve every project. Requires a registered manager
+        row — host.run registers BEFORE discover so our id is known."""
         if not self.worker_manager:
-            return {}                              # single-project legacy: no host filter
+            return rows                            # single-project legacy: no host filter
         mid = self._my_manager_id()
         if not mid:
             raise RuntimeError(
                 f"host {self.worker_manager!r} has no loop_managers row yet — register before "
                 "listing projects (host.run calls _register before discover)")
-        return {"manager": f"eq.{mid}"}
+        return [r for r in rows if mid in self._rel_ids(r.get("manager"))]
 
     def _trusted_authors(self) -> frozenset[str]:
         """Author uids the loop will act on: the PAT owner (from the exchanged JWT) UNION the
@@ -214,12 +228,14 @@ class PatchAdapter(BacklogAdapter):
         self._log(f"gating {kind} {label}: author not in trusted_authors (local gate)")
 
     def list_projects(self) -> list[ProjectRow]:
-        """The projects this host serves: rows in `projects` linked to our manager relation,
-        further gated to trusted authors (a projects row runs foreign provision scripts)."""
-        rows = self._get(self.projects, {**self._project_filter(), "select": "*"})
+        """The projects this host serves: rows in `projects` whose `manager` relation includes our
+        loop_managers id (client-side, cardinality-agnostic), further gated to trusted authors (a
+        projects row runs foreign provision scripts). Filter served BEFORE the author gate so only
+        our own projects' gating is logged, not every other host's."""
+        mine = self._served_rows(self._get(self.projects, {"select": "*"}))
         trusted = self._trusted_authors()
         out = []
-        for r in rows:
+        for r in mine:
             if r.get("created_by") not in trusted:
                 self._note_gated("project", r["id"], r.get("name") or r["id"])
                 continue
@@ -263,9 +279,9 @@ class PatchAdapter(BacklogAdapter):
         single-project behaviour)."""
         if not self.worker_manager:
             return None
-        rows = self._get(self.projects, {**self._project_filter(), "select": "id,created_by"})
+        mine = self._served_rows(self._get(self.projects, {"select": "id,created_by,manager"}))
         trusted = self._trusted_authors()
-        return {r["id"] for r in rows if r.get("created_by") in trusted}
+        return {r["id"] for r in mine if r.get("created_by") in trusted}
 
     @staticmethod
     def _in_scope(card: Card, served: set[str] | None) -> bool:
