@@ -16,6 +16,11 @@ settings:
     CURRENT_PROJECT_VERSION: "1"
     GENERATE_INFOPLIST_FILE: YES
     PRODUCT_BUNDLE_IDENTIFIER: dev.nevyn.loopworker.menubar
+    # User-facing name (menu-bar menu, About, Finder). The target/bundle stay "LoopWorker".
+    INFOPLIST_KEY_CFBundleDisplayName: "Koja Loops Manager"
+    # Koja's Apple team, for signing/notarization (card ~824). Signing is still gated on the
+    # Developer ID cert + notarization creds; this just wires the team so a signed build works.
+    DEVELOPMENT_TEAM: M4Q2TE45WT
     # Agent app: no Dock icon, lives in the menu bar only.
     INFOPLIST_KEY_LSUIElement: YES
     INFOPLIST_KEY_NSHumanReadableCopyright: "MIT"

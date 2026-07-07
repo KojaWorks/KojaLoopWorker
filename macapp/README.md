@@ -1,5 +1,8 @@
 # LoopWorker.app — the Mac menu-bar Manager
 
+Shown to the user as **Koja Loops Manager** (`CFBundleDisplayName`); the Xcode target, bundle
+id, and executable stay `LoopWorker` so nothing else has to move.
+
 A SwiftUI menu-bar app that **supervises** the `loopworker` Manager and **shows its status** —
 the Mac half of [Phase 1 in the distribution plan](../docs/distribution.md). It does not
 reimplement any Manager logic; it is a client of the seams the Manager already exposes:
