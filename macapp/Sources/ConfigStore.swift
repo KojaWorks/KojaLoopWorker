@@ -71,25 +71,111 @@ enum ConfigStore {
 
     static func write(_ s: ConnectSettings) throws {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let toml = """
-        # Written by Koja Loops Manager. One Manager per host serves every project in the
-        # shared backlog whose worker_manager is this host's.
-        worker_manager = \(quoted(s.workerManager))
-        clones_dir     = \(quoted(s.clonesDir))
-        max_slots      = \(s.maxSlots)
-
-        [backlog]
-        api_base = \(quoted(s.apiBase))
-        anon_key = \(quoted(s.anonKey))
-        app_base = \(quoted(Instance.appBase))
-        roadmap_page_id = \(quoted(Instance.roadmapPageId))
-        brief_page = \(quoted(Instance.briefPage))
-        """
+        let existing = try? String(contentsOf: configPath, encoding: .utf8)
+        let toml = render(s, into: existing)
         try toml.write(to: configPath, atomically: true, encoding: .utf8)
         // The PAT goes in the login Keychain, never a plaintext file. Scrub any token an older
         // build left in .env so re-onboarding an existing install also removes the cleartext copy.
         try Keychain.store(s.token)
         scrubEnvToken()
+    }
+
+    /// The keys the form models, as (section, key) -> value. "" is the top-level section (before
+    /// any `[header]`). `render` updates exactly these lines in place and leaves every other line
+    /// alone; the ordered list also fixes where a missing modeled key is appended.
+    private static func managedValue(_ s: ConnectSettings, _ section: String, _ key: String) -> String? {
+        switch (section, key) {
+        case ("", "worker_manager"): return quoted(s.workerManager)
+        case ("", "clones_dir"): return quoted(s.clonesDir)
+        case ("", "max_slots"): return String(s.maxSlots)
+        case ("backlog", "api_base"): return quoted(s.apiBase)
+        case ("backlog", "anon_key"): return quoted(s.anonKey)
+        case ("backlog", "app_base"): return quoted(Instance.appBase)
+        case ("backlog", "roadmap_page_id"): return quoted(Instance.roadmapPageId)
+        case ("backlog", "brief_page"): return quoted(Instance.briefPage)
+        default: return nil
+        }
+    }
+    private static let managedOrder: [(section: String, key: String)] = [
+        ("", "worker_manager"), ("", "clones_dir"), ("", "max_slots"),
+        ("backlog", "api_base"), ("backlog", "anon_key"), ("backlog", "app_base"),
+        ("backlog", "roadmap_page_id"), ("backlog", "brief_page"),
+    ]
+
+    /// Render config.toml for `s`. First write (no/blank existing file) emits the full template.
+    /// Otherwise it's a read-modify-write: the eight modeled keys are updated in place, and EVERY
+    /// other line -- comments, unknown keys (notify_command, trusted_authors, base_port...), whole
+    /// unknown sections ([engine], [worker], [scripts]) -- is preserved verbatim. This is the ~860
+    /// fix: a power user's hand-added keys no longer vanish on the next Save. Line-based, not a full
+    /// TOML parser (the card's ask) -- section-aware so a `backlog` key isn't confused with a
+    /// top-level one, but it doesn't understand multi-line values beyond keeping them untouched.
+    static func render(_ s: ConnectSettings, into existing: String?) -> String {
+        guard let existing, !existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return """
+            # Written by Koja Loops Manager. One Manager per host serves every project in the
+            # shared backlog whose worker_manager is this host's.
+            worker_manager = \(quoted(s.workerManager))
+            clones_dir     = \(quoted(s.clonesDir))
+            max_slots      = \(s.maxSlots)
+
+            [backlog]
+            api_base = \(quoted(s.apiBase))
+            anon_key = \(quoted(s.anonKey))
+            app_base = \(quoted(Instance.appBase))
+            roadmap_page_id = \(quoted(Instance.roadmapPageId))
+            brief_page = \(quoted(Instance.briefPage))
+
+            """
+        }
+
+        var lines = existing.components(separatedBy: "\n")
+        if lines.last == "" { lines.removeLast() }  // drop the trailing-newline artifact; re-added below
+        var seen = Set<String>()  // "section\u{1}key" of modeled keys already updated in place
+        var section = ""
+        for i in lines.indices {
+            if let name = sectionHeader(lines[i]) { section = name; continue }
+            let raw = lines[i]
+            let trimmed = raw.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.hasPrefix("#"), let eq = raw.firstIndex(of: "=") else { continue }
+            let key = raw[..<eq].trimmingCharacters(in: .whitespaces)
+            if let value = managedValue(s, section, key) {
+                lines[i] = String(raw[..<eq]) + "= " + value  // keep left side (alignment/indent)
+                seen.insert("\(section)\u{1}\(key)")
+            }
+        }
+
+        // Append any modeled key the existing file lacked, into its correct section.
+        func rendered(_ section: String, _ key: String) -> String {
+            "\(key) = \(managedValue(s, section, key)!)"
+        }
+        let missing = managedOrder.filter { !seen.contains("\($0.section)\u{1}\($0.key)") }
+        let topLevel = missing.filter { $0.section == "" }.map { rendered("", $0.key) }
+        let backlog = missing.filter { $0.section == "backlog" }.map { rendered("backlog", $0.key) }
+        if !topLevel.isEmpty {
+            let at = lines.firstIndex { sectionHeader($0) != nil } ?? lines.count
+            lines.insert(contentsOf: topLevel, at: at)
+        }
+        if !backlog.isEmpty {
+            if let h = lines.firstIndex(where: { sectionHeader($0) == "backlog" }) {
+                let end = lines[(h + 1)...].firstIndex { sectionHeader($0) != nil } ?? lines.count
+                lines.insert(contentsOf: backlog, at: end)
+            } else {
+                if let last = lines.last, !last.trimmingCharacters(in: .whitespaces).isEmpty { lines.append("") }
+                lines.append("[backlog]")
+                lines.append(contentsOf: backlog)
+            }
+        }
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    /// The section name of a `[header]` line (nil if the line isn't a header). `[[array]]` tables
+    /// aren't used in this config, so they're treated as non-headers and left untouched. Trims
+    /// newlines too so a CRLF-saved file's `[backlog]\r` still registers (else the whole file reads
+    /// as top-level and re-Save appends a duplicate section, corrupting the config).
+    private static func sectionHeader(_ line: String) -> String? {
+        let t = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard t.hasPrefix("["), t.hasSuffix("]"), !t.hasPrefix("[[") else { return nil }
+        return String(t.dropFirst().dropLast()).trimmingCharacters(in: .whitespaces)
     }
 
     /// One-time upgrade for installs from before the Keychain: if the token still lives only in a
