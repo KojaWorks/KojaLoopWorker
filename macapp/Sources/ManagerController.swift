@@ -16,6 +16,9 @@ final class ManagerController: ObservableObject {
     }
 
     @Published private(set) var state: RunState = .stopped(reason: nil)
+    /// True while a drain was started by App-quit (vs a plain Stop) — so the UI can say "Quit now"
+    /// instead of "Stop now" and mean it: force-stopping now completes the quit.
+    @Published private(set) var isQuitting = false
     @Published var loopworkerPath: String?
 
     private var process: Process?
@@ -111,6 +114,7 @@ final class ManagerController: ObservableObject {
         guard isRunning, let pid = process?.processIdentifier else { reply(); return }
         quitReply = reply
         intentionalStop = true
+        isQuitting = true
         state = .draining
         kill(pid, SIGINT)
         Task { @MainActor in
@@ -134,6 +138,7 @@ final class ManagerController: ObservableObject {
     }
 
     private func finishQuit() {
+        isQuitting = false
         let reply = quitReply
         quitReply = nil
         reply?()

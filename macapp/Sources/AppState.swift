@@ -12,16 +12,18 @@ final class AppState: NSObject, ObservableObject, NSApplicationDelegate {
     @Published var snapshot: Snapshot?
     @Published var doctor: DoctorReport?
     @Published var doctorNote: String?
+    @Published var doctorRunning = false                      // a doctor sweep is in flight (spinner)
     @Published var statusNote: String?
     @Published var contractMismatch = false
     @Published var isConfigured = ConfigStore.isConfigured   // ~/.loopworker/config.toml exists
-    @Published var showConnect = false                        // re-open onboarding when configured
 
     let controller: ManagerController
+    let setupWindow = SetupWindowController()                 // the real-window onboarding + fix-it surface
     private let client: StatusClient
     private var pollTask: Task<Void, Never>?
     private var lastDoctor = Date.distantPast
     private var healthFailures = 0
+    private var autoOpenedSetup = false                       // only auto-open the Setup window once per launch
     private var cancellables = Set<AnyCancellable>()
 
     private let healthEverySeconds: TimeInterval = 3
@@ -53,7 +55,21 @@ final class AppState: NSObject, ObservableObject, NSApplicationDelegate {
         controller.terminateChildIfRunning()   // belt-and-suspenders: a normal quit/logout never orphans
     }
 
+    /// Bring up the Setup window unprompted when the host clearly isn't runnable yet — first run
+    /// (no config) or a missing binary. A required-check failure opens it after the first doctor
+    /// sweep (see maybeAutoOpenSetup). Auto-open fires at most once per launch; the user can close
+    /// it and re-open from the popover's "Setup…".
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        if !ConfigStore.isConfigured || !loopworkerFound {
+            autoOpenedSetup = true
+            openSetup()
+        }
+    }
+
     var loopworkerFound: Bool { controller.loopworkerPath != nil }
+
+    func openSetup() { setupWindow.show(appState: self) }
+    func closeSetup() { setupWindow.close() }
 
     func startPolling() {
         guard pollTask == nil else { return }
@@ -75,11 +91,10 @@ final class AppState: NSObject, ObservableObject, NSApplicationDelegate {
         Task { await refreshDoctor() }
     }
 
-    /// After the Connect sheet writes config: swap back to the status view and re-check readiness
-    /// so the backlog check flips green immediately.
+    /// After the Setup window writes config: re-check readiness so the backlog + config checks
+    /// flip green immediately (the window stays open, showing the result).
     func reloadAfterConnect() async {
         isConfigured = ConfigStore.isConfigured
-        showConnect = false
         lastDoctor = .distantPast
         await refreshDoctor()
     }
@@ -118,11 +133,24 @@ final class AppState: NSObject, ObservableObject, NSApplicationDelegate {
             doctorNote = "loopworker not found — install it (pipx) or set its path"
             return
         }
+        doctorRunning = true
+        defer { doctorRunning = false }
         do {
             doctor = try await client.doctor()
             doctorNote = nil
         } catch {
             doctorNote = "readiness check failed: \(error.localizedDescription)"
+        }
+        maybeAutoOpenSetup()
+    }
+
+    /// Open the Setup window once when a REQUIRED check fails on an otherwise-configured host — so
+    /// the operator sees the fix-it screen instead of a menu-bar icon they have to know to click.
+    private func maybeAutoOpenSetup() {
+        guard !autoOpenedSetup, ConfigStore.isConfigured else { return }
+        if doctor?.ok == false {
+            autoOpenedSetup = true
+            openSetup()
         }
     }
 
@@ -130,6 +158,11 @@ final class AppState: NSObject, ObservableObject, NSApplicationDelegate {
     var allSlots: [SlotSnapshot] { snapshot?.sections.flatMap { $0.slots } ?? [] }
     var anySlotBroken: Bool { allSlots.contains { $0.state == "broken" } }
     var needsAttention: Bool { contractMismatch || doctor?.ok == false || anySlotBroken }
+
+    // The minimal popover shows readiness only as a one-line "needs attention → Setup"; these
+    // drive whether that line appears and how urgently it's tinted (red = a required check failed).
+    var doctorHasFailure: Bool { doctor?.checks.contains { !$0.ok } ?? false }
+    var doctorHasRequiredFailure: Bool { doctor?.ok == false }
 
     /// The Manager's exit reason when it stopped UNEXPECTEDLY (nil for a clean/asked stop) —
     /// surfaced so a crash is visible in the UI, not silently read as "stale".

@@ -7,25 +7,15 @@ struct LoopWorkerApp: App {
     @NSApplicationDelegateAdaptor(AppState.self) private var appState
 
     var body: some Scene {
+        // The popover is always the minimal status view; onboarding + fix-it is the Setup window
+        // (opened automatically on first launch / required-check failure — see AppState).
         MenuBarExtra {
-            RootView()
+            MenuContentView()
                 .environmentObject(appState)
-                .frame(width: 340)
+                .frame(width: 320)
         } label: {
             MenuBarIcon(app: appState)
         }
         .menuBarExtraStyle(.window)   // a real popover panel, not a plain menu
-    }
-}
-
-/// Onboarding until there's a config, status once there is (or when the user re-opens Connect).
-struct RootView: View {
-    @EnvironmentObject var appState: AppState
-    var body: some View {
-        if appState.isConfigured && !appState.showConnect {
-            MenuContentView()
-        } else {
-            ConnectView()
-        }
     }
 }
