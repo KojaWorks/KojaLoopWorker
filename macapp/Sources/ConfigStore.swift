@@ -23,9 +23,11 @@ struct ConnectSettings {
     var maxSlots = 4
 }
 
-/// Reads/writes the Manager's config the same files the CLI/systemd use: ~/.loopworker/config.toml
-/// (+ .env for the PAT). The app launches the Manager with cwd = ~/.loopworker so its dotenv
-/// loader picks up the token — identical to the systemd unit's WorkingDirectory.
+/// Reads/writes the Manager's config the same files the CLI/systemd use: ~/.loopworker/config.toml.
+/// The PAT is NOT a file — it lives in the login Keychain (see Keychain); the app injects it into
+/// the Manager subprocess's environment at launch (ManagerController). The app still launches the
+/// Manager with cwd = ~/.loopworker (for state/ and any non-secret .env), like the systemd unit's
+/// WorkingDirectory.
 enum ConfigStore {
     static var dir: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".loopworker")
@@ -59,9 +61,46 @@ enum ConfigStore {
         brief_page = \(quoted(Instance.briefPage))
         """
         try toml.write(to: configPath, atomically: true, encoding: .utf8)
-        // The PAT lives in .env (read by the Manager's dotenv loader), not config.toml.
-        try "PATCH_PAT=\(s.token)\n".write(to: envPath, atomically: true, encoding: .utf8)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: envPath.path)
+        // The PAT goes in the login Keychain, never a plaintext file. Scrub any token an older
+        // build left in .env so re-onboarding an existing install also removes the cleartext copy.
+        try Keychain.store(s.token)
+        scrubEnvToken()
+    }
+
+    /// One-time upgrade for installs from before the Keychain: if the token still lives only in a
+    /// plaintext ~/.loopworker/.env, move it into the Keychain and scrub the file. Idempotent and
+    /// safe — a no-op once the Keychain holds a token, and it never touches non-PATCH_PAT lines.
+    static func migrateEnvTokenToKeychain() {
+        guard Keychain.read() == nil, let token = envToken(), !token.isEmpty else { return }
+        guard (try? Keychain.store(token)) != nil else { return }  // keep .env if the store failed
+        scrubEnvToken()
+    }
+
+    /// The PATCH_PAT value from a plaintext .env, if present (legacy installs only).
+    private static func envToken() -> String? {
+        guard let text = try? String(contentsOf: envPath, encoding: .utf8) else { return nil }
+        for line in text.split(whereSeparator: \.isNewline) {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("PATCH_PAT=") {
+                return String(t.dropFirst("PATCH_PAT=".count))
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            }
+        }
+        return nil
+    }
+
+    /// Remove the PATCH_PAT line from .env, preserving any other lines; delete the file if it's
+    /// then empty. So the cleartext token never lingers once it's in the Keychain.
+    private static func scrubEnvToken() {
+        guard let text = try? String(contentsOf: envPath, encoding: .utf8) else { return }
+        let kept = text.split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("PATCH_PAT=") }
+        let remaining = kept.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        if remaining.isEmpty {
+            try? FileManager.default.removeItem(at: envPath)
+        } else {
+            try? (remaining + "\n").write(to: envPath, atomically: true, encoding: .utf8)
+        }
     }
 
     private static func quoted(_ s: String) -> String {

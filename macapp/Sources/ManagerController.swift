@@ -49,14 +49,17 @@ final class ManagerController: ObservableObject {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: path)
         p.arguments = []                 // bare host mode; the Manager reads ~/.loopworker/config.toml
-        // Run from ~/.loopworker so the Manager loads its .env (PATCH_PAT) + writes state/ there,
-        // exactly like the systemd unit's WorkingDirectory.
+        // Run from ~/.loopworker so the Manager writes state/ there, exactly like the systemd
+        // unit's WorkingDirectory. (The PAT no longer comes from .env — see p.environment below.)
         try? FileManager.default.createDirectory(at: outURL.deletingLastPathComponent(),
                                                  withIntermediateDirectories: true)
         p.currentDirectoryURL = ConfigStore.dir
         // Give the Manager the user's real login PATH so it can find tmux/git/claude to run
         // workers (a Finder-launched app's PATH is minimal — see LoginEnvironment).
         p.environment = LoginEnvironment.childEnvironment()
+        // Hand the Manager the Patch token from the login Keychain (never a plaintext .env). The
+        // Manager already reads PATCH_PAT from its env, so this is all the wiring it needs.
+        if let token = Keychain.read() { p.environment?["PATCH_PAT"] = token }
         // Capture stdout+stderr to a file so a crash reason (a Python traceback goes to stderr,
         // NOT the structured filelog) is never silently swallowed — the app must surface it.
         FileManager.default.createFile(atPath: outURL.path, contents: nil)

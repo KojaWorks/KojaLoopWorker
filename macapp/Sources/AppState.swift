@@ -40,6 +40,7 @@ final class AppState: NSObject, ObservableObject, NSApplicationDelegate {
     private let failuresBeforeUnknown = 3   // keep last-known status through a blip; only clear after this many
 
     override init() {
+        ConfigStore.migrateEnvTokenToKeychain()   // move a legacy plaintext .env token into the Keychain
         let path = LoopWorkerLocator.resolve()
         controller = ManagerController(loopworkerPath: path)
         client = StatusClient(loopworkerPath: path ?? "loopworker")
