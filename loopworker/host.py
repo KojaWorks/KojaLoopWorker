@@ -420,17 +420,18 @@ class HostManager:
             m._reap_orphans()
             m.pool.build()
 
-    def _register(self) -> None:
+    def _register(self) -> str | None:
         """Heartbeat this host's row in loop_managers so a human/dashboard can see which
         Managers are alive and what they're doing — best-effort, NEVER crash the loop (a
-        Manager that can't register is still a working Manager)."""
+        Manager that can't register is still a working Manager). Returns the row id."""
         try:
             busy = self._busy_total()
             summary = (f"v{__version__} · {len(self.managers)} project(s) · "
                        f"{busy}/{self.host.max_slots} slot(s) busy")
-            self.adapter.register_manager(self.host.worker_manager, summary)
+            return self.adapter.register_manager(self.host.worker_manager, summary)
         except Exception as e:
             self.log(f"manager heartbeat failed (non-fatal): {e!r}")
+            return None
 
     def run(self) -> None:
         self._acquire_lock()
@@ -443,7 +444,12 @@ class HostManager:
                 self.log("no serviceable projects — nothing to do")
                 return
             self.build()
-            self._register()  # announce this Manager is up
+            mid = self._register()  # announce this Manager is up
+            if mid:                 # backfill the projects.manager relation (additive migration)
+                try:
+                    self.adapter.link_projects_to_manager(mid)
+                except Exception as e:
+                    self.log(f"manager-relation backfill failed (non-fatal): {e!r}")
             self.log(f"host ready; reconciling + staggered fill every {self.reconcile_interval}s, "
                      f"project discovery every {self.poll_interval}s")
             last_discover = 0.0

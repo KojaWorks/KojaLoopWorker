@@ -165,6 +165,46 @@ def test_register_manager_inserts_when_absent(adapter, monkeypatch):
     assert calls["body"]["name"] == "raheth" and "last_active" in calls["body"]
 
 
+def test_register_worker_links_to_manager(adapter, monkeypatch):
+    adapter._manager_id = "mid-2"
+    captured = {}
+    monkeypatch.setattr(adapter, "_get", lambda t, p: [])          # no existing worker row
+    monkeypatch.setattr(adapter, "_post", lambda t, b: captured.update(b) or [{"id": "w1"}])
+    adapter.register_worker("ada")
+    assert captured["manager"] == "mid-2"                          # worker linked to its manager
+
+
+def test_project_filter_prefers_relation_when_registered(adapter):
+    adapter.worker_manager = "miquon"
+    adapter._manager_id = "mid-1"
+    assert adapter._project_filter() == {
+        "or": "(manager.eq.mid-1,and(manager.is.null,worker_manager.eq.miquon))"
+    }
+
+
+def test_project_filter_falls_back_to_string_without_manager_row(adapter, monkeypatch):
+    # No loop_managers row yet -> pure string filter, never an empty set (which would drain all).
+    adapter.worker_manager = "miquon"
+    adapter._manager_id = None
+    monkeypatch.setattr(adapter, "_get", lambda t, p: [])
+    assert adapter._project_filter() == {"worker_manager": "eq.miquon"}
+
+
+def test_project_filter_empty_when_worker_manager_unset(adapter):
+    adapter.worker_manager = ""
+    assert adapter._project_filter() == {}
+
+
+def test_link_projects_to_manager_backfills_null_only(adapter, monkeypatch):
+    adapter.worker_manager = "miquon"
+    calls = {}
+    monkeypatch.setattr(adapter, "_patch", lambda t, p, b: calls.update(table=t, params=p, body=b) or [])
+    adapter.link_projects_to_manager("mid-9")
+    assert calls["table"] == adapter.projects
+    assert calls["params"] == {"worker_manager": "eq.miquon", "manager": "is.null"}
+    assert calls["body"] == {"manager": "mid-9"}
+
+
 def test_brief_points_worker_at_patch_page(adapter):
     brief = adapter.get_brief()
     assert "cfacaea7-59e9-4f40-8bba-44c10137a48e" in brief
