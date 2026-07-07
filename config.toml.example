@@ -14,6 +14,11 @@ max_slots      = 4                  # host-wide RAM budget, in weighted slot-cos
                                    # revocation. Starts stagger ~reconcile_interval apart.
 # base_port    = 54400             # first slot's stack port (projects get 1000-apart bands)
 # port_step    = 100              # port gap between a project's own slots
+# trusted_authors: the loop builds a card / adopts a projects row ONLY if its author
+# (created_by) is trusted. The PAT owner is ALWAYS trusted (read from the exchanged JWT);
+# list extra author uids here to also act on their rows. Keep this in LOCAL config only -
+# an actor who can write the backlog must not be able to widen this gate.
+# trusted_authors = ["11111111-2222-3333-4444-555555555555"]
 # notify_command receives an alert message on stdin (worker auth failure, a slot
 # marked BROKEN) - any CLI push tool works, e.g. Pushover via curl. NOTE the curl
 # form is 'message=<-' (read stdin as the field VALUE), quoted so the shell doesn't

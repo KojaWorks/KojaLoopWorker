@@ -47,6 +47,7 @@ class Card:
     solved_in_pr: str | None = None
     project: str | None = None           # id of the projects row this card belongs to
     model: str | None = None             # CLI model alias override (opus/fable/sonnet/haiku); "" = project default
+    created_by: str | None = None        # uid of the row's author; the loop only acts on trusted authors
 
     @property
     def is_epic(self) -> bool:

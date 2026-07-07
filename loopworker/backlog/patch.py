@@ -19,6 +19,8 @@ Kong needs it to route, but it grants nothing on its own.
 """
 from __future__ import annotations
 
+import base64
+import json
 import os
 import re
 import time
@@ -39,6 +41,22 @@ _UUID_TAIL = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a
 _RETRY_BASE_SECONDS = 10.0
 _RETRY_CAP_SECONDS = 120.0
 _RETRY_BUDGET_SECONDS = 600.0
+
+
+def _jwt_sub(token: str) -> str:
+    """The `sub` (user id) claim of a JWT, read WITHOUT signature verification — the token
+    is our own, just-issued owner JWT from pat-exchange, so we only need to read it. This is
+    the PAT owner's uid: the always-trusted author. A malformed token / missing sub raises —
+    a gate that can't identify its owner is worse than no gate, so fail loud, not open."""
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)  # restore base64url padding
+        sub = json.loads(base64.urlsafe_b64decode(payload)).get("sub")
+    except (IndexError, ValueError) as e:
+        raise RuntimeError(f"could not decode owner uid from exchanged JWT: {e!r}") from e
+    if not sub:
+        raise RuntimeError("exchanged JWT has no `sub` claim — cannot identify the PAT owner")
+    return sub
 
 
 def brief_pointer(ref: str) -> str:
@@ -71,6 +89,7 @@ class PatchAdapter(BacklogAdapter):
         log: Callable[[str], None] = lambda msg: None,
         notify: Callable[[str, str], None] = lambda key, msg: None,
         retry_budget_seconds: float = _RETRY_BUDGET_SECONDS,
+        trusted_authors: list[str] | None = None,
     ) -> None:
         super().__init__(manifest)
         if manifest is not None:  # single-project mode: connection lives in the manifest
@@ -84,6 +103,7 @@ class PatchAdapter(BacklogAdapter):
             projects_table = opts.get("projects_table", "projects")
             app_base = opts.get("app_base", "")
             roadmap_page_id = opts.get("roadmap_page_id", "")
+            trusted_authors = manifest.trusted_authors
         api_base = (api_base or "").rstrip("/")
         if not api_base:
             raise ValueError("api_base is required")
@@ -118,6 +138,12 @@ class PatchAdapter(BacklogAdapter):
         self._retry_budget = retry_budget_seconds
         self._pat = pat
         self._anon = anon_key
+        # Trusted-author gate: the loop only acts on a card/project whose created_by is in this
+        # set. Local override (config/manifest) UNION the PAT owner's uid, set from the exchanged
+        # JWT in _try_exchange. Never sourced from the shared DB — see _trusted_authors.
+        self._trusted_override = frozenset(trusted_authors or ())
+        self._owner_uid: str | None = None
+        self._gated_seen: set[str] = set()  # ids already logged as gated (log once, not per poll)
         self._exchange_url = f"{api_base}/functions/v1/pat-exchange"
         self._access_token: str | None = None
         self._access_exp = 0.0  # unix seconds
@@ -146,6 +172,7 @@ class PatchAdapter(BacklogAdapter):
             managers_table=host.managers_table,
             projects_table=host.projects_table, app_base=host.app_base,
             roadmap_page_id=host.roadmap_page_id, log=log, notify=notify,
+            trusted_authors=host.trusted_authors,
         )
 
     # --- reads -------------------------------------------------------------
@@ -163,25 +190,48 @@ class PatchAdapter(BacklogAdapter):
                 "listing projects (host.run calls _register before discover)")
         return {"manager": f"eq.{mid}"}
 
+    def _trusted_authors(self) -> frozenset[str]:
+        """Author uids the loop will act on: the PAT owner (from the exchanged JWT) UNION the
+        local override. Deliberately NOT read from the shared DB — an actor who can write the
+        backlog must not be able to widen the gate. A row whose created_by is outside this set
+        is dropped (fail closed): a missing/foreign author never gets auto-built."""
+        if self._owner_uid is None:
+            return self._trusted_override
+        return self._trusted_override | {self._owner_uid}
+
+    def _note_gated(self, kind: str, ident: str, label: str) -> None:
+        """Log a gated row ONCE (not every poll) so the operator sees why a card/project the
+        loop can see isn't being built, without spamming the log while it sits there."""
+        if ident in self._gated_seen:
+            return
+        self._gated_seen.add(ident)
+        self._log(f"gating {kind} {label}: author not in trusted_authors (local gate)")
+
     def list_projects(self) -> list[ProjectRow]:
-        """The projects this host serves: rows in `projects` linked to our manager relation."""
+        """The projects this host serves: rows in `projects` linked to our manager relation,
+        further gated to trusted authors (a projects row runs foreign provision scripts)."""
         rows = self._get(self.projects, {**self._project_filter(), "select": "*"})
-        return [
-            ProjectRow(
+        trusted = self._trusted_authors()
+        out = []
+        for r in rows:
+            if r.get("created_by") not in trusted:
+                self._note_gated("project", r["id"], r.get("name") or r["id"])
+                continue
+            out.append(ProjectRow(
                 id=r["id"], name=r.get("name") or "", repo=r.get("repo"),
                 default_branch=r.get("default_branch") or "main",
                 slots=r.get("slots"), hot=bool(r.get("hot")), brief_ref=r.get("brief_ref"),
                 weight=float(r["weight"]) if r.get("weight") else 1.0,
                 model=r.get("model") or None,
-            )
-            for r in rows
-        ]
+            ))
+        return out
 
     def list_workable(self) -> list[Card]:
         cards = [self._to_card(r) for r in self._get(self.roadmap, {"select": "*"})]
         by_id = {c.id: c for c in cards}
         served = self._served_project_ids()
-        workable = [
+        trusted = self._trusted_authors()
+        candidates = [
             c for c in cards
             if c.status == CardStatus.BACKLOG
             and c.assignee is None
@@ -189,6 +239,12 @@ class PatchAdapter(BacklogAdapter):
             and self._unblocked(c, by_id)
             and self._in_scope(c, served)
         ]
+        workable = []
+        for c in candidates:
+            if c.created_by not in trusted:
+                self._note_gated("card", c.id, f"~{c.num}")
+                continue
+            workable.append(c)
         # priority desc; ties broken by oldest card first (lowest id_2) so the queue is
         # deterministic — equal-priority (incl. all unranked → 0) cards don't flap on
         # PostgREST's physical row order.
@@ -201,8 +257,9 @@ class PatchAdapter(BacklogAdapter):
         single-project behaviour)."""
         if not self.worker_manager:
             return None
-        rows = self._get(self.projects, {**self._project_filter(), "select": "id"})
-        return {r["id"] for r in rows}
+        rows = self._get(self.projects, {**self._project_filter(), "select": "id,created_by"})
+        trusted = self._trusted_authors()
+        return {r["id"] for r in rows if r.get("created_by") in trusted}
 
     @staticmethod
     def _in_scope(card: Card, served: set[str] | None) -> bool:
@@ -336,6 +393,7 @@ class PatchAdapter(BacklogAdapter):
             solved_in_pr=r.get("solved_in_pr"),
             project=self._rel_one(r.get("project")),
             model=r.get("model") or None,
+            created_by=r.get("created_by"),
         )
         self._card_index[card.num] = card.id  # remember num -> uuid for dashboard links
         return card
@@ -412,6 +470,7 @@ class PatchAdapter(BacklogAdapter):
         body = r.json()
         self._access_token = body["access_token"]
         self._access_exp = float(body.get("expires_at") or 0)
+        self._owner_uid = _jwt_sub(self._access_token)  # the always-trusted author
         self._client.headers["Authorization"] = f"Bearer {self._access_token}"
         return None
 
