@@ -56,7 +56,14 @@ fi
 echo "▸ Notarizing (submits to Apple, waits — a few minutes)…"
 rm -f "$zip"
 /usr/bin/ditto -c -k --keepParent "$app" "$zip"
-xcrun notarytool submit "$zip" --keychain-profile "$PROFILE" --wait
+# Notary auth: an ASC API key (CI, keychain-independent) when provided, else the stored profile.
+if [ -n "${LOOPWORKER_NOTARY_KEY:-}" ]; then
+    xcrun notarytool submit "$zip" \
+        --key "$LOOPWORKER_NOTARY_KEY" --key-id "$LOOPWORKER_NOTARY_KEY_ID" \
+        --issuer "$LOOPWORKER_NOTARY_ISSUER" --wait
+else
+    xcrun notarytool submit "$zip" --keychain-profile "$PROFILE" --wait
+fi
 
 echo "▸ Stapling the ticket…"
 xcrun stapler staple "$app"
