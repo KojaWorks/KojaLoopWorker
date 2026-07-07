@@ -8,12 +8,24 @@ struct LoopWorkerApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            MenuContentView()
+            RootView()
                 .environmentObject(appState)
                 .frame(width: 340)
         } label: {
             MenuBarIcon(app: appState)
         }
         .menuBarExtraStyle(.window)   // a real popover panel, not a plain menu
+    }
+}
+
+/// Onboarding until there's a config, status once there is (or when the user re-opens Connect).
+struct RootView: View {
+    @EnvironmentObject var appState: AppState
+    var body: some View {
+        if appState.isConfigured && !appState.showConnect {
+            MenuContentView()
+        } else {
+            ConnectView()
+        }
     }
 }

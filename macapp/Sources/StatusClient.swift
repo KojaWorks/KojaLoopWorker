@@ -30,8 +30,10 @@ struct StatusClient {
     /// `claude -p` etc.), so callers poll it on a slow timer, not every status tick.
     func doctor() async throws -> DoctorReport {
         // Inject the login-shell PATH so the frozen Manager finds claude/tmux/docker (a GUI app's
-        // own PATH is minimal) — otherwise readiness falsely reports everything missing.
-        let out = try await ProcessRunner.run(loopworkerPath, ["doctor", "--json"],
+        // own PATH is minimal) — otherwise readiness falsely reports everything missing. Run from
+        // ~/.loopworker (when it exists) so doctor loads the same .env the Manager will.
+        let cwd = FileManager.default.fileExists(atPath: ConfigStore.dir.path) ? ConfigStore.dir : nil
+        let out = try await ProcessRunner.run(loopworkerPath, ["doctor", "--json"], cwd: cwd,
                                               environment: LoginEnvironment.childEnvironment())
         // doctor exits non-zero when a check fails but still prints valid JSON on stdout.
         guard let data = out.stdout.data(using: .utf8), !data.isEmpty else {
