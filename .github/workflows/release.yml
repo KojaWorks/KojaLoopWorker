@@ -1,0 +1,72 @@
+name: Release
+
+# Phase A of the release pipeline: a tag (or a manual dispatch) builds the Mac app with the
+# Manager frozen in, signs it (Developer ID, hardened runtime), notarizes + staples, and uploads
+# the signed .zip as a workflow artifact. Phase B adds the Sparkle appcast + a public publish
+# target once the open-source-vs-raheth hosting decision lands.
+#
+# Runs on miquon (self-hosted macOS) which already holds the Developer ID cert and the koja-notary
+# notarytool profile in its login keychain — "try the login keychain first" (a Verify step fails
+# fast with a fix hint if the runner can't see the identity).
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Marketing version (e.g. 0.2.0). Required when dispatched off a branch."
+        required: false
+      dry_run:
+        description: "Sign but skip notarization (fast keychain/sign check)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false   # never cancel an in-flight notarization
+
+jobs:
+  release:
+    runs-on: [self-hosted, macOS, ARM64]   # miquon
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Derive version
+        id: v
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            v="${GITHUB_REF_NAME#v}"
+          elif [ -n "$INPUT_VERSION" ]; then
+            v="$INPUT_VERSION"
+          else
+            echo "::error::dispatched off a branch with no 'version' input"; exit 1
+          fi
+          echo "marketing=$v" >> "$GITHUB_OUTPUT"
+          echo "build=$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "Building version $v (build $GITHUB_RUN_NUMBER)"
+
+      - name: Verify signing access (fail fast, before the build)
+        run: |
+          if ! security find-identity -v -p codesigning | grep -q "Developer ID Application"; then
+            echo "::error::Developer ID identity not visible to the runner's keychain. The login keychain is likely locked for the job — add a 'security unlock-keychain login.keychain-db' step with the password from a GitHub secret."
+            exit 1
+          fi
+          echo "Developer ID identity visible to the runner."
+
+      - name: Build · sign · notarize · staple
+        working-directory: macapp
+        env:
+          LOOPWORKER_MARKETING_VERSION: ${{ steps.v.outputs.marketing }}
+          LOOPWORKER_BUILD_VERSION: ${{ steps.v.outputs.build }}
+          LOOPWORKER_SKIP_NOTARIZE: ${{ github.event.inputs.dry_run == 'true' && '1' || '' }}
+        run: ./sign-and-notarize.sh
+
+      - name: Upload signed app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KojaLoopsManager-${{ steps.v.outputs.marketing }}
+          path: macapp/build/release-dd/LoopWorker.zip
+          if-no-files-found: error

@@ -9,6 +9,9 @@
 #   xcrun notarytool store-credentials koja-notary --key <p8> --key-id <id> --issuer <uuid>
 set -euo pipefail
 
+# Homebrew tools (xcodegen) aren't on a CI runner's minimal PATH.
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
 IDENTITY="${LOOPWORKER_SIGN_IDENTITY:-Developer ID Application: Nevyn Bengtsson (M4Q2TE45WT)}"
 PROFILE="${LOOPWORKER_NOTARY_PROFILE:-koja-notary}"
 
@@ -18,11 +21,17 @@ ent="$here/loopworker.entitlements"
 app="$dd/Build/Products/Release/LoopWorker.app"
 inner="$app/Contents/Resources/loopworker"
 
+# Optional version injection — CI passes the git tag; locally we keep project.yml's defaults.
+ver_args=""
+[ -n "${LOOPWORKER_MARKETING_VERSION:-}" ] && ver_args="$ver_args MARKETING_VERSION=$LOOPWORKER_MARKETING_VERSION"
+[ -n "${LOOPWORKER_BUILD_VERSION:-}" ] && ver_args="$ver_args CURRENT_PROJECT_VERSION=$LOOPWORKER_BUILD_VERSION"
+
 echo "▸ Generating project + building Release (unsigned; the script signs deliberately)…"
 ( cd "$here" && xcodegen generate >/dev/null )
+# shellcheck disable=SC2086  # ver_args is deliberately word-split into xcodebuild settings
 xcodebuild -project "$here/LoopWorker.xcodeproj" -scheme LoopWorker -configuration Release \
     -destination 'generic/platform=macOS' -derivedDataPath "$dd" \
-    CODE_SIGNING_ALLOWED=NO build >/dev/null
+    CODE_SIGNING_ALLOWED=NO $ver_args build >/dev/null
 echo "  built: $app"
 
 # Sign the embedded frozen Manager FIRST (its own entitlements), then the app seals over it.
@@ -36,8 +45,15 @@ codesign --force --timestamp --options runtime \
 echo "▸ Verifying signature…"
 codesign --verify --deep --strict --verbose=2 "$app"
 
-echo "▸ Notarizing (submits to Apple, waits — a few minutes)…"
 zip="$dd/LoopWorker.zip"
+if [ -n "${LOOPWORKER_SKIP_NOTARIZE:-}" ]; then
+    echo "▸ LOOPWORKER_SKIP_NOTARIZE set — signed but NOT notarized/stapled (dry run)."
+    rm -f "$zip"; /usr/bin/ditto -c -k --keepParent "$app" "$zip"
+    echo "✅ Signed (not notarized): $zip"
+    exit 0
+fi
+
+echo "▸ Notarizing (submits to Apple, waits — a few minutes)…"
 rm -f "$zip"
 /usr/bin/ditto -c -k --keepParent "$app" "$zip"
 xcrun notarytool submit "$zip" --keychain-profile "$PROFILE" --wait
