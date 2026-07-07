@@ -14,8 +14,9 @@ struct MenuBarIcon: View {
 
     var body: some View {
         switch app.controller.state {
-        case .stopped:
-            Image(systemName: "zzz")
+        case .stopped(let reason):
+            // A crash (reason set) flags the menu bar; a clean/asked stop just sleeps.
+            Image(systemName: reason == nil ? "zzz" : "exclamationmark.triangle.fill")
         case .starting, .draining:
             Image(systemName: "hourglass")
         case .running:
