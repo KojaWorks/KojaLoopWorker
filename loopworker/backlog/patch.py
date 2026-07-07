@@ -51,9 +51,10 @@ def _jwt_sub(token: str) -> str:
     try:
         payload = token.split(".")[1]
         payload += "=" * (-len(payload) % 4)  # restore base64url padding
-        sub = json.loads(base64.urlsafe_b64decode(payload)).get("sub")
+        claims = json.loads(base64.urlsafe_b64decode(payload))
     except (IndexError, ValueError) as e:
         raise RuntimeError(f"could not decode owner uid from exchanged JWT: {e!r}") from e
+    sub = claims.get("sub") if isinstance(claims, dict) else None  # non-object payload -> no sub
     if not sub:
         raise RuntimeError("exchanged JWT has no `sub` claim — cannot identify the PAT owner")
     return sub
@@ -194,7 +195,12 @@ class PatchAdapter(BacklogAdapter):
         """Author uids the loop will act on: the PAT owner (from the exchanged JWT) UNION the
         local override. Deliberately NOT read from the shared DB — an actor who can write the
         backlog must not be able to widen the gate. A row whose created_by is outside this set
-        is dropped (fail closed): a missing/foreign author never gets auto-built."""
+        is dropped (fail closed): a missing/foreign author never gets auto-built.
+
+        Load-bearing assumption: this trusts the DB-supplied created_by, so it defends the real
+        threat (a fallible member's card stamps their real uid) but NOT a malicious member who
+        forges created_by := <owner uid> on a raw INSERT. Closing that needs Patch to bind
+        created_by to auth.uid() on insert — separate hardening, tracked on ~852's follow-ons."""
         if self._owner_uid is None:
             return self._trusted_override
         return self._trusted_override | {self._owner_uid}
@@ -468,10 +474,13 @@ class PatchAdapter(BacklogAdapter):
             return f"HTTP {r.status_code}"
         r.raise_for_status()  # unexpected 4xx -> surface (not transient, not an auth reject)
         body = r.json()
-        self._access_token = body["access_token"]
+        token = body["access_token"]
+        self._owner_uid = _jwt_sub(token)  # derive the always-trusted author BEFORE caching the
+        #                                    token, so a decode failure never leaves a usable-but-
+        #                                    ownerless token that a cached-token early return reuses
+        self._access_token = token
         self._access_exp = float(body.get("expires_at") or 0)
-        self._owner_uid = _jwt_sub(self._access_token)  # the always-trusted author
-        self._client.headers["Authorization"] = f"Bearer {self._access_token}"
+        self._client.headers["Authorization"] = f"Bearer {token}"
         return None
 
     # PostgREST verbs ----

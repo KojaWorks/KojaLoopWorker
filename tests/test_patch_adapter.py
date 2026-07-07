@@ -155,6 +155,16 @@ def test_gate_drops_untrusted_project(adapter, monkeypatch):
     assert [p.name for p in adapter.list_projects()] == ["Mine"]
 
 
+def test_gate_drops_project_with_missing_author(adapter, monkeypatch):
+    # The higher-stakes path (a projects row runs foreign provision scripts): no created_by
+    # is untrusted, not a free pass.
+    adapter.worker_manager = "miquon"
+    adapter._manager_id = "m1"
+    rows = [{"id": "p1", "name": "NoAuthor", "repo": "git@x"}]  # created_by absent
+    monkeypatch.setattr(adapter, "_get", lambda table, params: rows)
+    assert adapter.list_projects() == []
+
+
 def test_gate_untrusted_project_scopes_out_its_cards(adapter, monkeypatch):
     # A card tagged to an untrusted-authored project is out of scope (project id dropped
     # from the served set), even if the card itself is owner-authored.
@@ -186,6 +196,11 @@ def test_jwt_sub_decodes_and_rejects_bad_tokens():
         _jwt_sub("not-a-jwt")
     with pytest.raises(RuntimeError, match="no `sub`"):
         _jwt_sub(_fake_jwt(""))                   # empty sub -> refuse
+    # a payload that decodes to a non-object (number/list/string) has no sub -> refuse cleanly,
+    # not a raw AttributeError
+    nonobj = base64.urlsafe_b64encode(b"123").rstrip(b"=").decode()
+    with pytest.raises(RuntimeError, match="no `sub`"):
+        _jwt_sub(f"h.{nonobj}.s")
 
 
 def test_no_project_filter_when_worker_manager_unset(adapter, monkeypatch):
