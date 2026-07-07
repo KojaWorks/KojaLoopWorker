@@ -24,6 +24,15 @@ from .slots import _redact  # same secret-scrub every streaming surface uses
 # Same headless probe AuthGate uses — a cheap call that fails fast on a dead login.
 CLAUDE_PREFLIGHT = ("claude", "-p", "ok", "--model", "haiku")
 
+# The fix for a failing headless login. NOT "run `claude` and log in": an interactive login
+# does not carry over to the headless `claude -p` workers (and this preflight) run on — that's
+# the whole trap this check exists to catch. A long-lived `claude setup-token` in the env is
+# what headless mode reads. The Mac app renders this same string on its readiness row.
+_SETUP_TOKEN_REMEDY = (
+    "run `claude setup-token` and put CLAUDE_CODE_OAUTH_TOKEN=... in ~/.loopworker/.env "
+    "(an interactive `claude` login does not carry to headless workers)"
+)
+
 Runner = Callable[[Sequence[str], float], subprocess.CompletedProcess]
 HttpProbe = Callable[[str], int]
 
@@ -66,19 +75,17 @@ def check_claude(runner: Runner = _default_runner, timeout: float = 20.0) -> Che
     silently wedges every spawn at an interactive /login prompt (see authgate.py)."""
     if not shutil.which("claude"):
         return Check("claude", False, "claude not on PATH",
-                     "install Claude Code, then run `claude` to log in")
+                     f"install Claude Code, then {_SETUP_TOKEN_REMEDY}")
     try:
         r = runner(CLAUDE_PREFLIGHT, timeout)
     except subprocess.TimeoutExpired:
         return Check("claude", False, "login preflight timed out",
-                     "check the network; re-run `claude` to confirm the login")
+                     "check the network; re-run `claude -p ok` to confirm the login")
     except Exception as e:
-        return Check("claude", False, f"preflight failed to run: {e!r}",
-                     "run `claude` interactively to check the login")
+        return Check("claude", False, f"preflight failed to run: {e!r}", _SETUP_TOKEN_REMEDY)
     if r.returncode == 0:
         return Check("claude", True, "login healthy")
-    return Check("claude", False, _last_line(r),
-                 "run `claude` and log in (workers spend this host's compute)")
+    return Check("claude", False, _last_line(r), _SETUP_TOKEN_REMEDY)
 
 
 def check_engine(probe: str = "docker ps", start_hint: str = "orb start",
