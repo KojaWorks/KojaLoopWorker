@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- The embedded frozen Manager is a PyInstaller onefile binary: it extracts CPython + its
+         dylibs to a temp dir and dlopen()s them at runtime. Under the hardened runtime that
+         notarization requires, library validation would reject those (they aren't part of this
+         signed bundle), so it must be relaxed here. Non-sandboxed power tool — this is expected. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+</dict>
+</plist>
