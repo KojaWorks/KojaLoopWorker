@@ -71,9 +71,11 @@ that needs a logged-in desktop session and a human. To verify manually:
 cd macapp && ./sign-and-notarize.sh
 ```
 
-One command: builds Release, signs the embedded frozen Manager **then** the app with the
-Developer ID cert + hardened runtime, notarizes (waits for Apple), staples, and runs a
-Gatekeeper assessment. The result is a `.app`/`.zip` that runs on any Mac with no warning.
+One command: builds Release, signs the embedded frozen Manager, then Sparkle's bundled helpers
+(XPC services, `Autoupdate`, `Updater.app`) inside-out, **then** the app — all with the Developer ID
+cert + hardened runtime — notarizes (waits for Apple), staples, and runs a Gatekeeper assessment.
+The result is a `.app`/`.zip` that runs on any Mac with no warning. (CI runs the same script; see
+`../.github/workflows/release.yml` for the keychain-independent variant + appcast publish.)
 
 Needs, once per build host: a *Developer ID Application* cert in the login keychain, and a
 notarytool keychain profile named `koja-notary`
@@ -84,9 +86,25 @@ PyInstaller extracts + `dlopen`s CPython's dylibs at runtime, which the hardened
 otherwise reject). Distribution is Developer ID, **not** the App Store/TestFlight — this app
 can't be sandboxed (it spawns tmux/claude/git/docker).
 
+## Auto-update (Sparkle)
+
+Sparkle is a real dependency now (SPM package in `project.yml`), so "update the app == update the
+Manager" is a background check, not a `git pull`. The app owns one long-lived
+`SPUStandardUpdaterController` (`AppState.updaterController`); `Info.plist` sets `SUFeedURL` to
+`…/releases/latest/download/appcast.xml` and `SUPublicEDKey` to the appcast signing key's public
+half. The `#if canImport(Sparkle)` guards stay so the Swift still compiles if the package is removed.
+
+The feed is served off **GitHub Releases**: `release.yml` builds → signs → notarizes → staples, then
+`generate_appcast` (pinned to the SPM Sparkle version) EdDSA-signs an `appcast.xml` and publishes it
++ the zip to a `v<version>` release marked `--latest`. So `releases/latest/download/appcast.xml`
+always resolves to the newest build — which is what `SUFeedURL` points at. Cut one with
+`gh workflow run release.yml --ref main -f version=X.Y.Z` (see the release-pipeline reference).
+
+The appcast signing key is separate from the Apple Developer ID cert: its private half is the
+`SPARKLE_ED_PRIVATE_KEY` CI secret (base64 of a 32-byte Ed25519 seed), its public half is
+`SUPublicEDKey`. **Keep the private key stable** — rotating it makes already-installed apps reject
+every future update.
+
 ## Not done here (own cards — see the distribution epic)
 
-- **Sparkle**: add the SPM package (`https://github.com/sparkle-project/Sparkle`) to `project.yml`;
-  the code activates via `#if canImport(Sparkle)`. Needs an appcast (`SUFeedURL`) + hosting
-  (GitHub Releases works — no server).
 - **Login-item toggle** and **settings UI** (dashboard port, loopworker path).

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # One-command release: build → sign (Developer ID, hardened runtime) → notarize → staple → verify.
 # Non-sandboxed Developer ID app (it spawns tmux/claude/git/docker), distributed outside the App
-# Store; auto-update is Sparkle-on-GitHub-Releases (a later card), not TestFlight (which needs the
-# App Sandbox this app can't adopt).
+# Store; auto-update is Sparkle on GitHub Releases (this script signs Sparkle's helpers too, and
+# release.yml generates the appcast), not TestFlight (which needs the App Sandbox this app can't adopt).
 #
 # One-time setup (already done on the build host): a "Developer ID Application" cert in the login
 # keychain, and a notarytool keychain profile:
@@ -38,6 +38,25 @@ echo "  built: $app"
 echo "▸ Signing the embedded Manager…"
 codesign --force --timestamp --options runtime --entitlements "$ent" \
     --sign "$IDENTITY" "$inner"
+
+# Sparkle ships helper code inside its framework — XPC services, the Autoupdate tool, and Updater.app.
+# codesign on the outer app does NOT reach into a nested framework, so each helper must be signed on
+# its own (timestamp + hardened runtime), inside-out, or notarization rejects the framework. Guarded
+# so a Sparkle-less build still signs clean.
+fw="$app/Contents/Frameworks/Sparkle.framework"
+if [ -d "$fw" ]; then
+    echo "▸ Signing Sparkle's embedded helpers…"
+    v="$fw/Versions/Current"
+    for item in \
+        "$v/XPCServices/Downloader.xpc" \
+        "$v/XPCServices/Installer.xpc" \
+        "$v/Autoupdate" \
+        "$v/Updater.app"; do
+        [ -e "$item" ] && codesign --force --timestamp --options runtime --sign "$IDENTITY" "$item"
+    done
+    codesign --force --timestamp --options runtime --sign "$IDENTITY" "$fw"
+fi
+
 echo "▸ Signing the app…"
 codesign --force --timestamp --options runtime \
     --sign "$IDENTITY" "$app"

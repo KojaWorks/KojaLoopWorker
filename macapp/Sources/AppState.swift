@@ -1,6 +1,9 @@
 import Combine
 import Foundation
 import SwiftUI
+#if canImport(Sparkle)
+import Sparkle
+#endif
 
 /// The app's single source of observed truth: the Manager supervisor plus the polled status
 /// contract. Cheap /health + /json every few seconds; the heavier `doctor` sweep on a slow
@@ -19,6 +22,12 @@ final class AppState: NSObject, ObservableObject, NSApplicationDelegate {
 
     let controller: ManagerController
     let setupWindow = SetupWindowController()                 // the real-window onboarding + fix-it surface
+    #if canImport(Sparkle)
+    // One updater for the app's lifetime: startingUpdater:true wires the scheduled background checks
+    // (SUEnableAutomaticChecks in Info.plist); UpdateButton triggers a manual check on it.
+    let updaterController = SPUStandardUpdaterController(
+        startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+    #endif
     private let client: StatusClient
     private var pollTask: Task<Void, Never>?
     private var lastDoctor = Date.distantPast
