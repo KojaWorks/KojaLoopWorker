@@ -102,6 +102,10 @@ enum ConfigStore {
         if let v = await get("clones_dir") { s.clonesDir = v }
         if let v = await get("max_slots"), let n = Int(v) { s.maxSlots = n }
         if let v = await get("backlog.api_base") { s.apiBase = v }
+        // anon_key isn't a form field, but write() sets it — carry the existing value through
+        // so a Save doesn't reset a hand-changed key to the baked Instance default. (app_base/
+        // roadmap_page_id/brief_page are intentionally always the Instance constants; see the card.)
+        if let v = await get("backlog.anon_key") { s.anonKey = v }
         return s
     }
 }

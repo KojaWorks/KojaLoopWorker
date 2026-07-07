@@ -171,13 +171,31 @@ def _coerce(dotted_key: str, value: str):
     return value
 
 
+_STR_ESCAPES = {"\\": "\\\\", '"': '\\"', "\n": "\\n", "\r": "\\r",
+                "\t": "\\t", "\b": "\\b", "\f": "\\f"}
+
+
+def _toml_str(s: str) -> str:
+    """A TOML basic string: escape the specials plus any other control char (a hand-set
+    notify_command can be multiline — a raw newline in a basic string is invalid TOML)."""
+    out = []
+    for ch in s:
+        if ch in _STR_ESCAPES:
+            out.append(_STR_ESCAPES[ch])
+        elif ord(ch) < 0x20 or ord(ch) == 0x7F:
+            out.append(f"\\u{ord(ch):04X}")
+        else:
+            out.append(ch)
+    return '"' + "".join(out) + '"'
+
+
 def _toml_value(v) -> str:
     if isinstance(v, bool):          # before int — bool is an int subclass
         return "true" if v else "false"
     if isinstance(v, (int, float)):
         return repr(v) if isinstance(v, float) else str(v)
     if isinstance(v, str):
-        return '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
+        return _toml_str(v)
     if isinstance(v, list):
         return "[" + ", ".join(_toml_value(x) for x in v) + "]"
     raise ValueError(f"can't serialize {type(v).__name__} to TOML")

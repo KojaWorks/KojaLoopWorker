@@ -270,6 +270,18 @@ def test_config_set_output_reparses(tmp_path):
     assert raw["backlog"]["api_base"] == "https://api.patch"
 
 
+def test_config_set_preserves_multiline_string(tmp_path):
+    # A hand-set notify_command can be multiline; re-emitting it must escape the newline/tab
+    # (a raw newline in a TOML basic string is invalid and would break the next load).
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('worker_manager = "miquon"\nclones_dir = "~/c"\n'
+                   'notify_command = """line1\nline2\ttabbed"""\n'
+                   '[backlog]\napi_base = "https://a"\nanon_key = "k"\n')
+    config_set(cfg, "max_slots", "4")                # touch an unrelated key
+    tomllib.loads(cfg.read_text())                   # must still be valid TOML
+    assert HostConfig.load(cfg).notify_command == "line1\nline2\ttabbed"
+
+
 def test_config_get_missing_returns_none(tmp_path):
     cfg = tmp_path / "config.toml"
     assert config_get(cfg, "worker_manager") is None     # no file yet
