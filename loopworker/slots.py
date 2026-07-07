@@ -320,6 +320,10 @@ class SlotPool:
                 s.state = SlotState.COLD
                 s.activity = "cold (retry after earlier failure)"
                 s.retiring = False
+                # Keep last_error: a cold slot is only RE-ARMED here, not re-provisioned
+                # (acquire() provisions it on the next card). Clearing now would hide WHY a
+                # persistently-failing cold provision never progresses — the exact ~844 bug.
+                # It's cleared by a real _provision success (the single healed-home).
                 n += 1
                 continue
             # Read the clock fresh per slot: a re-provision below blocks (up to provision.sh's

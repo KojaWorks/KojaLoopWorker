@@ -541,7 +541,8 @@ class Manager:
         """Lightweight state dump for a hard exit — no tmux/network, safe in a handler."""
         self.log(f"state dump: {self._busy_count()} busy slot(s)")
         for s in self.pool.slots:
-            self.log(f"  slot {s.index}: {s.state.value} | {s.activity} | card={s.card_num} | session={s.session}")
+            why = f" | {s.last_error}" if s.last_error else ""
+            self.log(f"  slot {s.index}: {s.state.value} | {s.activity}{why} | card={s.card_num} | session={s.session}")
 
     def _on_signal(self, signum, _frame) -> None:
         # SIGTERM (a supervisor stopping us) goes straight to a clean force-stop.
