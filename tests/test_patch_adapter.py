@@ -452,6 +452,20 @@ def test_name_for_slot_is_stable_and_wraps():
     assert name_for_slot(0) == name_for_slot(0)         # deterministic
 
 
+def test_name_for_slot_varies_by_project():
+    from loopworker.names import name_for_slot, _NAMES
+    n = len(_NAMES)
+    # within a project, slots get distinct names (the uniqueness invariant that keeps each
+    # slot's loop_workers row stable + reused). Past 2*n to exercise the offset+wrap
+    # boundary (index >= n), where the cycle suffix must disambiguate the wrapped base.
+    for proj in ("", "patch-", "kojaloopworker-"):
+        assert len({name_for_slot(i, proj) for i in range(2 * n + 3)}) == 2 * n + 3
+    # slot 0 reads differently for two different projects (the whole point of the card)
+    assert name_for_slot(0, "patch-") != name_for_slot(0, "kojaloopworker-")
+    # stable hash: same (project, slot) is identical across calls / a restart
+    assert name_for_slot(3, "patch-") == name_for_slot(3, "patch-")
+
+
 def test_register_worker_reuses_existing_row(adapter, monkeypatch):
     calls = {"post": 0, "patch": 0}
     monkeypatch.setattr(adapter, "_get", lambda t, p: [{"id": "w-ada"}])  # row exists
