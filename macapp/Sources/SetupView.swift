@@ -47,7 +47,12 @@ private struct ConnectionSection: View {
                     Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                     Text("Connected to Patch.").font(.callout)
                     Spacer()
-                    Button("Replace token…") { showReplace = true }.buttonStyle(.borderless)
+                    Button("Replace token…") {
+                        // Prefill from the live config so re-saving preserves the user's Advanced
+                        // fields (Manager id / clones dir / max slots) instead of resetting them.
+                        settings = ConfigStore.read() ?? ConnectSettings()
+                        showReplace = true
+                    }.buttonStyle(.borderless)
                 }
             } else {
                 form

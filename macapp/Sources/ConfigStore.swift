@@ -44,6 +44,31 @@ enum ConfigStore {
             .lowercased()
     }
 
+    /// Prefill the user's Advanced fields (worker_manager / clones_dir / max_slots) out of an existing
+    /// config.toml so re-onboarding ("Replace token…") can't silently reset them to defaults — the ~858
+    /// bug. `write` then round-trips them. Returns nil when there's no config yet (first-time onboarding
+    /// keeps the defaults). Deliberately does NOT read back the backlog connection (`api_base`/`anon_key`):
+    /// those are embedded build constants, so leaving them at their defaults lets a new build heal a
+    /// rotated key — the same reason `write` always re-emits `app_base`/`brief_page` from `Instance`.
+    /// Scope is only the keys the form models; other keys the app never writes aren't preserved (see
+    /// ~858 follow-up). Best-effort per key: one it can't parse keeps its default. `token` stays empty —
+    /// the PAT lives in the Keychain and the user is pasting a fresh one.
+    static func read() -> ConnectSettings? {
+        guard let text = try? String(contentsOf: configPath, encoding: .utf8) else { return nil }
+        var values: [String: String] = [:]
+        for raw in text.split(whereSeparator: \.isNewline) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            guard !line.hasPrefix("#"), let eq = line.firstIndex(of: "=") else { continue }
+            let key = line[..<eq].trimmingCharacters(in: .whitespaces)
+            values[key] = unquoted(line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces))
+        }
+        var s = ConnectSettings()
+        if let v = values["worker_manager"] { s.workerManager = v }
+        if let v = values["clones_dir"] { s.clonesDir = v }
+        if let v = values["max_slots"], let n = Int(v) { s.maxSlots = n }
+        return s
+    }
+
     static func write(_ s: ConnectSettings) throws {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let toml = """
@@ -135,5 +160,13 @@ enum ConfigStore {
 
     private static func quoted(_ s: String) -> String {
         "\"" + s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
+    }
+
+    /// Inverse of `quoted` for reading config.toml back in: strip surrounding quotes and unescape.
+    /// A bare (unquoted) value — e.g. the numeric max_slots — is returned as-is.
+    private static func unquoted(_ s: String) -> String {
+        guard s.count >= 2, s.hasPrefix("\""), s.hasSuffix("\"") else { return s }
+        return String(s.dropFirst().dropLast())
+            .replacingOccurrences(of: "\\\"", with: "\"").replacingOccurrences(of: "\\\\", with: "\\")
     }
 }
