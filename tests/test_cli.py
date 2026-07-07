@@ -39,8 +39,20 @@ def test_doctor_json_is_machine_readable(monkeypatch, capsys):
     rc = cli._cmd_doctor(["--json"])
     payload = json.loads(capsys.readouterr().out)
     assert rc == 1 and payload["ok"] is False
-    assert payload["checks"][0] == {"name": "git", "ok": False,
-                                    "detail": "git not on PATH", "remedy": "install git"}
+    assert payload["checks"][0] == {"name": "git", "ok": False, "detail": "git not on PATH",
+                                    "remedy": "install git", "required": True}
+
+
+def test_doctor_recommended_failure_stays_ready(monkeypatch, capsys):
+    # A failed RECOMMENDED check (e.g. no container engine) is a warning, not "not ready":
+    # readiness keys on required checks only, so doctor still exits 0.
+    monkeypatch.setattr(readiness, "check_all",
+                        lambda *a, **k: [Check("claude", True, "ok"),
+                                         Check("engine", False, "no docker", "install it", required=False)])
+    rc = cli._cmd_doctor(["--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == 0 and payload["ok"] is True          # recommended failure doesn't block
+    assert any(c["name"] == "engine" and c["ok"] is False for c in payload["checks"])  # still reported
 
 
 def test_doctor_surfaces_malformed_config_not_missing(monkeypatch, capsys):

@@ -34,9 +34,12 @@ class Check:
     ok: bool
     detail: str        # one line: what we found
     remedy: str = ""   # what a human does about a failure (empty when ok)
+    required: bool = True  # a failed REQUIRED check means "not ready"; a recommended one is a warning
+    #                        (e.g. a container engine isn't needed by an Xcode-only project)
 
     def as_dict(self) -> dict:
-        return {"name": self.name, "ok": self.ok, "detail": self.detail, "remedy": self.remedy}
+        return {"name": self.name, "ok": self.ok, "detail": self.detail,
+                "remedy": self.remedy, "required": self.required}
 
 
 def _default_runner(cmd: Sequence[str], timeout: float) -> subprocess.CompletedProcess:
@@ -128,9 +131,12 @@ def check_all(config=None, *, runner: Runner = _default_runner,
     probe = getattr(config, "engine_probe_command", "docker ps")
     start = getattr(config, "engine_start_command", "orb start")
     api_base = getattr(config, "api_base", None)
+    engine = check_engine(probe, start, runner)
+    engine.required = False  # recommended, not required: a project that provisions no container
+    #                          stack (e.g. a native/Xcode build) runs fine without one.
     return [
         check_claude(runner),
-        check_engine(probe, start, runner),
+        engine,
         check_tool("tmux", "tmux", "install tmux (`brew install tmux` / `apt install tmux`)"),
         check_tool("git", "git", "install git"),
         check_backlog(api_base, http_probe),

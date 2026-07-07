@@ -73,6 +73,7 @@ struct ReadinessCheck: Codable, Identifiable {
     let ok: Bool
     let detail: String
     let remedy: String
+    let required: Bool     // a failed recommended check is a warning, not "not ready"
 
     var id: String { name }
 }

@@ -12,7 +12,7 @@ struct LoopWorkerApp: App {
                 .environmentObject(appState)
                 .frame(width: 340)
         } label: {
-            Image(systemName: appState.menuBarSymbol)
+            MenuBarIcon(app: appState)
         }
         .menuBarExtraStyle(.window)   // a real popover panel, not a plain menu
     }

@@ -5,12 +5,14 @@ import Foundation
 enum ProcessRunner {
     struct Output { let status: Int32; let stdout: String; let stderr: String }
 
-    static func run(_ launchPath: String, _ args: [String], cwd: URL? = nil) async throws -> Output {
+    static func run(_ launchPath: String, _ args: [String], cwd: URL? = nil,
+                    environment: [String: String]? = nil) async throws -> Output {
         try await withCheckedThrowingContinuation { cont in
             let p = Process()
             p.executableURL = URL(fileURLWithPath: launchPath)
             p.arguments = args
             if let cwd { p.currentDirectoryURL = cwd }
+            if let environment { p.environment = environment }
             let out = Pipe(), err = Pipe()
             p.standardOutput = out
             p.standardError = err
@@ -21,6 +23,38 @@ enum ProcessRunner {
             }
             do { try p.run() } catch { cont.resume(throwing: error) }
         }
+    }
+}
+
+/// A GUI app launched from Finder gets a minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`), so
+/// claude / tmux / docker in Homebrew or `~/.local` "aren't found" though they're installed
+/// (system `git` in /usr/bin is the one that passes). Capture the user's real login-shell PATH
+/// once and inject it into every child — `doctor` AND the Manager (which needs to find tmux/git/
+/// claude to actually run workers, not just to report readiness).
+enum LoginEnvironment {
+    static let path: String? = captureLoginPath()
+
+    /// The current process environment, with PATH replaced by the login-shell PATH.
+    static func childEnvironment() -> [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        if let path { env["PATH"] = path }
+        return env
+    }
+
+    private static func captureLoginPath() -> String? {
+        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        guard FileManager.default.isExecutableFile(atPath: shell) else { return nil }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: shell)
+        p.arguments = ["-lc", "printf %s \"$PATH\""]   // login shell: sources the user's profile
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = Pipe()
+        do { try p.run() } catch { return nil }
+        p.waitUntilExit()
+        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (out?.isEmpty == false) ? out : nil
     }
 }
 

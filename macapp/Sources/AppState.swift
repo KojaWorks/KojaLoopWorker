@@ -115,20 +115,8 @@ final class AppState: NSObject, ObservableObject, NSApplicationDelegate {
         }
     }
 
-    // Menu-bar icon reflects fleet health at a glance.
-    var menuBarSymbol: String {
-        if contractMismatch { return "exclamationmark.triangle.fill" }
-        switch controller.state {
-        case .stopped: return "pause.circle"
-        case .starting, .draining: return "hourglass"
-        case .running:
-            if doctor?.ok == false { return "exclamationmark.triangle.fill" }
-            if anySlotBroken { return "exclamationmark.triangle.fill" }
-            return (health?.busy ?? 0) > 0 ? "bolt.fill" : "checkmark.circle"
-        }
-    }
-
-    private var anySlotBroken: Bool {
-        (snapshot?.sections.flatMap { $0.slots } ?? []).contains { $0.state == "broken" }
-    }
+    // Fleet state the menu-bar icon draws from (see MenuBarIcon).
+    var allSlots: [SlotSnapshot] { snapshot?.sections.flatMap { $0.slots } ?? [] }
+    var anySlotBroken: Bool { allSlots.contains { $0.state == "broken" } }
+    var needsAttention: Bool { contractMismatch || doctor?.ok == false || anySlotBroken }
 }

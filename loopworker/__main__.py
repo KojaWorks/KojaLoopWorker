@@ -117,12 +117,15 @@ def _cmd_doctor(argv: list[str]) -> int:
     if config_error:
         checks.insert(0, readiness.Check("config", False, config_error,
                                          "fix ~/.loopworker/config.toml (see README)"))
-    all_ok = all(c.ok for c in checks)
+    # Readiness keys on REQUIRED checks only; a failed recommended check is a warning, not a
+    # blocker (e.g. no container engine on a native/Xcode-only project).
+    all_ok = all(c.ok for c in checks if c.required)
     if a.json:
         print(json.dumps({"ok": all_ok, "checks": [c.as_dict() for c in checks]}, indent=2))
     else:
         for c in checks:
-            print(f"[{'OK  ' if c.ok else 'FAIL'}] {c.name:8} {c.detail}")
+            mark = "OK  " if c.ok else ("FAIL" if c.required else "WARN")
+            print(f"[{mark}] {c.name:8} {c.detail}")
             if not c.ok and c.remedy:
                 print(f"            -> {c.remedy}")
         print("\nready" if all_ok else "\nnot ready — fix the FAIL lines above", file=sys.stderr)
