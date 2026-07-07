@@ -391,6 +391,35 @@ def test_reconcile_projects_adds_retires_and_resizes(tmp_path, monkeypatch):
     assert "p3" in made                                      # GitZ picked up
 
 
+def test_run_idles_with_no_projects_then_picks_one_up(tmp_path, monkeypatch):
+    """A host with nothing assigned must IDLE and keep polling, not exit — exiting made the
+    supervising app relaunch it into a 'crashed N times in a row' loop. A project assigned while
+    idling is picked up by reconcile_projects with no restart."""
+    import loopworker.host as host_mod
+    box = {"rows": []}                                     # start with zero assigned projects
+    h, made = _reconcile_host(tmp_path, monkeypatch, box)
+    h.poll_interval = 0                                    # fire discovery + heartbeat every loop pass
+    # Neutralize everything run() touches that isn't the idle/discover decision under test.
+    for name in ("_acquire_lock", "_release_lock", "_notify_self_test", "_register",
+                 "_reconcile_all", "_fill_all", "_reap_all"):
+        monkeypatch.setattr(h, name, lambda *a, **k: None)
+    monkeypatch.setattr(host_mod.signal, "signal", lambda *a, **k: None)
+
+    ticks = {"n": 0}
+
+    def fake_sleep(_seconds):
+        ticks["n"] += 1
+        if ticks["n"] == 1:                                # after the first idle poll, assign a project
+            box["rows"] = [ProjectRow(id="p1", name="Patch", repo="git@x", hot=False, slots=1)]
+        else:                                              # after it's had a poll to be picked up, stop
+            h._stop = True
+    monkeypatch.setattr(h, "_sleep", fake_sleep)
+
+    h.run()                                                # must return (not hang) and not early-exit
+
+    assert {m.project_id for m in h.managers} == {"p1"}    # late assignment picked up while idling
+
+
 def test_reconcile_projects_survives_a_backlog_error(tmp_path):
     h = _host(tmp_path)
     keep = FakeMgr("Patch", hot=True, nslots=3, project_id="p1")

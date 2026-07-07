@@ -441,12 +441,18 @@ class HostManager:
             self._notify_self_test()
             self._register()        # register FIRST: projects are filtered by our manager id
             self.discover()
-            if not self.managers:
-                self.log("no serviceable projects — nothing to do")
-                return
-            self.build()
-            self.log(f"host ready; reconciling + staggered fill every {self.reconcile_interval}s, "
-                     f"project discovery every {self.poll_interval}s")
+            if self.managers:
+                self.build()
+                self.log(f"host ready; reconciling + staggered fill every {self.reconcile_interval}s, "
+                         f"project discovery every {self.poll_interval}s")
+            else:
+                # No projects assigned to this host YET — idle, don't exit. The projects table is
+                # live config re-read every poll, so reconcile_projects (in the loop below) picks up
+                # an assignment with no restart. Returning here instead let the supervising app
+                # relaunch us into a "crashed N times in a row" loop whenever a host had nothing
+                # assigned — the opposite of self-healing.
+                self.log("no projects assigned to this host yet — idling; will start them when "
+                         f"assigned (re-checking every {self.poll_interval}s)")
             last_discover = 0.0
             last_heartbeat = time.monotonic()
             while not self._stop:
