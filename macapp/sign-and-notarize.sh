@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # One-command release: build → sign (Developer ID, hardened runtime) → notarize → staple → verify.
 # Non-sandboxed Developer ID app (it spawns tmux/claude/git/docker), distributed outside the App
-# Store; auto-update is Sparkle-on-GitHub-Releases (a later card), not TestFlight (which needs the
-# App Sandbox this app can't adopt).
+# Store; auto-update is Sparkle on GitHub Releases (this script signs Sparkle's helpers too, and
+# release.yml generates the appcast), not TestFlight (which needs the App Sandbox this app can't adopt).
 #
 # One-time setup (already done on the build host): a "Developer ID Application" cert in the login
 # keychain, and a notarytool keychain profile:

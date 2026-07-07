@@ -128,6 +128,12 @@ jobs:
           mkdir -p "$tools"
           curl -fsSL "https://github.com/sparkle-project/Sparkle/releases/download/2.9.4/Sparkle-2.9.4.tar.xz" \
             | tar -xJ -C "$tools" bin/generate_appcast
+          # generate_appcast reads the update's version from the .app's CFBundleVersion, which comes
+          # from GENERATE_INFOPLIST_FILE merging over our partial Info.plist. If that merge ever breaks
+          # the version goes empty and Sparkle silently stops seeing updates — fail loud here instead.
+          built="macapp/build/release-dd/Build/Products/Release/LoopWorker.app"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$built/Contents/Info.plist" | grep -q . \
+            || { echo "::error::built app has no CFBundleVersion — the Info.plist merge broke"; exit 1; }
           out="$RUNNER_TEMP/appcast"
           mkdir -p "$out"
           cp macapp/build/release-dd/LoopWorker.zip "$out/LoopWorker.zip"
@@ -149,10 +155,13 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"   # gh lives in Homebrew on the runner
+          command -v gh >/dev/null || { echo "::error::gh not found on the runner (needed to publish)"; exit 1; }
           tag="v${VERSION}"
           # Idempotent: create the release (tagging the built commit) or refresh its assets in place,
           # so re-dispatching the same version updates rather than errors. --latest keeps
           # releases/latest/download/appcast.xml pointing here, which is what SUFeedURL resolves.
+          # The tag is created by GITHUB_TOKEN, so it does NOT re-fire the on:push:tags run (GitHub
+          # suppresses that) — no duplicate build. Don't swap in a PAT here or you'd get a loop.
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "$RELEASE_ZIP" "$APPCAST" --clobber
           else
