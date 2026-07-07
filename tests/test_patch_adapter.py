@@ -144,6 +144,27 @@ def test_claim_returns_false_when_no_row(adapter, monkeypatch):
     assert adapter.claim(Card("u1", 1, "t", CardStatus.BACKLOG, 1), Worker("w1", "ada")) is False
 
 
+def test_register_manager_updates_existing(adapter, monkeypatch):
+    calls = {}
+    monkeypatch.setattr(adapter, "_get", lambda t, p: [{"id": "m1"}])
+    monkeypatch.setattr(adapter, "_patch", lambda t, p, b: calls.update(table=t, params=p, body=b) or [{"id": "m1"}])
+    monkeypatch.setattr(adapter, "_post", lambda t, b: pytest.fail("existing row -> update, not insert"))
+    adapter.register_manager("miquon", "v0.1.0 · 3 project(s) · 1/8 slot(s) busy")
+    assert calls["table"] == adapter.managers
+    assert calls["params"] == {"id": "eq.m1"}
+    assert calls["body"]["summary"].startswith("v0.1.0") and "last_active" in calls["body"]
+
+
+def test_register_manager_inserts_when_absent(adapter, monkeypatch):
+    calls = {}
+    monkeypatch.setattr(adapter, "_get", lambda t, p: [])
+    monkeypatch.setattr(adapter, "_post", lambda t, b: calls.update(table=t, body=b) or [{"id": "m2"}])
+    monkeypatch.setattr(adapter, "_patch", lambda t, p, b: pytest.fail("no row -> insert, not update"))
+    adapter.register_manager("raheth", "summary")
+    assert calls["table"] == adapter.managers
+    assert calls["body"]["name"] == "raheth" and "last_active" in calls["body"]
+
+
 def test_brief_points_worker_at_patch_page(adapter):
     brief = adapter.get_brief()
     assert "cfacaea7-59e9-4f40-8bba-44c10137a48e" in brief

@@ -76,6 +76,7 @@ class HostConfig:
     port_step: int = 100
     roadmap_table: str = "roadmap"
     workers_table: str = "loop_workers"
+    managers_table: str = "loop_managers"   # this host registers + heartbeats a row here
     projects_table: str = "projects"
     # Dashboard ~NNN linkifier: the Patch APP origin (e.g. https://patch.d.nevyn.dev — NOT
     # api_base, the API host) and the roadmap table's patch_items id. Both must be set for
@@ -128,6 +129,7 @@ class HostConfig:
             port_step=raw.get("port_step", 100),
             roadmap_table=backlog.get("roadmap_table", "roadmap"),
             workers_table=backlog.get("workers_table", "loop_workers"),
+            managers_table=backlog.get("managers_table", "loop_managers"),
             projects_table=backlog.get("projects_table", "projects"),
             app_base=backlog.get("app_base", ""),
             roadmap_page_id=backlog.get("roadmap_page_id", ""),
