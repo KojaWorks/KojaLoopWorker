@@ -150,20 +150,21 @@ class PatchAdapter(BacklogAdapter):
 
     # --- reads -------------------------------------------------------------
     def _project_filter(self) -> dict:
-        """PostgREST filter for the projects this host serves. Prefers the `manager` relation
-        (projects.manager -> loop_managers), falling back to the `worker_manager` string for
-        not-yet-backfilled rows — and to the pure string filter when we have no manager row yet,
-        so a registration hiccup never yields an empty set (which would drain everything)."""
+        """PostgREST filter for the projects this host serves: those linked to our loop_managers
+        row via the `manager` relation. (projects.worker_manager, the old string column, was
+        dropped in favour of this relation.) Empty in single-project legacy mode. Requires a
+        registered manager row — host.run registers BEFORE discover so our id is known."""
         if not self.worker_manager:
             return {}                              # single-project legacy: no host filter
         mid = self._my_manager_id()
-        if mid:
-            return {"or": f"(manager.eq.{mid},and(manager.is.null,worker_manager.eq.{self.worker_manager}))"}
-        return {"worker_manager": f"eq.{self.worker_manager}"}
+        if not mid:
+            raise RuntimeError(
+                f"host {self.worker_manager!r} has no loop_managers row yet — register before "
+                "listing projects (host.run calls _register before discover)")
+        return {"manager": f"eq.{mid}"}
 
     def list_projects(self) -> list[ProjectRow]:
-        """The projects this host serves: rows in `projects` linked to our manager (relation,
-        falling back to the worker_manager string during migration)."""
+        """The projects this host serves: rows in `projects` linked to our manager relation."""
         rows = self._get(self.projects, {**self._project_filter(), "select": "*"})
         return [
             ProjectRow(
@@ -195,8 +196,8 @@ class PatchAdapter(BacklogAdapter):
         return workable
 
     def _served_project_ids(self) -> set[str] | None:
-        """The projects this Manager serves: rows in `projects` whose worker_manager is
-        ours. None = no filtering (worker_manager unset → serve every project, the old
+        """The projects this Manager serves: rows in `projects` linked to our manager relation.
+        None = no filtering (this host's worker_manager id unset → serve every project, the old
         single-project behaviour)."""
         if not self.worker_manager:
             return None
@@ -269,18 +270,6 @@ class PatchAdapter(BacklogAdapter):
         if rows:
             self._manager_id = rows[0]["id"]
         return self._manager_id
-
-    def link_projects_to_manager(self, manager_id: str) -> None:
-        """Backfill (additive migration): set the `manager` relation on this host's projects
-        that don't have it yet, matched by the worker_manager string. The string column stays,
-        so a Manager still on the old code keeps working."""
-        if not self.worker_manager:
-            return
-        self._patch(
-            self.projects,
-            {"worker_manager": f"eq.{self.worker_manager}", "manager": "is.null"},
-            {"manager": manager_id},
-        )
 
     def claim(self, card: Card, worker: Worker) -> bool:
         """Atomic claim: the assignee=is.null filter makes the PATCH match zero rows if
