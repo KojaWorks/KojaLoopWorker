@@ -169,9 +169,11 @@ enum ConfigStore {
     }
 
     /// The section name of a `[header]` line (nil if the line isn't a header). `[[array]]` tables
-    /// aren't used in this config, so they're treated as non-headers and left untouched.
+    /// aren't used in this config, so they're treated as non-headers and left untouched. Trims
+    /// newlines too so a CRLF-saved file's `[backlog]\r` still registers (else the whole file reads
+    /// as top-level and re-Save appends a duplicate section, corrupting the config).
     private static func sectionHeader(_ line: String) -> String? {
-        let t = line.trimmingCharacters(in: .whitespaces)
+        let t = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard t.hasPrefix("["), t.hasSuffix("]"), !t.hasPrefix("[[") else { return nil }
         return String(t.dropFirst().dropLast()).trimmingCharacters(in: .whitespaces)
     }
