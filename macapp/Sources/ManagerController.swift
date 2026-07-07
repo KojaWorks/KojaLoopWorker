@@ -24,6 +24,10 @@ final class ManagerController: ObservableObject {
     private let maxConsecutiveCrashes = 3
     private var stabilityTask: Task<Void, Never>?
     private var quitReply: (() -> Void)?
+    private var logHandle: FileHandle?
+
+    /// Raw Manager stdout+stderr (incl. Python tracebacks the structured filelog never sees).
+    private var outURL: URL { ConfigStore.dir.appendingPathComponent("state/manager.out") }
 
     init(loopworkerPath: String?) {
         self.loopworkerPath = loopworkerPath
@@ -44,11 +48,20 @@ final class ManagerController: ObservableObject {
         p.arguments = []                 // bare host mode; the Manager reads ~/.loopworker/config.toml
         // Run from ~/.loopworker so the Manager loads its .env (PATCH_PAT) + writes state/ there,
         // exactly like the systemd unit's WorkingDirectory.
-        try? FileManager.default.createDirectory(at: ConfigStore.dir, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: outURL.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
         p.currentDirectoryURL = ConfigStore.dir
         // Give the Manager the user's real login PATH so it can find tmux/git/claude to run
         // workers (a Finder-launched app's PATH is minimal — see LoginEnvironment).
         p.environment = LoginEnvironment.childEnvironment()
+        // Capture stdout+stderr to a file so a crash reason (a Python traceback goes to stderr,
+        // NOT the structured filelog) is never silently swallowed — the app must surface it.
+        FileManager.default.createFile(atPath: outURL.path, contents: nil)
+        logHandle = try? FileHandle(forWritingTo: outURL)
+        if let logHandle {
+            p.standardOutput = logHandle
+            p.standardError = logHandle
+        }
         p.terminationHandler = { [weak self] proc in
             let status = proc.terminationStatus
             Task { @MainActor in self?.handleExit(status: status) }
@@ -126,6 +139,18 @@ final class ManagerController: ObservableObject {
         reply?()
     }
 
+    /// The last few lines of the Manager's captured output — the exit reason to show a human.
+    private func lastOutput() -> String {
+        guard let data = try? Data(contentsOf: outURL),
+              let text = String(data: data, encoding: .utf8) else { return "See state/manager.out for details." }
+        let tail = text.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .suffix(3)
+            .joined(separator: " · ")
+        return tail.isEmpty ? "No output captured." : String(tail.prefix(300))
+    }
+
     /// After a launch, promote a dashboard-less run to .running at 10s, and clear the crash
     /// counter once the process has stayed up ~60s — so an isolated crash that self-heals doesn't
     /// count toward the give-up cap (only a genuine crash LOOP does). Cancelled if it exits first.
@@ -142,6 +167,8 @@ final class ManagerController: ObservableObject {
     private func handleExit(status: Int32) {
         process = nil
         stabilityTask?.cancel()
+        try? logHandle?.close()
+        logHandle = nil
         if quitReply != nil {          // we were quitting; the drain finished — release the app
             consecutiveCrashes = 0
             state = .stopped(reason: nil)
@@ -155,12 +182,13 @@ final class ManagerController: ObservableObject {
         }
         // Unexpected exit = crash. Relaunch with a bounded CONSECUTIVE-crash cap so a Manager that
         // dies on startup surfaces instead of hot-looping, while a one-off crash still self-heals.
+        let why = lastOutput()   // the real reason — surface it, don't swallow it
         consecutiveCrashes += 1
         guard consecutiveCrashes <= maxConsecutiveCrashes else {
-            state = .stopped(reason: "Manager crashed \(consecutiveCrashes)× in a row — run `loopworker doctor`, then Start")
+            state = .stopped(reason: "Manager crashed \(consecutiveCrashes)× in a row. \(why)")
             return
         }
-        state = .stopped(reason: "Manager exited unexpectedly (status \(status)); relaunching (\(consecutiveCrashes)/\(maxConsecutiveCrashes))…")
+        state = .stopped(reason: "Manager exited (status \(status); relaunch \(consecutiveCrashes)/\(maxConsecutiveCrashes)). \(why)")
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             if case .stopped = self.state { self.start() }
