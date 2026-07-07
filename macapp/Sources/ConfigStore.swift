@@ -8,6 +8,9 @@ enum Instance {
     static let apiBase = "https://api.patch.d.nevyn.dev"
     static let anonKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIiwiaWF0IjoxNzgxNjExMTIyLCJleHAiOjE5MzkyOTExMjJ9.qhtLW8SIb1z9L5l6ecarjDPAZMvE0BcG6Fdjc1cf80k"
     static let appBase = "https://patch.d.nevyn.dev"   // where to mint a token
+    // The shared "Managed Agent Loop" brief workers read, + card-link parts for the dashboard.
+    static let briefPage = "https://patch.d.nevyn.dev/app/b5b7a703-63eb-4159-8fc9-e2b4963586f5"
+    static let roadmapPageId = "ea3c65fb-9038-4dcb-8223-34dd395b2af8"
 }
 
 /// What the Connect sheet collects. Only `token` is really per-user; the rest have good defaults.
@@ -51,6 +54,9 @@ enum ConfigStore {
         [backlog]
         api_base = \(quoted(s.apiBase))
         anon_key = \(quoted(s.anonKey))
+        app_base = \(quoted(Instance.appBase))
+        roadmap_page_id = \(quoted(Instance.roadmapPageId))
+        brief_page = \(quoted(Instance.briefPage))
         """
         try toml.write(to: configPath, atomically: true, encoding: .utf8)
         // The PAT lives in .env (read by the Manager's dotenv loader), not config.toml.
