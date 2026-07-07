@@ -35,6 +35,13 @@ enum LoopWorkerLocator {
            FileManager.default.isExecutableFile(atPath: override) {
             return override
         }
+        // Prefer the frozen Manager bundled in the app (Resources/loopworker) — this is what
+        // makes "update the app" == "update the Manager". Falls through to PATH in dev builds
+        // that haven't run freeze-manager.sh.
+        if let bundled = Bundle.main.url(forResource: "loopworker", withExtension: nil)?.path,
+           FileManager.default.isExecutableFile(atPath: bundled) {
+            return bundled
+        }
         // `which` under a login shell so it sees the user's real PATH (pipx/homebrew).
         for shell in ["/bin/zsh", "/bin/bash"] {
             guard FileManager.default.isExecutableFile(atPath: shell) else { continue }

@@ -27,3 +27,14 @@ targets:
       - path: Sources
     # Sparkle is added on demand (see macapp/README.md) — kept out of the default spec so a
     # fresh checkout builds fully offline. The Sparkle code is guarded by #if canImport(Sparkle).
+    postBuildScripts:
+      # Freeze the Python Manager and drop it into Resources/loopworker, so the app is
+      # self-contained — it runs with no `loopworker` installed on the user's machine.
+      # freeze-manager.sh is idempotent (skips the rebuild when the binary is already fresh).
+      - name: Bundle frozen Manager
+        basedOnDependencyAnalysis: false
+        script: |
+          "$PROJECT_DIR/freeze-manager.sh"
+          dest="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH"
+          mkdir -p "$dest"
+          cp -f "$PROJECT_DIR/build/manager/loopworker" "$dest/loopworker"
