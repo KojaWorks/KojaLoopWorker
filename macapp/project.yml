@@ -31,6 +31,9 @@ settings:
     # Agent app: no Dock icon, lives in the menu bar only.
     INFOPLIST_KEY_LSUIElement: YES
     INFOPLIST_KEY_NSHumanReadableCopyright: "MIT"
+    # App/Dock icon (shown once SetupWindowController flips activation to .regular). The
+    # PNG ladder in Assets.xcassets is generated from AppIcon.svg by generate-appicon.sh.
+    ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
 packages:
   Sparkle:
     url: https://github.com/sparkle-project/Sparkle
@@ -41,6 +44,7 @@ targets:
     platform: macOS
     sources:
       - path: Sources
+      - path: Assets.xcassets
     # Sparkle drives auto-update (Check for Updates + scheduled background checks). The Swift code
     # is guarded by #if canImport(Sparkle), so removing this dependency still builds; the release
     # pipeline signs Sparkle's embedded helpers inside-out (see sign-and-notarize.sh).
