@@ -9,6 +9,7 @@ from loopworker.readiness import (
     check_all,
     check_backlog,
     check_claude,
+    check_config,
     check_engine,
     check_tool,
 )
@@ -125,9 +126,12 @@ def test_check_all_covers_every_dimension(monkeypatch):
         api_base = "https://api.example"
         engine_probe_command = "docker ps"
         engine_start_command = "orb start"
+        brief_page = "https://p/app/x"
+        app_base = "https://p"
+        roadmap_page_id = "abc"
 
     checks = check_all(Cfg(), runner=_ok, http_probe=lambda url: 200)
-    assert {c.name for c in checks} == {"claude", "engine", "tmux", "git", "backlog"}
+    assert {c.name for c in checks} == {"claude", "engine", "tmux", "git", "backlog", "config"}
     assert all(c.ok for c in checks)
     assert all(isinstance(c, Check) for c in checks)
 
@@ -137,6 +141,28 @@ def test_check_all_without_config_still_runs_and_flags_backlog(monkeypatch):
     checks = {c.name: c for c in check_all(None, runner=_ok, http_probe=lambda url: 200)}
     assert not checks["backlog"].ok            # no api_base
     assert checks["claude"].ok and checks["git"].ok
+    assert "config" not in checks              # no config → don't double up on backlog's failure
+
+
+def test_config_complete_is_ok():
+    class Cfg:
+        brief_page = "https://p/app/x"
+        app_base = "https://p"
+        roadmap_page_id = "abc"
+    assert check_config(Cfg()).ok
+
+
+def test_config_missing_brief_is_recommended_warning():
+    # The exact scar: the Mac app once wrote a config without brief_page, so workers ran
+    # with no generic loop protocol and the only clue was a log line nobody reads. It must
+    # surface as a non-blocking (recommended) check naming what's missing, with a remedy.
+    class Cfg:
+        brief_page = ""
+        app_base = "https://p"
+        roadmap_page_id = "abc"
+    c = check_config(Cfg())
+    assert not c.ok and c.required is False
+    assert "brief_page" in c.detail and c.remedy
 
 
 def test_engine_is_recommended_not_required(monkeypatch):

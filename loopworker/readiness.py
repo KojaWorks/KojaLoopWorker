@@ -124,6 +124,22 @@ def check_backlog(api_base: str | None, probe: HttpProbe = _default_http_probe) 
     return Check("backlog", True, f"reachable (HTTP {code})")
 
 
+def check_config(config) -> Check:
+    """Host-config completeness for the keys that silently DEGRADE the loop when absent
+    rather than block it: brief_page (workers lose the shared generic loop protocol) and
+    app_base/roadmap_page_id (the dashboard's ~NNN card links fall back to plain text).
+    Recommended, not required — the Manager still runs. It lives here because the Manager
+    only whispers these to the log at startup, and 'nobody reads the console of the app':
+    the readiness panel is where a config gap becomes visible and actionable."""
+    missing = [k for k in ("brief_page", "app_base", "roadmap_page_id")
+               if not getattr(config, k, "")]
+    if not missing:
+        return Check("config", True, "brief + dashboard links set")
+    return Check("config", False, f"missing [backlog]: {', '.join(missing)}",
+                 "re-run onboarding, or add them under [backlog] in ~/.loopworker/config.toml",
+                 required=False)
+
+
 def check_all(config=None, *, runner: Runner = _default_runner,
               http_probe: HttpProbe = _default_http_probe) -> list[Check]:
     """The full sweep. `config` is a HostConfig (or None when there isn't one yet — then the
@@ -134,10 +150,15 @@ def check_all(config=None, *, runner: Runner = _default_runner,
     engine = check_engine(probe, start, runner)
     engine.required = False  # recommended, not required: a project that provisions no container
     #                          stack (e.g. a native/Xcode build) runs fine without one.
-    return [
+    checks = [
         check_claude(runner),
         engine,
         check_tool("tmux", "tmux", "install tmux (`brew install tmux` / `apt install tmux`)"),
         check_tool("git", "git", "install git"),
         check_backlog(api_base, http_probe),
     ]
+    # Config-completeness only matters once a config EXISTS; with none, the backlog check
+    # above already reports the real problem (unconfigured → onboarding), so don't double up.
+    if config is not None:
+        checks.append(check_config(config))
+    return checks
