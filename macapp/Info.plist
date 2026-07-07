@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Partial Info.plist: the Sparkle auto-update keys only. Xcode still GENERATE_INFOPLIST_FILEs the
+     rest (CFBundle*, LSUIElement, …) and merges the INFOPLIST_KEY_* build settings on top of this
+     base. SUPublicEDKey is the PUBLIC half of the release signing key (private seed lives only in the
+     SPARKLE_ED_PRIVATE_KEY CI secret); the feed is served off GitHub Releases (latest/download). -->
+<plist version="1.0">
+<dict>
+    <key>SUFeedURL</key>
+    <string>https://github.com/KojaWorks/KojaLoopWorker/releases/latest/download/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>nKNpUmSz/rO25ntjBMNvMEVebO/sXic6as2S19MKDWg=</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+</dict>
+</plist>

@@ -1,9 +1,10 @@
 name: Release
 
-# Phase A of the release pipeline: a tag (or a manual dispatch) builds the Mac app with the
-# Manager frozen in, signs it (Developer ID, hardened runtime), notarizes + staples, and uploads
-# the signed .zip as a workflow artifact. Phase B adds the Sparkle appcast + a public publish
-# target once the open-source-vs-raheth hosting decision lands.
+# The release pipeline: a tag (or a manual dispatch) builds the Mac app with the Manager frozen in,
+# signs it (Developer ID, hardened runtime), notarizes + staples, then (Phase B) generates an
+# EdDSA-signed Sparkle appcast and publishes both to a GitHub Release. The app's SUFeedURL points at
+# releases/latest/download/appcast.xml, so a shipped build auto-updates itself. The signed .zip is
+# also kept as a workflow artifact (and is the only output on a dry run).
 #
 # Signing is keychain-INDEPENDENT: the job builds a throwaway keychain from a .p12 secret and
 # notarizes with the ASC API key directly. So it does NOT touch (and doesn't depend on) miquon's
@@ -13,6 +14,9 @@ name: Release
 #   MACOS_NOTARY_KEY_P8_BASE64  base64 of the ASC API key .p8 (AuthKey_*.p8)
 #   MACOS_NOTARY_KEY_ID       the key id (e.g. S4RCNDTD37)
 #   MACOS_NOTARY_ISSUER_ID    the issuer uuid
+#   SPARKLE_ED_PRIVATE_KEY    base64 of the 32-byte Ed25519 seed that signs the appcast; its PUBLIC
+#                             half is SUPublicEDKey in macapp/Info.plist. Keep it STABLE — rotating
+#                             it makes already-installed apps reject every future update.
 
 on:
   push:
@@ -30,6 +34,9 @@ on:
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false   # never cancel an in-flight notarization
+
+permissions:
+  contents: write   # create the GitHub Release + upload the zip/appcast (GITHUB_TOKEN)
 
 jobs:
   release:
@@ -104,6 +111,55 @@ jobs:
           name: KojaLoopsManager-${{ steps.v.outputs.marketing }}
           path: macapp/build/release-dd/LoopWorker.zip
           if-no-files-found: error
+
+      # Phase B: appcast + publish. Skipped on a dry run (no notarized zip to ship).
+      - name: Generate Sparkle appcast
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+          VERSION: ${{ steps.v.outputs.marketing }}
+        run: |
+          set -euo pipefail
+          [ -n "${SPARKLE_ED_PRIVATE_KEY:-}" ] || { echo "::error::secret SPARKLE_ED_PRIVATE_KEY is not set — see release.yml header"; exit 1; }
+          # Sparkle's generate_appcast, pinned to the SPM framework version; --ed-key-file - reads the
+          # private seed from stdin (keychain-independent). It reads each archive's version from the
+          # .app's Info.plist inside the zip, so the version we injected at build drives the feed.
+          tools="$RUNNER_TEMP/sparkle-tools"
+          mkdir -p "$tools"
+          curl -fsSL "https://github.com/sparkle-project/Sparkle/releases/download/2.9.4/Sparkle-2.9.4.tar.xz" \
+            | tar -xJ -C "$tools" bin/generate_appcast
+          out="$RUNNER_TEMP/appcast"
+          mkdir -p "$out"
+          cp macapp/build/release-dd/LoopWorker.zip "$out/LoopWorker.zip"
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | "$tools/bin/generate_appcast" \
+            --ed-key-file - \
+            --download-url-prefix "https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/" \
+            --link "https://github.com/${GITHUB_REPOSITORY}" \
+            -o "$out/appcast.xml" \
+            "$out"
+          echo "RELEASE_ZIP=$out/LoopWorker.zip" >> "$GITHUB_ENV"
+          echo "APPCAST=$out/appcast.xml" >> "$GITHUB_ENV"
+          echo "----- appcast.xml -----"; cat "$out/appcast.xml"
+
+      - name: Publish GitHub Release
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.v.outputs.marketing }}
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"   # gh lives in Homebrew on the runner
+          tag="v${VERSION}"
+          # Idempotent: create the release (tagging the built commit) or refresh its assets in place,
+          # so re-dispatching the same version updates rather than errors. --latest keeps
+          # releases/latest/download/appcast.xml pointing here, which is what SUFeedURL resolves.
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$RELEASE_ZIP" "$APPCAST" --clobber
+          else
+            gh release create "$tag" "$RELEASE_ZIP" "$APPCAST" \
+              --target "$GITHUB_SHA" --title "$tag" --generate-notes --latest
+          fi
+          echo "Published $tag → https://github.com/${GITHUB_REPOSITORY}/releases/tag/$tag"
 
       - name: Clean up signing keychain
         if: always()

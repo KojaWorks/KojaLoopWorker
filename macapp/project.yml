@@ -15,6 +15,9 @@ settings:
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
     GENERATE_INFOPLIST_FILE: YES
+    # Partial base plist for keys Xcode won't generate (the Sparkle SU* keys); generated CFBundle*
+    # + INFOPLIST_KEY_* still merge on top. See Info.plist.
+    INFOPLIST_FILE: Info.plist
     PRODUCT_BUNDLE_IDENTIFIER: works.koja.loopworker
     # User-facing name (menu-bar menu, About, Finder). The target/bundle stay "LoopWorker".
     INFOPLIST_KEY_CFBundleDisplayName: "Koja Loops Manager"
@@ -24,14 +27,21 @@ settings:
     # Agent app: no Dock icon, lives in the menu bar only.
     INFOPLIST_KEY_LSUIElement: YES
     INFOPLIST_KEY_NSHumanReadableCopyright: "MIT"
+packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: "2.9.4"
 targets:
   LoopWorker:
     type: application
     platform: macOS
     sources:
       - path: Sources
-    # Sparkle is added on demand (see macapp/README.md) — kept out of the default spec so a
-    # fresh checkout builds fully offline. The Sparkle code is guarded by #if canImport(Sparkle).
+    # Sparkle drives auto-update (Check for Updates + scheduled background checks). The Swift code
+    # is guarded by #if canImport(Sparkle), so removing this dependency still builds; the release
+    # pipeline signs Sparkle's embedded helpers inside-out (see sign-and-notarize.sh).
+    dependencies:
+      - package: Sparkle
     postBuildScripts:
       # Freeze the Python Manager and drop it into Resources/loopworker, so the app is
       # self-contained — it runs with no `loopworker` installed on the user's machine.
