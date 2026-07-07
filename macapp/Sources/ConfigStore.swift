@@ -44,12 +44,15 @@ enum ConfigStore {
             .lowercased()
     }
 
-    /// Parse the fields the Connect form edits back out of an existing config.toml. Re-onboarding
-    /// ("Replace token…") prefills these so it can't silently reset a customized install to defaults;
-    /// `write` then round-trips the same values. Returns nil when there's no config yet (first-time
-    /// onboarding keeps the defaults). Best-effort: a key it can't find keeps its default, so a
-    /// partial or hand-edited file still round-trips whatever it does have. `token` stays empty — the
-    /// PAT lives in the Keychain and the user is pasting a fresh one.
+    /// Prefill the user's Advanced fields (worker_manager / clones_dir / max_slots) out of an existing
+    /// config.toml so re-onboarding ("Replace token…") can't silently reset them to defaults — the ~858
+    /// bug. `write` then round-trips them. Returns nil when there's no config yet (first-time onboarding
+    /// keeps the defaults). Deliberately does NOT read back the backlog connection (`api_base`/`anon_key`):
+    /// those are embedded build constants, so leaving them at their defaults lets a new build heal a
+    /// rotated key — the same reason `write` always re-emits `app_base`/`brief_page` from `Instance`.
+    /// Scope is only the keys the form models; other keys the app never writes aren't preserved (see
+    /// ~858 follow-up). Best-effort per key: one it can't parse keeps its default. `token` stays empty —
+    /// the PAT lives in the Keychain and the user is pasting a fresh one.
     static func read() -> ConnectSettings? {
         guard let text = try? String(contentsOf: configPath, encoding: .utf8) else { return nil }
         var values: [String: String] = [:]
@@ -63,8 +66,6 @@ enum ConfigStore {
         if let v = values["worker_manager"] { s.workerManager = v }
         if let v = values["clones_dir"] { s.clonesDir = v }
         if let v = values["max_slots"], let n = Int(v) { s.maxSlots = n }
-        if let v = values["api_base"] { s.apiBase = v }
-        if let v = values["anon_key"] { s.anonKey = v }
         return s
     }
 
