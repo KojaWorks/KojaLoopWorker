@@ -131,13 +131,30 @@ private struct SlotRow: View {
     let slot: SlotSnapshot
 
     var body: some View {
-        HStack(spacing: 6) {
-            Circle().fill(color).frame(width: 7, height: 7)
-            Text("slot \(slot.index)").font(.caption).monospaced()
-            Text(slot.card.map { "~\($0)" } ?? "—").font(.caption).foregroundStyle(.secondary)
-            Text(slot.activity ?? slot.state).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-            Spacer()
+        VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 6) {
+                Circle().fill(color).frame(width: 7, height: 7)
+                Text("slot \(slot.index)").font(.caption).monospaced()
+                Text(slot.card.map { "~\($0)" } ?? "—").font(.caption).foregroundStyle(.secondary)
+                Text(slot.activity ?? slot.state).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Spacer()
+            }
+            // Persisted failure reason: survives the retry loop that overwrites `activity`,
+            // so a slot stuck re-provisioning still shows WHY it last failed.
+            if let err = slot.lastError {
+                Text(failureText(err)).font(.caption2).foregroundStyle(.red).lineLimit(2)
+                    .padding(.leading, 13)
+            }
         }
+    }
+
+    private func failureText(_ err: String) -> String {
+        var s = "⚠ \(err)"
+        if let n = slot.retryCount, n > 0 { s += " · retry \(n)" }
+        if let secs = slot.retryIn {
+            s += secs >= 60 ? " · next in \(Int(secs / 60))m" : " · next in \(Int(secs))s"
+        }
+        return s
     }
 
     private var color: Color {

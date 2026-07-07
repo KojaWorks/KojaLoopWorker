@@ -112,6 +112,46 @@ def test_revive_broken_hot_failure_backs_off_before_retrying(tmp_path, monkeypat
     assert hot.revive_broken() == 0 and len(attempts) == 2  # retried once the backoff elapsed
 
 
+def test_last_error_survives_the_retry_loop(tmp_path, monkeypatch):
+    # ~844: the retry's live "re-provisioning" activity used to BURY the failure reason.
+    # last_error is a separate field, so the reason stays visible while activity shows the step.
+    clock = [1000.0]
+    hot = _hot_pool(tmp_path, monkeypatch)
+    hot._clock = lambda: clock[0]
+    during: dict[str, str | None] = {}
+
+    def boom(s):
+        during["activity"] = s.activity              # the live step shown on the dashboard
+        during["last_error"] = s.last_error          # still holds the reason mid-retry
+        raise SlotError("provision.sh failed (rc=1)")
+    monkeypatch.setattr(hot, "_provision", boom)
+
+    slot = hot.slots[0]
+    slot.mark_broken("provision.sh failed (rc=1)")
+    assert slot.last_error == "provision.sh failed (rc=1)"
+    assert "provision" not in slot.activity          # the reason isn't smuggled into activity...
+
+    assert hot.revive_broken() == 0                  # a retry ran and failed
+    assert during["activity"] == "re-provisioning (retry after earlier failure)"
+    assert during["last_error"] == "provision.sh failed (rc=1)"   # ...it persisted through the retry
+    assert slot.retry_count == 1
+    assert hot.retry_in(slot) == pytest.approx(180.0)             # next-retry surfaced for the UI
+
+
+def test_reprovision_success_clears_the_failure_record(tmp_path, monkeypatch):
+    # A clean re-provision heals the slot: last_error and the retry count go back to empty,
+    # so the dashboard stops showing a stale reason once it's actually working again.
+    logs: list[str] = []
+    hot = _pool(tmp_path, "true\n", logs)            # real _provision, provision.sh exits 0
+    monkeypatch.setattr(hot, "_ensure_worktree", lambda s: None)
+    slot = hot.slots[0]
+    slot.mark_broken("docker down")
+    slot.retry_count = 3
+    assert hot.revive_broken() == 1
+    assert slot.state == SlotState.IDLE
+    assert slot.last_error is None and slot.retry_count == 0
+
+
 class _FakeEngine:
     """Stands in for EngineRecovery — records recover() calls, returns a scripted result."""
     def __init__(self, result=True):

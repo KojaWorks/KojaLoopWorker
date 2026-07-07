@@ -161,7 +161,10 @@ def _cmd_status(argv: list[str]) -> int:
             print(f"\n{p.get('project')} · {'hot' if p.get('hot') else 'cold'}")
         for s in p.get("slots", []):
             card = f"~{s['card']}" if s.get("card") else "—"
-            print(f"  slot {s['index']}: {s['state']:6} {card:6} {s.get('activity') or ''}")
+            line = f"  slot {s['index']}: {s['state']:6} {card:6} {s.get('activity') or ''}"
+            if s.get("last_error"):
+                line += f"  ⚠ {s['last_error']}"
+            print(line)
     return 0
 
 

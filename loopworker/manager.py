@@ -268,7 +268,8 @@ class Manager:
                 self._broken_notified.add(key)
                 self._notify(
                     f"slot-broken:{self.manifest.project_name}:{slot.index}",
-                    f"LoopWorker: {self.manifest.project_name} slot {slot.index} is BROKEN — {slot.activity}",
+                    f"LoopWorker: {self.manifest.project_name} slot {slot.index} is BROKEN — "
+                    f"{slot.last_error or slot.activity}",
                 )
             elif not broken:
                 self._broken_notified.discard(key)
@@ -324,7 +325,7 @@ class Manager:
             # down so a failed acquire never leaks a running stack (hot keeps its warm one).
             if not self.pool.hot:
                 self.pool.teardown_slot(slot)
-            slot.state = SlotState.BROKEN
+            slot.mark_broken(str(e))
             try:
                 self.adapter.release(card)
             except Exception:
@@ -498,6 +499,11 @@ class Manager:
                     "index": s.index,
                     "state": s.state.value,
                     "activity": s.activity,
+                    # WHY the slot last broke, kept out of `activity` so the retry loop's live
+                    # "provisioning" line can't bury it; plus how many retries and when the next.
+                    "last_error": s.last_error,
+                    "retry_count": s.retry_count,
+                    "retry_in": self.pool.retry_in(s),
                     # live one-liner of what the worker is thinking/doing, scraped
                     # from its tmux pane (only while a worker holds the slot)
                     "thinking": tmux.summary_line(s.session) if (s.session and s.state == SlotState.BUSY) else "",
