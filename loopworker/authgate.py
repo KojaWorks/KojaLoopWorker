@@ -9,7 +9,9 @@ catches a dead credential before we ever launch a worker on it.
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
+import threading
 import time
 from collections.abc import Callable
 
@@ -30,7 +32,7 @@ class AuthGate:
         *,
         enabled: bool = False,
         cmd: tuple[str, ...] = _DEFAULT_CMD,
-        timeout_seconds: float = 20.0,
+        timeout_seconds: float = 60.0,
         ttl_seconds: float = 180.0,
         reclaim_backoff_base_seconds: float = 30.0,
         reclaim_backoff_cap_seconds: float = 600.0,
@@ -87,21 +89,41 @@ class AuthGate:
         # _write_launch) so a false positive here is never confused with a real
         # credential problem.
         env.pop("USER", None)
+        # Own process group + off-thread pipe read + killpg on timeout — the same shape as
+        # slots._run_script, and for the same scar: `claude` leaves a grandchild holding the
+        # stdout pipe, so subprocess.run(capture_output=True)'s post-timeout communicate()
+        # blocks in read() FOREVER, defeating its own timeout and wedging the whole reconcile
+        # loop (one host-wide gate → the entire Manager freezes on a single hung preflight).
+        # proc.wait(timeout) always returns control; killpg reaps the tree; the reader is a
+        # daemon we never block on.
         try:
-            r = subprocess.run(
-                self._cmd, capture_output=True, text=True, timeout=self._timeout, env=env
+            proc = subprocess.Popen(
+                self._cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, env=env, start_new_session=True,
             )
-        except subprocess.TimeoutExpired:
-            return False, "preflight timed out"
         except Exception as e:
-            # A preflight check must never itself crash the reconcile loop (host mode
-            # shares one gate across every project) — treat any failure to even run
-            # the command (missing binary, a permissions error, ...) as "not ok".
+            # A preflight check must never itself crash the reconcile loop — treat any failure
+            # to even launch (missing binary, permissions, ...) as "not ok".
             return False, f"preflight failed to run: {e!r}"
-        if r.returncode != 0:
-            detail = (r.stderr or r.stdout or "").strip().splitlines()
-            return False, (detail[-1] if detail else f"exit {r.returncode}")
-        return True, ""
+        out: list[str] = []
+        reader = threading.Thread(
+            target=lambda: out.extend(proc.stdout or []), daemon=True, name="authgate-pump"
+        )
+        reader.start()
+        try:
+            rc = proc.wait(timeout=self._timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)  # whole group: claude spawns a tree
+            except (ProcessLookupError, PermissionError):
+                pass
+            proc.wait()
+            return False, "preflight timed out"
+        if rc == 0:
+            return True, ""  # success needs no output — don't wait on a maybe-orphaned pipe
+        reader.join(timeout=2)  # only a FAILURE needs its reason; EOF follows a clean exit
+        detail = "".join(out).strip().splitlines()
+        return False, (detail[-1] if detail else f"exit {rc}")
 
     def note_auth_reclaim(self) -> None:
         """Record that a worker was reclaimed off claude's login prompt. Bumps the
