@@ -34,7 +34,7 @@ private struct Header: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("LoopWorker").font(.headline)
+                Text("Koja Loops Manager").font(.headline)
                 Text(subtitle).font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
