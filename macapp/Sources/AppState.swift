@@ -24,6 +24,7 @@ final class AppState: NSObject, ObservableObject, NSApplicationDelegate {
     private var lastDoctor = Date.distantPast
     private var healthFailures = 0
     private var autoOpenedSetup = false                       // only auto-open the Setup window once per launch
+    private var autoStarted = false                           // only auto-start the Manager once per launch
     private var cancellables = Set<AnyCancellable>()
 
     private let healthEverySeconds: TimeInterval = 3
@@ -142,6 +143,7 @@ final class AppState: NSObject, ObservableObject, NSApplicationDelegate {
             doctorNote = "readiness check failed: \(error.localizedDescription)"
         }
         maybeAutoOpenSetup()
+        maybeAutoStart()
     }
 
     /// Open the Setup window once when a REQUIRED check fails on an otherwise-configured host — so
@@ -152,6 +154,18 @@ final class AppState: NSObject, ObservableObject, NSApplicationDelegate {
             autoOpenedSetup = true
             openSetup()
         }
+    }
+
+    /// Auto-start the Manager on launch if it was running when the app last quit — the common case
+    /// (it was running) then needs zero clicks. Fires at most once per launch, and only once
+    /// readiness passes: a required-check failure opens Setup instead (see maybeAutoOpenSetup), so
+    /// we never hot-loop a Manager that can't run. Retries on later doctor sweeps until it passes.
+    private func maybeAutoStart() {
+        guard !autoStarted, ManagerController.wasRunning else { return }
+        guard ConfigStore.isConfigured, loopworkerFound, doctor?.ok == true else { return }
+        guard case .stopped = controller.state else { return }
+        autoStarted = true
+        controller.startFresh()
     }
 
     // Fleet state the menu-bar icon draws from (see MenuBarIcon).

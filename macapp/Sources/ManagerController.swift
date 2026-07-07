@@ -15,6 +15,16 @@ final class ManagerController: ObservableObject {
         case draining
     }
 
+    /// Persisted across launches: was the Manager meant to be running when we last settled? The app
+    /// auto-starts on next launch if so (see AppState.maybeAutoStart). Set when a start succeeds,
+    /// cleared by a user-initiated Stop — NOT by a crash (crash-recovery relaunches anyway) or by
+    /// App-quit (quitting while running should resume on relaunch, which is the whole point).
+    private static let wasRunningKey = "managerWasRunning"
+    static var wasRunning: Bool {
+        get { UserDefaults.standard.bool(forKey: wasRunningKey) }
+        set { UserDefaults.standard.set(newValue, forKey: wasRunningKey) }
+    }
+
     @Published private(set) var state: RunState = .stopped(reason: nil)
     /// True while a drain was started by App-quit (vs a plain Stop) — so the UI can say "Quit now"
     /// instead of "Stop now" and mean it: force-stopping now completes the quit.
@@ -78,6 +88,7 @@ final class ManagerController: ObservableObject {
             try p.run()
             process = p
             state = .starting            // promoted to .running by markRunning() on first /health
+            Self.wasRunning = true       // remember it was meant to run, so a relaunch resumes it
             scheduleStabilityChecks()
         } catch {
             state = .stopped(reason: "failed to launch: \(error.localizedDescription)")
@@ -99,6 +110,7 @@ final class ManagerController: ObservableObject {
     func drain() {
         guard isRunning, let pid = process?.processIdentifier else { return }
         intentionalStop = true
+        Self.wasRunning = false          // user stopped it on purpose — don't auto-start next launch
         state = .draining
         kill(pid, SIGINT)
     }
@@ -107,6 +119,9 @@ final class ManagerController: ObservableObject {
     func forceStop() {
         guard isRunning, let pid = process?.processIdentifier else { return }
         intentionalStop = true
+        // Clear only for a real Stop, not the "Quit now" escalation of a quit-drain (isQuitting) —
+        // quitting while running should still resume on next launch.
+        if !isQuitting { Self.wasRunning = false }
         kill(pid, SIGTERM)
     }
 
