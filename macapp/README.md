@@ -65,11 +65,28 @@ that needs a logged-in desktop session and a human. To verify manually:
    press Start) the Manager's slots, matching `http://127.0.0.1:8787`.
 3. Exercise Start → Stop (drain) → Force stop and confirm the Manager reacts (watch the log).
 
+## Release (signed + notarized)
+
+```bash
+cd macapp && ./sign-and-notarize.sh
+```
+
+One command: builds Release, signs the embedded frozen Manager **then** the app with the
+Developer ID cert + hardened runtime, notarizes (waits for Apple), staples, and runs a
+Gatekeeper assessment. The result is a `.app`/`.zip` that runs on any Mac with no warning.
+
+Needs, once per build host: a *Developer ID Application* cert in the login keychain, and a
+notarytool keychain profile named `koja-notary`
+(`xcrun notarytool store-credentials koja-notary --key <p8> --key-id <id> --issuer <uuid>`).
+Override the identity/profile with `LOOPWORKER_SIGN_IDENTITY` / `LOOPWORKER_NOTARY_PROFILE`.
+The embedded Manager is signed with `loopworker.entitlements` (it relaxes library validation —
+PyInstaller extracts + `dlopen`s CPython's dylibs at runtime, which the hardened runtime would
+otherwise reject). Distribution is Developer ID, **not** the App Store/TestFlight — this app
+can't be sandboxed (it spawns tmux/claude/git/docker).
+
 ## Not done here (own cards — see the distribution epic)
 
 - **Sparkle**: add the SPM package (`https://github.com/sparkle-project/Sparkle`) to `project.yml`;
-  the code activates via `#if canImport(Sparkle)`. Needs an appcast (`SUFeedURL`) + hosting.
-- **Developer ID signing + notarization**: required before distributing outside your own machine.
-  Note: the embedded frozen Manager (`Resources/loopworker`) is a Mach-O that must be signed too
-  (sign it before the outer `.app`, then notarize the whole bundle).
+  the code activates via `#if canImport(Sparkle)`. Needs an appcast (`SUFeedURL`) + hosting
+  (GitHub Releases works — no server).
 - **Login-item toggle** and **settings UI** (dashboard port, loopworker path).
