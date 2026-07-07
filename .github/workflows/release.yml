@@ -1,10 +1,15 @@
 name: Release
 
-# The release pipeline: a tag (or a manual dispatch) builds the Mac app with the Manager frozen in,
-# signs it (Developer ID, hardened runtime), notarizes + staples, then (Phase B) generates an
-# EdDSA-signed Sparkle appcast and publishes both to a GitHub Release. The app's SUFeedURL points at
-# releases/latest/download/appcast.xml, so a shipped build auto-updates itself. The signed .zip is
-# also kept as a workflow artifact (and is the only output on a dry run).
+# The release pipeline builds the Mac app with the Manager frozen in, signs it (Developer ID,
+# hardened runtime), notarizes + staples, generates an EdDSA-signed Sparkle appcast, and publishes
+# both to a GitHub Release. The app's SUFeedURL points at releases/latest/download/appcast.xml, so a
+# shipped build auto-updates itself. The signed .zip is also kept as a workflow artifact (and is the
+# only output on a dry run).
+#
+# Triggers: a twice-daily SCHEDULE auto-publishes a PATCH bump when main has moved since the last
+# release (so merges reach installed apps within ~12h, without a release per PR); a workflow_dispatch
+# with a version cuts a minor/major bump (or dry-runs); a v* tag push also releases. The "Decide"
+# step computes the version + whether there's anything to ship.
 #
 # Signing is keychain-INDEPENDENT: the job builds a throwaway keychain from a .p12 secret and
 # notarizes with the ASC API key directly. So it does NOT touch (and doesn't depend on) miquon's
@@ -19,15 +24,20 @@ name: Release
 #                             it makes already-installed apps reject every future update.
 
 on:
+  schedule:
+    # Twice daily (09:00 + 21:00 UTC): if main moved since the last release, auto-publish a PATCH
+    # bump. So changes reach installed apps within ~12h without a release per merge. Minor/major
+    # bumps are a manual workflow_dispatch with a version.
+    - cron: "0 9,21 * * *"
   push:
     tags: ["v*"]
   workflow_dispatch:
     inputs:
       version:
-        description: "Marketing version (e.g. 0.2.0). Required when dispatched off a branch."
+        description: "Marketing version (e.g. 0.2.0) for a minor/major bump. Blank = auto patch-bump."
         required: false
       dry_run:
-        description: "Sign but skip notarization (fast keychain/sign check)"
+        description: "Sign but skip notarization + publish (fast keychain/sign check)"
         type: boolean
         default: false
 
@@ -43,24 +53,49 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64]   # miquon
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need tags + history to diff main against the last release
 
-      - name: Derive version
+      - name: Decide version + whether to release
         id: v
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
-          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            v="${GITHUB_REF_NAME#v}"
-          elif [ -n "$INPUT_VERSION" ]; then
-            v="$INPUT_VERSION"
-          else
-            echo "::error::dispatched off a branch with no 'version' input"; exit 1
-          fi
-          echo "marketing=$v" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          # Git tags (the published releases) are the version source of truth, not project.yml.
+          last="$(gh release view --json tagName -q .tagName 2>/dev/null || true)"
+          autobump() {   # next PATCH after the last release; bootstrap from project.yml if none exist
+            if [ -z "$last" ]; then
+              grep -m1 'MARKETING_VERSION:' macapp/project.yml | tr -cd '0-9.'
+              return
+            fi
+            local v="${last#v}"; local IFS=.; set -- $v
+            echo "${1:-0}.${2:-0}.$(( ${3:-0} + 1 ))"
+          }
+          release=true
+          case "$GITHUB_EVENT_NAME" in
+            push)               ver="${GITHUB_REF_NAME#v}" ;;                  # a v* tag was pushed
+            workflow_dispatch)  ver="${INPUT_VERSION:-$(autobump)}" ;;         # input wins; else patch-bump
+            schedule)
+              ver="$(autobump)"
+              # Only cut a scheduled release if main actually moved since the last one.
+              if [ -n "$last" ] && [ "$(git rev-list "${last}..HEAD" --count 2>/dev/null || echo 1)" = "0" ]; then
+                release=false
+              fi ;;
+          esac
+          echo "marketing=$ver" >> "$GITHUB_OUTPUT"
           echo "build=$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
-          echo "Building version $v (build $GITHUB_RUN_NUMBER)"
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+          if [ "$release" = "true" ]; then
+            echo "Releasing v$ver (build $GITHUB_RUN_NUMBER, event=$GITHUB_EVENT_NAME)"
+          else
+            echo "No changes since ${last:-<none>} — skipping this scheduled release."
+          fi
 
       - name: Set up a throwaway signing keychain
+        if: ${{ steps.v.outputs.release == 'true' }}
         env:
           CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
           CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
@@ -88,6 +123,7 @@ jobs:
           security find-identity -v -p codesigning "$kc"
 
       - name: Build · sign · notarize · staple
+        if: ${{ steps.v.outputs.release == 'true' }}
         working-directory: macapp
         env:
           LOOPWORKER_MARKETING_VERSION: ${{ steps.v.outputs.marketing }}
@@ -106,6 +142,7 @@ jobs:
           ./sign-and-notarize.sh
 
       - name: Upload signed app artifact
+        if: ${{ steps.v.outputs.release == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: KojaLoopsManager-${{ steps.v.outputs.marketing }}
@@ -114,7 +151,7 @@ jobs:
 
       # Phase B: appcast + publish. Skipped on a dry run (no notarized zip to ship).
       - name: Generate Sparkle appcast
-        if: ${{ github.event.inputs.dry_run != 'true' }}
+        if: ${{ steps.v.outputs.release == 'true' && github.event.inputs.dry_run != 'true' }}
         env:
           SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
           VERSION: ${{ steps.v.outputs.marketing }}
@@ -148,7 +185,7 @@ jobs:
           echo "----- appcast.xml -----"; cat "$out/appcast.xml"
 
       - name: Publish GitHub Release
-        if: ${{ github.event.inputs.dry_run != 'true' }}
+        if: ${{ steps.v.outputs.release == 'true' && github.event.inputs.dry_run != 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.v.outputs.marketing }}
