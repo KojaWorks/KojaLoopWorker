@@ -158,7 +158,6 @@ private struct SetupCheckRow: View {
     // actually fix in place, by writing CLAUDE_CODE_OAUTH_TOKEN to .env).
     @State private var expanded = false
     @State private var token = ""
-    @State private var saving = false
     @State private var saveError: String?
 
     var body: some View {
@@ -212,9 +211,9 @@ private struct SetupCheckRow: View {
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
                 SecureField("paste token", text: $token).textFieldStyle(.roundedBorder)
-                Button(saving ? "Saving…" : "Save") { save() }
+                Button("Save") { save() }
                     .buttonStyle(.borderedProminent)
-                    .disabled(token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || saving)
+                    .disabled(token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             if let saveError {
                 Text(saveError).font(.caption).foregroundStyle(.red)
@@ -264,16 +263,13 @@ private struct SetupCheckRow: View {
     private func save() {
         let value = token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return }
-        saving = true; saveError = nil
-        Task {
-            do {
-                try ConfigStore.upsertEnvVar(key: "CLAUDE_CODE_OAUTH_TOKEN", value: value)
-                token = ""; expanded = false; saving = false
-                appState.runDoctorNow()   // re-check reads the fresh .env → claude flips green
-            } catch {
-                saveError = "Couldn't save token: \(error.localizedDescription)"
-                saving = false
-            }
+        saveError = nil
+        do {
+            try ConfigStore.upsertEnvVar(key: "CLAUDE_CODE_OAUTH_TOKEN", value: value)
+            token = ""; expanded = false
+            appState.runDoctorNow()   // re-check reads the fresh .env → claude flips green
+        } catch {
+            saveError = "Couldn't save token: \(error.localizedDescription)"
         }
     }
 }

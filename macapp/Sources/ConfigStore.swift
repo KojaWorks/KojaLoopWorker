@@ -90,6 +90,10 @@ enum ConfigStore {
         while let last = lines.last, last.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeLast() }
         lines.append("\(key)=\(value)")
         try (lines.joined(separator: "\n") + "\n").write(to: envPath, atomically: true, encoding: .utf8)
+        // A long-lived credential (the CLAUDE_CODE_OAUTH_TOKEN) sits here, so lock the file to the
+        // owner — the same posture that moved PATCH_PAT off plaintext .env into the Keychain. Surface
+        // a chmod failure rather than silently leaving a world-readable token on disk.
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: envPath.path)
     }
 
     /// True if a .env line assigns `key` (bare or `export key=`) — so the migration, the scrub, and
