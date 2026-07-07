@@ -44,6 +44,30 @@ enum ConfigStore {
             .lowercased()
     }
 
+    /// Parse the fields the Connect form edits back out of an existing config.toml. Re-onboarding
+    /// ("Replace token…") prefills these so it can't silently reset a customized install to defaults;
+    /// `write` then round-trips the same values. Returns nil when there's no config yet (first-time
+    /// onboarding keeps the defaults). Best-effort: a key it can't find keeps its default, so a
+    /// partial or hand-edited file still round-trips whatever it does have. `token` stays empty — the
+    /// PAT lives in the Keychain and the user is pasting a fresh one.
+    static func read() -> ConnectSettings? {
+        guard let text = try? String(contentsOf: configPath, encoding: .utf8) else { return nil }
+        var values: [String: String] = [:]
+        for raw in text.split(whereSeparator: \.isNewline) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            guard !line.hasPrefix("#"), let eq = line.firstIndex(of: "=") else { continue }
+            let key = line[..<eq].trimmingCharacters(in: .whitespaces)
+            values[key] = unquoted(line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces))
+        }
+        var s = ConnectSettings()
+        if let v = values["worker_manager"] { s.workerManager = v }
+        if let v = values["clones_dir"] { s.clonesDir = v }
+        if let v = values["max_slots"], let n = Int(v) { s.maxSlots = n }
+        if let v = values["api_base"] { s.apiBase = v }
+        if let v = values["anon_key"] { s.anonKey = v }
+        return s
+    }
+
     static func write(_ s: ConnectSettings) throws {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let toml = """
@@ -135,5 +159,13 @@ enum ConfigStore {
 
     private static func quoted(_ s: String) -> String {
         "\"" + s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
+    }
+
+    /// Inverse of `quoted` for reading config.toml back in: strip surrounding quotes and unescape.
+    /// A bare (unquoted) value — e.g. the numeric max_slots — is returned as-is.
+    private static func unquoted(_ s: String) -> String {
+        guard s.count >= 2, s.hasPrefix("\""), s.hasSuffix("\"") else { return s }
+        return String(s.dropFirst().dropLast())
+            .replacingOccurrences(of: "\\\"", with: "\"").replacingOccurrences(of: "\\\\", with: "\\")
     }
 }
