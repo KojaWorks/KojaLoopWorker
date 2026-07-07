@@ -99,11 +99,12 @@ def test_list_projects_maps_rows(adapter, monkeypatch):
     rows = [
         {"id": "p1", "name": "Patch", "repo": "git@x", "default_branch": "main",
          "slots": 3, "hot": True, "brief_ref": None, "weight": 2, "model": "opus",
-         "created_by": "owner"},
+         "manager": "m1", "created_by": "owner"},
         {"id": "p2", "name": "GitZ", "repo": None, "default_branch": None,
-         "slots": None, "hot": False, "brief_ref": "u", "created_by": "owner"},
+         "slots": None, "hot": False, "brief_ref": "u", "manager": "m1", "created_by": "owner"},
         {"id": "p3", "name": "Blank", "repo": None, "default_branch": None,
-         "slots": None, "hot": False, "brief_ref": None, "model": "", "created_by": "owner"},
+         "slots": None, "hot": False, "brief_ref": None, "model": "", "manager": "m1",
+         "created_by": "owner"},
     ]
     monkeypatch.setattr(adapter, "_get", lambda table, params: rows if table == adapter.projects else [])
     ps = adapter.list_projects()
@@ -114,6 +115,29 @@ def test_list_projects_maps_rows(adapter, monkeypatch):
     assert ps[1].weight == 1.0                                   # missing column -> default
     assert ps[0].model == "opus" and ps[1].model is None         # missing column -> None default
     assert ps[2].model is None                                   # blank select value -> None, not ""
+
+
+def test_list_projects_tolerates_relation_cardinality(adapter, monkeypatch):
+    # projects.manager may be a single link (scalar id) or a to-many (array of ids). The Manager
+    # must serve a project whenever OUR id is among the link(s) — so several hosts can share one
+    # project — and must keep working across an in-place cardinality flip (~de489ec1).
+    adapter.worker_manager = "miquon"
+    adapter._manager_id = "m1"
+
+    def served(manager_value):
+        rows = [{"id": "p1", "name": "P", "repo": "git@x", "manager": manager_value,
+                 "created_by": "owner"}]
+        monkeypatch.setattr(adapter, "_get",
+                            lambda table, params: rows if table == adapter.projects else [])
+        return [p.name for p in adapter.list_projects()]
+
+    assert served("m1") == ["P"]              # to-one: scalar, ours
+    assert served("m2") == []                 # to-one: scalar, another host's
+    assert served(["m1"]) == ["P"]            # to-many: single-element array, ours
+    assert served(["m2", "m1"]) == ["P"]      # to-many: ours among several
+    assert served(["m2", "m3"]) == []         # to-many: not ours
+    assert served([]) == []                   # to-many: unassigned
+    assert served(None) == []                 # relation unset
 
 
 def test_gate_drops_untrusted_author_card(adapter, monkeypatch):
@@ -148,8 +172,8 @@ def test_gate_drops_untrusted_project(adapter, monkeypatch):
     adapter.worker_manager = "miquon"
     adapter._manager_id = "m1"
     rows = [
-        {"id": "p1", "name": "Mine", "repo": "git@x", "created_by": "owner"},
-        {"id": "p2", "name": "Theirs", "repo": "git@y", "created_by": "mallory"},
+        {"id": "p1", "name": "Mine", "repo": "git@x", "manager": "m1", "created_by": "owner"},
+        {"id": "p2", "name": "Theirs", "repo": "git@y", "manager": "m1", "created_by": "mallory"},
     ]
     monkeypatch.setattr(adapter, "_get", lambda table, params: rows)
     assert [p.name for p in adapter.list_projects()] == ["Mine"]
@@ -160,7 +184,7 @@ def test_gate_drops_project_with_missing_author(adapter, monkeypatch):
     # is untrusted, not a free pass.
     adapter.worker_manager = "miquon"
     adapter._manager_id = "m1"
-    rows = [{"id": "p1", "name": "NoAuthor", "repo": "git@x"}]  # created_by absent
+    rows = [{"id": "p1", "name": "NoAuthor", "repo": "git@x", "manager": "m1"}]  # created_by absent
     monkeypatch.setattr(adapter, "_get", lambda table, params: rows)
     assert adapter.list_projects() == []
 
@@ -169,11 +193,12 @@ def test_gate_untrusted_project_scopes_out_its_cards(adapter, monkeypatch):
     # A card tagged to an untrusted-authored project is out of scope (project id dropped
     # from the served set), even if the card itself is owner-authored.
     adapter.worker_manager = "miquon"
+    adapter._manager_id = "m1"
     roadmap = [_row(1, project="p-mine"), _row(2, project="p-theirs")]
     def fake_get(table, params):
         if table == adapter.projects:
-            return [{"id": "p-mine", "created_by": "owner"},
-                    {"id": "p-theirs", "created_by": "mallory"}]
+            return [{"id": "p-mine", "manager": "m1", "created_by": "owner"},
+                    {"id": "p-theirs", "manager": "m1", "created_by": "mallory"}]
         return roadmap
     monkeypatch.setattr(adapter, "_get", fake_get)
     assert [c.num for c in adapter.list_workable()] == [1]
@@ -212,22 +237,26 @@ def test_no_project_filter_when_worker_manager_unset(adapter, monkeypatch):
 
 def test_project_filter_scopes_to_served(adapter, monkeypatch):
     adapter.worker_manager = "miquon"
+    adapter._manager_id = "m1"
     roadmap = [
         _row(1, project="p-patch"),   # mine -> keep
         _row(2, project="p-gitz"),    # another manager's -> skip
         _row(3, project=None),        # untagged; sole served project -> adopted
     ]
     def fake_get(table, params):
-        return [{"id": "p-patch", "created_by": "owner"}] if table == adapter.projects else roadmap
+        return ([{"id": "p-patch", "manager": "m1", "created_by": "owner"}]
+                if table == adapter.projects else roadmap)
     monkeypatch.setattr(adapter, "_get", fake_get)
     assert sorted(c.num for c in adapter.list_workable()) == [1, 3]
 
 
 def test_untagged_card_skipped_when_serving_multiple(adapter, monkeypatch):
     adapter.worker_manager = "multi"
+    adapter._manager_id = "m1"
     roadmap = [_row(1, project=None), _row(2, project="p-a")]
     def fake_get(table, params):
-        return ([{"id": "p-a", "created_by": "owner"}, {"id": "p-b", "created_by": "owner"}]
+        return ([{"id": "p-a", "manager": "m1", "created_by": "owner"},
+                 {"id": "p-b", "manager": "m1", "created_by": "owner"}]
                 if table == adapter.projects else roadmap)
     monkeypatch.setattr(adapter, "_get", fake_get)
     assert [c.num for c in adapter.list_workable()] == [2]  # untagged is ambiguous -> not picked
@@ -274,25 +303,32 @@ def test_register_worker_links_to_manager(adapter, monkeypatch):
     assert captured["manager"] == "mid-2"                          # worker linked to its manager
 
 
-def test_project_filter_uses_manager_relation(adapter):
+def test_served_rows_filters_by_manager_relation(adapter):
+    # Client-side membership, so it holds whether `manager` is a single link OR a to-many array.
     adapter.worker_manager = "miquon"
     adapter._manager_id = "mid-1"
-    assert adapter._project_filter() == {"manager": "eq.mid-1"}
+    rows = [{"id": "a", "manager": "mid-1"},      # to-one, ours
+            {"id": "b", "manager": "other"},      # to-one, another host's
+            {"id": "c", "manager": ["x", "mid-1"]},  # to-many, ours among several
+            {"id": "d", "manager": []},           # to-many, unassigned
+            {"id": "e", "manager": None}]         # unset
+    assert [r["id"] for r in adapter._served_rows(rows)] == ["a", "c"]
 
 
-def test_project_filter_raises_without_manager_row(adapter, monkeypatch):
+def test_served_rows_raises_without_manager_row(adapter, monkeypatch):
     # No loop_managers row -> can't determine our projects. Raise (the host registers before
-    # discover); NEVER return an empty filter, which would read as "no projects" and drain.
+    # discover); NEVER serve everything, which a downstream reconcile could misread as "serve all".
     adapter.worker_manager = "miquon"
     adapter._manager_id = None
-    monkeypatch.setattr(adapter, "_get", lambda t, p: [])
+    monkeypatch.setattr(adapter, "_get", lambda t, p: [])   # manager-id lookup finds nothing
     with pytest.raises(RuntimeError):
-        adapter._project_filter()
+        adapter._served_rows([{"id": "a", "manager": "m1"}])
 
 
-def test_project_filter_empty_when_worker_manager_unset(adapter):
+def test_served_rows_passes_all_when_worker_manager_unset(adapter):
     adapter.worker_manager = ""
-    assert adapter._project_filter() == {}
+    rows = [{"id": "a", "manager": "whatever"}, {"id": "b"}]
+    assert adapter._served_rows(rows) == rows   # single-project legacy: no host filter
 
 
 def test_brief_points_worker_at_patch_page(adapter):
