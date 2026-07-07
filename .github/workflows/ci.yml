@@ -7,7 +7,8 @@ on:
 
 jobs:
   test:
-    runs-on: [self-hosted, linux]   # raheth (org runner); free vs GitHub-hosted minutes
+    runs-on: ubuntu-latest   # GitHub-hosted, not self-hosted: this repo is public, so a fork
+                             # PR's pytest/pip must NOT run on our own raheth. Free on public repos.
     strategy:
       matrix:
         # requires-python floor and the version the miquon host actually runs
