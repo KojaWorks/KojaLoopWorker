@@ -94,6 +94,11 @@ class HostConfig:
     engine_recover: bool = True
     engine_start_command: str = "orb start"
     engine_probe_command: str = "docker ps"
+    # Extra author uids the loop will act on, beyond the PAT owner (which is always trusted,
+    # derived from the exchanged JWT). The loop builds a card / adopts a projects row only if
+    # its created_by is trusted. MUST live here in LOCAL config, never the shared DB — an actor
+    # who can write the backlog must not be able to widen the gate. Empty = owner only.
+    trusted_authors: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.max_concurrent_workers <= 0:  # unset → run as many at once as the budget allows
@@ -138,6 +143,7 @@ class HostConfig:
             engine_recover=eng.get("recover", True),
             engine_start_command=eng.get("start_command", "orb start"),
             engine_probe_command=eng.get("probe_command", "docker ps"),
+            trusted_authors=list(raw.get("trusted_authors", [])),
         )
 
 
@@ -151,6 +157,9 @@ class Manifest:
     slots: int
     scripts: ScriptsConfig
     worker_manager: str = ""           # which host's Manager serves this project; ""=serve all (back-compat)
+    # Extra trusted author uids beyond the PAT owner (see HostConfig.trusted_authors) — the
+    # single-project-mode home for the same LOCAL gate. Empty = owner only.
+    trusted_authors: list[str] = field(default_factory=list)
 
     @property
     def loopworker_dir(self) -> Path:
@@ -204,5 +213,6 @@ class Manifest:
             slots=raw.get("slots", {}).get("count", 1),
             scripts=ScriptsConfig(**raw.get("scripts", {})),
             worker_manager=project.get("worker_manager", ""),
+            trusted_authors=list(raw.get("trusted_authors", [])),
         )
         return manifest

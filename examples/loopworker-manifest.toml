@@ -3,6 +3,11 @@
 # this manifest plus provision.sh / reset.sh / verify.sh / teardown.sh.
 # The Manager owns git/worktree mechanics; these scripts own your stack.
 
+# The loop builds a card only if its author (created_by) is trusted. The PAT owner is
+# ALWAYS trusted (read from the exchanged JWT); list extra author uids here to also act
+# on their cards. Keep it in this LOCAL manifest, never the shared backlog.
+# trusted_authors = ["11111111-2222-3333-4444-555555555555"]
+
 [project]
 name = "myproject"
 

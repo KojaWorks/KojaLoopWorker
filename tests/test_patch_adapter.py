@@ -1,5 +1,7 @@
 """Mock-based tests for the Patch adapter's mapping and selection logic — no network.
 The PostgREST verbs (_get/_patch/_post) are stubbed; everything above them is real."""
+import base64
+import json
 from pathlib import Path
 
 import httpx
@@ -9,6 +11,12 @@ from loopworker.config import (BacklogConfig, BriefConfig, Manifest,
                                ScriptsConfig, WorkerConfig)
 from loopworker.models import Card, CardStatus, Worker
 from loopworker.backlog.patch import PatchAdapter
+
+
+def _fake_jwt(sub="owner"):
+    """A JWT-shaped token carrying `sub` — the adapter reads the owner uid from it."""
+    payload = base64.urlsafe_b64encode(json.dumps({"sub": sub}).encode()).rstrip(b"=").decode()
+    return f"h.{payload}.s"
 
 
 def _manifest():
@@ -32,13 +40,15 @@ def adapter(monkeypatch):
     # Don't hit the network exchanging the PAT at construction; the mapping/selection
     # tests stub _get/_patch directly, above the auth layer.
     monkeypatch.setattr(PatchAdapter, "_ensure_token", lambda self, force=False, retry=False: None)
-    return PatchAdapter(_manifest())
+    a = PatchAdapter(_manifest())
+    a._owner_uid = "owner"       # normally set from the exchanged JWT; stub it for the gate
+    return a
 
 
 def _row(num, status="Backlog", **kw):
     base = {"id": f"u{num}", "id_2": num, "title": f"card {num}", "status": status,
             "priority": num, "area": [], "epic": None, "blocked_by": None,
-            "assignee": None, "solved_in_pr": None}
+            "assignee": None, "solved_in_pr": None, "created_by": "owner"}
     base.update(kw)
     return base
 
@@ -88,11 +98,12 @@ def test_list_projects_maps_rows(adapter, monkeypatch):
     adapter._manager_id = "m1"        # registered (host.run registers before discover)
     rows = [
         {"id": "p1", "name": "Patch", "repo": "git@x", "default_branch": "main",
-         "slots": 3, "hot": True, "brief_ref": None, "weight": 2, "model": "opus"},
+         "slots": 3, "hot": True, "brief_ref": None, "weight": 2, "model": "opus",
+         "created_by": "owner"},
         {"id": "p2", "name": "GitZ", "repo": None, "default_branch": None,
-         "slots": None, "hot": False, "brief_ref": "u"},
+         "slots": None, "hot": False, "brief_ref": "u", "created_by": "owner"},
         {"id": "p3", "name": "Blank", "repo": None, "default_branch": None,
-         "slots": None, "hot": False, "brief_ref": None, "model": ""},
+         "slots": None, "hot": False, "brief_ref": None, "model": "", "created_by": "owner"},
     ]
     monkeypatch.setattr(adapter, "_get", lambda table, params: rows if table == adapter.projects else [])
     ps = adapter.list_projects()
@@ -103,6 +114,93 @@ def test_list_projects_maps_rows(adapter, monkeypatch):
     assert ps[1].weight == 1.0                                   # missing column -> default
     assert ps[0].model == "opus" and ps[1].model is None         # missing column -> None default
     assert ps[2].model is None                                   # blank select value -> None, not ""
+
+
+def test_gate_drops_untrusted_author_card(adapter, monkeypatch):
+    # A card by someone outside the trusted set is never workable, even if otherwise ready.
+    rows = [_row(1, created_by="owner"), _row(2, created_by="mallory")]
+    monkeypatch.setattr(adapter, "_get", lambda table, params: rows)
+    assert [c.num for c in adapter.list_workable()] == [1]
+
+
+def test_gate_trusts_local_override_author(monkeypatch):
+    # trusted_authors from LOCAL config (the manifest, in single-project mode) widens the gate.
+    monkeypatch.setenv("PATCH_PAT", "pat_test")
+    monkeypatch.setattr(PatchAdapter, "_ensure_token", lambda self, force=False, retry=False: None)
+    m = _manifest()
+    m.trusted_authors = ["mallory"]
+    a = PatchAdapter(m)
+    a._owner_uid = "owner"
+    rows = [_row(1, created_by="owner"), _row(2, created_by="mallory"), _row(3, created_by="stranger")]
+    monkeypatch.setattr(a, "_get", lambda table, params: rows)
+    assert sorted(c.num for c in a.list_workable()) == [1, 2]  # stranger still dropped
+
+
+def test_gate_drops_card_with_missing_author(adapter, monkeypatch):
+    # No created_by (unexpected) is untrusted, not a free pass — fail closed.
+    rows = [_row(1)]
+    rows[0].pop("created_by")
+    monkeypatch.setattr(adapter, "_get", lambda table, params: rows)
+    assert adapter.list_workable() == []
+
+
+def test_gate_drops_untrusted_project(adapter, monkeypatch):
+    adapter.worker_manager = "miquon"
+    adapter._manager_id = "m1"
+    rows = [
+        {"id": "p1", "name": "Mine", "repo": "git@x", "created_by": "owner"},
+        {"id": "p2", "name": "Theirs", "repo": "git@y", "created_by": "mallory"},
+    ]
+    monkeypatch.setattr(adapter, "_get", lambda table, params: rows)
+    assert [p.name for p in adapter.list_projects()] == ["Mine"]
+
+
+def test_gate_drops_project_with_missing_author(adapter, monkeypatch):
+    # The higher-stakes path (a projects row runs foreign provision scripts): no created_by
+    # is untrusted, not a free pass.
+    adapter.worker_manager = "miquon"
+    adapter._manager_id = "m1"
+    rows = [{"id": "p1", "name": "NoAuthor", "repo": "git@x"}]  # created_by absent
+    monkeypatch.setattr(adapter, "_get", lambda table, params: rows)
+    assert adapter.list_projects() == []
+
+
+def test_gate_untrusted_project_scopes_out_its_cards(adapter, monkeypatch):
+    # A card tagged to an untrusted-authored project is out of scope (project id dropped
+    # from the served set), even if the card itself is owner-authored.
+    adapter.worker_manager = "miquon"
+    roadmap = [_row(1, project="p-mine"), _row(2, project="p-theirs")]
+    def fake_get(table, params):
+        if table == adapter.projects:
+            return [{"id": "p-mine", "created_by": "owner"},
+                    {"id": "p-theirs", "created_by": "mallory"}]
+        return roadmap
+    monkeypatch.setattr(adapter, "_get", fake_get)
+    assert [c.num for c in adapter.list_workable()] == [1]
+
+
+def test_gate_logs_each_gated_row_once(adapter, monkeypatch):
+    logs = []
+    adapter._log = logs.append
+    rows = [_row(1, created_by="mallory")]
+    monkeypatch.setattr(adapter, "_get", lambda table, params: rows)
+    adapter.list_workable()
+    adapter.list_workable()                      # second poll, same gated card
+    assert sum("~1" in m for m in logs) == 1     # logged once, not per poll
+
+
+def test_jwt_sub_decodes_and_rejects_bad_tokens():
+    from loopworker.backlog.patch import _jwt_sub
+    assert _jwt_sub(_fake_jwt("owner-uid")) == "owner-uid"
+    with pytest.raises(RuntimeError, match="decode owner uid"):
+        _jwt_sub("not-a-jwt")
+    with pytest.raises(RuntimeError, match="no `sub`"):
+        _jwt_sub(_fake_jwt(""))                   # empty sub -> refuse
+    # a payload that decodes to a non-object (number/list/string) has no sub -> refuse cleanly,
+    # not a raw AttributeError
+    nonobj = base64.urlsafe_b64encode(b"123").rstrip(b"=").decode()
+    with pytest.raises(RuntimeError, match="no `sub`"):
+        _jwt_sub(f"h.{nonobj}.s")
 
 
 def test_no_project_filter_when_worker_manager_unset(adapter, monkeypatch):
@@ -120,7 +218,7 @@ def test_project_filter_scopes_to_served(adapter, monkeypatch):
         _row(3, project=None),        # untagged; sole served project -> adopted
     ]
     def fake_get(table, params):
-        return [{"id": "p-patch"}] if table == adapter.projects else roadmap
+        return [{"id": "p-patch", "created_by": "owner"}] if table == adapter.projects else roadmap
     monkeypatch.setattr(adapter, "_get", fake_get)
     assert sorted(c.num for c in adapter.list_workable()) == [1, 3]
 
@@ -129,7 +227,8 @@ def test_untagged_card_skipped_when_serving_multiple(adapter, monkeypatch):
     adapter.worker_manager = "multi"
     roadmap = [_row(1, project=None), _row(2, project="p-a")]
     def fake_get(table, params):
-        return [{"id": "p-a"}, {"id": "p-b"}] if table == adapter.projects else roadmap
+        return ([{"id": "p-a", "created_by": "owner"}, {"id": "p-b", "created_by": "owner"}]
+                if table == adapter.projects else roadmap)
     monkeypatch.setattr(adapter, "_get", fake_get)
     assert [c.num for c in adapter.list_workable()] == [2]  # untagged is ambiguous -> not picked
 
@@ -203,9 +302,9 @@ def test_brief_points_worker_at_patch_page(adapter):
 
 
 class _ExResp:
-    def __init__(self, token):
+    def __init__(self, sub="owner"):
         self.status_code = 200
-        self._token = token
+        self._token = _fake_jwt(sub)
     def raise_for_status(self): pass
     def json(self): return {"access_token": self._token, "expires_at": 9_999_999_999}
 
@@ -216,10 +315,11 @@ def test_exchange_sets_bearer_and_caches(monkeypatch):
     posts = []
     def fake_post(url, json, headers, timeout):
         posts.append((url, json["token"], headers.get("apikey")))
-        return _ExResp("jwt-1")
+        return _ExResp("owner-1")
     monkeypatch.setattr("loopworker.backlog.patch.httpx.post", fake_post)
     a = PatchAdapter(_manifest())
-    assert a._client.headers["Authorization"] == "Bearer jwt-1"
+    assert a._client.headers["Authorization"] == f"Bearer {_fake_jwt('owner-1')}"
+    assert a._owner_uid == "owner-1"        # owner uid read from the exchanged JWT's sub
     assert posts == [("https://api.patch/functions/v1/pat-exchange", "pat_abc", "anon-test")]
     a._ensure_token()                       # cached -> no second exchange
     assert len(posts) == 1
@@ -227,9 +327,9 @@ def test_exchange_sets_bearer_and_caches(monkeypatch):
 
 class _Resp:
     """A scripted pat-exchange response for the retry tests."""
-    def __init__(self, code, token="jwt"):
+    def __init__(self, code, sub="owner"):
         self.status_code = code
-        self._token = token
+        self._token = _fake_jwt(sub)
     def raise_for_status(self):
         if self.status_code >= 400:
             raise httpx.HTTPStatusError("err", request=None, response=None)
@@ -247,7 +347,7 @@ def test_exchange_retries_transient_5xx_then_succeeds(monkeypatch):
     sleeps = []
     monkeypatch.setattr("loopworker.backlog.patch.time.sleep", lambda s: sleeps.append(s))
     a = PatchAdapter(_manifest())
-    assert a._client.headers["Authorization"] == "Bearer jwt"
+    assert a._owner_uid == "owner"
     assert posts == [502, 502, 200]        # retried through both 5xx windows
     assert sleeps == [10.0, 20.0]          # capped exponential backoff between attempts
 
@@ -264,7 +364,7 @@ def test_exchange_retries_connect_error(monkeypatch):
     monkeypatch.setattr("loopworker.backlog.patch.httpx.post", fake_post)
     monkeypatch.setattr("loopworker.backlog.patch.time.sleep", lambda s: None)
     a = PatchAdapter(_manifest())
-    assert a._client.headers["Authorization"] == "Bearer jwt"
+    assert a._owner_uid == "owner"
 
 
 def test_exchange_fails_fast_on_auth(monkeypatch):
