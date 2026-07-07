@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#20336b"/>
+      <stop offset="1" stop-color="#0d1530"/>
+    </linearGradient>
+  </defs>
+  <!-- squircle background (macOS grid: 824x824 centered, r=185) -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  <!-- loop ring: the poll->spawn->reap cycle -->
+  <circle cx="512" cy="512" r="300" fill="none" stroke="#f1f5f9" stroke-width="44"/>
+  <!-- 2x2 slot/quilt grid, live slot palette (busy=green, idle=blue) -->
+  <g>
+    <rect x="348" y="348" width="150" height="150" rx="30" fill="#22c55e"/>
+    <rect x="526" y="348" width="150" height="150" rx="30" fill="#3b82f6"/>
+    <rect x="348" y="526" width="150" height="150" rx="30" fill="#3b82f6"/>
+    <rect x="526" y="526" width="150" height="150" rx="30" fill="#22c55e"/>
+  </g>
+</svg>
