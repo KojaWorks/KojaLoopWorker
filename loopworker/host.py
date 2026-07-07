@@ -439,17 +439,12 @@ class HostManager:
         signal.signal(signal.SIGTERM, self._on_signal)
         try:
             self._notify_self_test()
+            self._register()        # register FIRST: projects are filtered by our manager id
             self.discover()
             if not self.managers:
                 self.log("no serviceable projects — nothing to do")
                 return
             self.build()
-            mid = self._register()  # announce this Manager is up
-            if mid:                 # backfill the projects.manager relation (additive migration)
-                try:
-                    self.adapter.link_projects_to_manager(mid)
-                except Exception as e:
-                    self.log(f"manager-relation backfill failed (non-fatal): {e!r}")
             self.log(f"host ready; reconciling + staggered fill every {self.reconcile_interval}s, "
                      f"project discovery every {self.poll_interval}s")
             last_discover = 0.0

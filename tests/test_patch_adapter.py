@@ -85,6 +85,7 @@ def test_list_workable_filters_and_sorts(adapter, monkeypatch):
 
 def test_list_projects_maps_rows(adapter, monkeypatch):
     adapter.worker_manager = "miquon"
+    adapter._manager_id = "m1"        # registered (host.run registers before discover)
     rows = [
         {"id": "p1", "name": "Patch", "repo": "git@x", "default_branch": "main",
          "slots": 3, "hot": True, "brief_ref": None, "weight": 2, "model": "opus"},
@@ -174,35 +175,25 @@ def test_register_worker_links_to_manager(adapter, monkeypatch):
     assert captured["manager"] == "mid-2"                          # worker linked to its manager
 
 
-def test_project_filter_prefers_relation_when_registered(adapter):
+def test_project_filter_uses_manager_relation(adapter):
     adapter.worker_manager = "miquon"
     adapter._manager_id = "mid-1"
-    assert adapter._project_filter() == {
-        "or": "(manager.eq.mid-1,and(manager.is.null,worker_manager.eq.miquon))"
-    }
+    assert adapter._project_filter() == {"manager": "eq.mid-1"}
 
 
-def test_project_filter_falls_back_to_string_without_manager_row(adapter, monkeypatch):
-    # No loop_managers row yet -> pure string filter, never an empty set (which would drain all).
+def test_project_filter_raises_without_manager_row(adapter, monkeypatch):
+    # No loop_managers row -> can't determine our projects. Raise (the host registers before
+    # discover); NEVER return an empty filter, which would read as "no projects" and drain.
     adapter.worker_manager = "miquon"
     adapter._manager_id = None
     monkeypatch.setattr(adapter, "_get", lambda t, p: [])
-    assert adapter._project_filter() == {"worker_manager": "eq.miquon"}
+    with pytest.raises(RuntimeError):
+        adapter._project_filter()
 
 
 def test_project_filter_empty_when_worker_manager_unset(adapter):
     adapter.worker_manager = ""
     assert adapter._project_filter() == {}
-
-
-def test_link_projects_to_manager_backfills_null_only(adapter, monkeypatch):
-    adapter.worker_manager = "miquon"
-    calls = {}
-    monkeypatch.setattr(adapter, "_patch", lambda t, p, b: calls.update(table=t, params=p, body=b) or [])
-    adapter.link_projects_to_manager("mid-9")
-    assert calls["table"] == adapter.projects
-    assert calls["params"] == {"worker_manager": "eq.miquon", "manager": "is.null"}
-    assert calls["body"] == {"manager": "mid-9"}
 
 
 def test_brief_points_worker_at_patch_page(adapter):
