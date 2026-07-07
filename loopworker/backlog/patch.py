@@ -103,6 +103,7 @@ class PatchAdapter(BacklogAdapter):
         self.workers = workers_table
         self.managers = managers_table
         self.projects = projects_table
+        self._manager_id: str | None = None   # this host's loop_managers row id (lazy, cached)
         # App-link parts for the dashboard's ~NNN linkifier: the Patch APP origin (not the
         # api_base, which is the API host) and the roadmap table's patch_items id. Both
         # optional — unset means the dashboard just renders ~NNN as plain text.
@@ -148,9 +149,22 @@ class PatchAdapter(BacklogAdapter):
         )
 
     # --- reads -------------------------------------------------------------
+    def _project_filter(self) -> dict:
+        """PostgREST filter for the projects this host serves. Prefers the `manager` relation
+        (projects.manager -> loop_managers), falling back to the `worker_manager` string for
+        not-yet-backfilled rows — and to the pure string filter when we have no manager row yet,
+        so a registration hiccup never yields an empty set (which would drain everything)."""
+        if not self.worker_manager:
+            return {}                              # single-project legacy: no host filter
+        mid = self._my_manager_id()
+        if mid:
+            return {"or": f"(manager.eq.{mid},and(manager.is.null,worker_manager.eq.{self.worker_manager}))"}
+        return {"worker_manager": f"eq.{self.worker_manager}"}
+
     def list_projects(self) -> list[ProjectRow]:
-        """The projects this host serves: rows in `projects` whose worker_manager is ours."""
-        rows = self._get(self.projects, {"worker_manager": f"eq.{self.worker_manager}", "select": "*"})
+        """The projects this host serves: rows in `projects` linked to our manager (relation,
+        falling back to the worker_manager string during migration)."""
+        rows = self._get(self.projects, {**self._project_filter(), "select": "*"})
         return [
             ProjectRow(
                 id=r["id"], name=r.get("name") or "", repo=r.get("repo"),
@@ -186,7 +200,7 @@ class PatchAdapter(BacklogAdapter):
         single-project behaviour)."""
         if not self.worker_manager:
             return None
-        rows = self._get(self.projects, {"worker_manager": f"eq.{self.worker_manager}", "select": "id"})
+        rows = self._get(self.projects, {**self._project_filter(), "select": "id"})
         return {r["id"] for r in rows}
 
     @staticmethod
@@ -213,6 +227,9 @@ class PatchAdapter(BacklogAdapter):
         spawns sequentially, so there's no concurrent insert race on a name."""
         now = datetime.now(timezone.utc)
         fields = {"role": role, "notes": notes, "last_active": now.isoformat()}
+        mid = self._my_manager_id()
+        if mid:
+            fields["manager"] = mid   # link worker -> its manager (for the Managers>Workers widget)
         existing = self._get(self.workers, {"name": f"eq.{name}", "select": "id", "limit": "1"})
         if existing:
             wid = existing[0]["id"]
@@ -221,19 +238,49 @@ class PatchAdapter(BacklogAdapter):
             wid = self._post(self.workers, {"name": name, **fields})[0]["id"]
         return Worker(id=wid, name=name, role=role, notes=notes, last_active=now)
 
-    def register_manager(self, name: str, summary: str = "") -> None:
+    def register_manager(self, name: str, summary: str = "") -> str:
         """Upsert this host's loop_managers row (one per worker_manager id): heartbeat
         last_active + a one-line summary, so a human/dashboard can see which Managers are
         alive and what they're doing. Mirrors register_worker; keyed on name so restarts
-        update in place. Best-effort — the caller must not let a failed heartbeat crash the
-        loop (a Manager that can't register is still a working Manager)."""
+        update in place. Returns (and caches) the row id — used to link projects + workers to
+        this manager. Best-effort — the caller must not let a failed heartbeat crash the loop."""
         now = datetime.now(timezone.utc)
         fields = {"last_active": now.isoformat(), "summary": summary}
         existing = self._get(self.managers, {"name": f"eq.{name}", "select": "id", "limit": "1"})
         if existing:
-            self._patch(self.managers, {"id": f"eq.{existing[0]['id']}"}, fields)
+            mid = existing[0]["id"]
+            self._patch(self.managers, {"id": f"eq.{mid}"}, fields)
         else:
-            self._post(self.managers, {"name": name, **fields})
+            mid = self._post(self.managers, {"name": name, **fields})[0]["id"]
+        self._manager_id = mid
+        return mid
+
+    def _my_manager_id(self) -> str | None:
+        """This host's loop_managers row id, looked up lazily + cached. None until it's
+        registered (or if the lookup fails) — callers treat None as 'fall back to the string'."""
+        if self._manager_id is not None:
+            return self._manager_id
+        if not self.worker_manager:
+            return None
+        try:
+            rows = self._get(self.managers, {"name": f"eq.{self.worker_manager}", "select": "id", "limit": "1"})
+        except Exception:
+            return None
+        if rows:
+            self._manager_id = rows[0]["id"]
+        return self._manager_id
+
+    def link_projects_to_manager(self, manager_id: str) -> None:
+        """Backfill (additive migration): set the `manager` relation on this host's projects
+        that don't have it yet, matched by the worker_manager string. The string column stays,
+        so a Manager still on the old code keeps working."""
+        if not self.worker_manager:
+            return
+        self._patch(
+            self.projects,
+            {"worker_manager": f"eq.{self.worker_manager}", "manager": "is.null"},
+            {"manager": manager_id},
+        )
 
     def claim(self, card: Card, worker: Worker) -> bool:
         """Atomic claim: the assignee=is.null filter makes the PATCH match zero rows if
