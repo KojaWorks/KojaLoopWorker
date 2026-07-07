@@ -42,6 +42,9 @@ final class ManagerController: ObservableObject {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: path)
         p.arguments = []                 // bare host mode; the Manager reads ~/.loopworker/config.toml
+        // Give the Manager the user's real login PATH so it can find tmux/git/claude to run
+        // workers (a Finder-launched app's PATH is minimal — see LoginEnvironment).
+        p.environment = LoginEnvironment.childEnvironment()
         p.terminationHandler = { [weak self] proc in
             let status = proc.terminationStatus
             Task { @MainActor in self?.handleExit(status: status) }

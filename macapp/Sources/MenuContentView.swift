@@ -78,8 +78,7 @@ private struct CheckRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 6) {
-            Image(systemName: check.ok ? "checkmark.circle.fill" : "xmark.octagon.fill")
-                .foregroundStyle(check.ok ? .green : .red)
+            Image(systemName: symbol).foregroundStyle(tint)
             VStack(alignment: .leading, spacing: 1) {
                 HStack {
                     Text(check.name).font(.caption).bold()
@@ -90,6 +89,14 @@ private struct CheckRow: View {
                 }
             }
         }
+    }
+
+    // A failed REQUIRED check is a red blocker; a failed recommended one is an orange warning.
+    private var symbol: String {
+        check.ok ? "checkmark.circle.fill" : (check.required ? "xmark.octagon.fill" : "exclamationmark.triangle.fill")
+    }
+    private var tint: Color {
+        check.ok ? .green : (check.required ? .red : .orange)
     }
 }
 

@@ -29,7 +29,10 @@ struct StatusClient {
     /// Runs `loopworker doctor --json` and decodes it. Heavier than /health (it shells out to
     /// `claude -p` etc.), so callers poll it on a slow timer, not every status tick.
     func doctor() async throws -> DoctorReport {
-        let out = try await ProcessRunner.run(loopworkerPath, ["doctor", "--json"])
+        // Inject the login-shell PATH so the frozen Manager finds claude/tmux/docker (a GUI app's
+        // own PATH is minimal) — otherwise readiness falsely reports everything missing.
+        let out = try await ProcessRunner.run(loopworkerPath, ["doctor", "--json"],
+                                              environment: LoginEnvironment.childEnvironment())
         // doctor exits non-zero when a check fails but still prints valid JSON on stdout.
         guard let data = out.stdout.data(using: .utf8), !data.isEmpty else {
             throw StatusError.doctorNoOutput(out.stderr)

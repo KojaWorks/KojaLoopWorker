@@ -15,7 +15,7 @@ settings:
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
     GENERATE_INFOPLIST_FILE: YES
-    PRODUCT_BUNDLE_IDENTIFIER: dev.nevyn.loopworker.menubar
+    PRODUCT_BUNDLE_IDENTIFIER: works.koja.loopworker
     # User-facing name (menu-bar menu, About, Finder). The target/bundle stay "LoopWorker".
     INFOPLIST_KEY_CFBundleDisplayName: "Koja Loops Manager"
     # Koja's Apple team, for signing/notarization (card ~824). Signing is still gated on the

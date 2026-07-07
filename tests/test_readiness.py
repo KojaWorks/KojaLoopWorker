@@ -137,3 +137,11 @@ def test_check_all_without_config_still_runs_and_flags_backlog(monkeypatch):
     checks = {c.name: c for c in check_all(None, runner=_ok, http_probe=lambda url: 200)}
     assert not checks["backlog"].ok            # no api_base
     assert checks["claude"].ok and checks["git"].ok
+
+
+def test_engine_is_recommended_not_required(monkeypatch):
+    # A container engine is recommended, not required (Nevyn: "Docker isn't a hard requirement").
+    monkeypatch.setattr(readiness.shutil, "which", lambda b: f"/usr/bin/{b}")
+    checks = {c.name: c for c in check_all(None, runner=_ok, http_probe=lambda url: 200)}
+    assert checks["engine"].required is False
+    assert all(checks[n].required for n in ("claude", "tmux", "git", "backlog"))
