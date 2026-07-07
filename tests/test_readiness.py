@@ -43,6 +43,15 @@ def test_claude_bad_login_surfaces_last_error_line(monkeypatch):
     assert not c.ok and "401" in c.detail and c.remedy
 
 
+def test_claude_remedy_points_at_setup_token_not_interactive_login(monkeypatch):
+    # The trap this check exists to catch: an interactive `claude` login does NOT fix the
+    # headless `claude -p` path, so the remedy must send the user to `claude setup-token`
+    # + CLAUDE_CODE_OAUTH_TOKEN, not "run claude and log in".
+    monkeypatch.setattr(readiness.shutil, "which", lambda b: "/usr/bin/claude")
+    c = check_claude(runner=_fail("Invalid API key"))
+    assert "setup-token" in c.remedy and "CLAUDE_CODE_OAUTH_TOKEN" in c.remedy
+
+
 def test_claude_timeout_is_fail(monkeypatch):
     monkeypatch.setattr(readiness.shutil, "which", lambda b: "/usr/bin/claude")
 

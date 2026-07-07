@@ -76,13 +76,37 @@ enum ConfigStore {
         scrubEnvToken()
     }
 
-    /// True if a .env line assigns PATCH_PAT (bare or `export PATCH_PAT=`), so both the migration
-    /// and the scrub agree on which lines carry the cleartext token.
-    private static func isTokenLine(_ line: Substring) -> Bool {
+    /// Upsert a `KEY=value` line in ~/.loopworker/.env, preserving every other line. How the app
+    /// persists the headless-worker login (CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`): the
+    /// Manager and `doctor` both load it from .env at launch (cwd ~/.loopworker), same as the
+    /// CLI/systemd path. (PATCH_PAT is the exception — it lives in the Keychain, never .env.)
+    /// Throws on write failure so onboarding can surface it, like Keychain.store.
+    static func upsertEnvVar(key: String, value: String) throws {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let existing = (try? String(contentsOf: envPath, encoding: .utf8)) ?? ""
+        var lines = existing.split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !isAssignment($0, key: key) }
+            .map(String.init)
+        while let last = lines.last, last.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeLast() }
+        lines.append("\(key)=\(value)")
+        try (lines.joined(separator: "\n") + "\n").write(to: envPath, atomically: true, encoding: .utf8)
+        // A long-lived credential (the CLAUDE_CODE_OAUTH_TOKEN) sits here, so lock the file to the
+        // owner — the same posture that moved PATCH_PAT off plaintext .env into the Keychain. Surface
+        // a chmod failure rather than silently leaving a world-readable token on disk.
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: envPath.path)
+    }
+
+    /// True if a .env line assigns `key` (bare or `export key=`) — so the migration, the scrub, and
+    /// the upsert all agree on which line carries a given variable.
+    private static func isAssignment(_ line: Substring, key: String) -> Bool {
         var t = line.trimmingCharacters(in: .whitespaces)
         if t.hasPrefix("export ") { t = String(t.dropFirst("export ".count)).trimmingCharacters(in: .whitespaces) }
-        return t.hasPrefix("PATCH_PAT=")
+        return t.hasPrefix("\(key)=")
     }
+
+    /// True if a .env line assigns PATCH_PAT — both the migration and the scrub use this to find the
+    /// cleartext token line.
+    private static func isTokenLine(_ line: Substring) -> Bool { isAssignment(line, key: "PATCH_PAT") }
 
     /// The PATCH_PAT value from a plaintext .env, if present (legacy installs only).
     private static func envToken() -> String? {

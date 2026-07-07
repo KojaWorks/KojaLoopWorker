@@ -152,27 +152,78 @@ private struct ReadinessSection: View {
 
 private struct SetupCheckRow: View {
     let check: ReadinessCheck
+    @EnvironmentObject var appState: AppState
     @State private var copied = false
+    // Claude-only: the inline "paste your setup-token" form (LLM auth is the one check the app can
+    // actually fix in place, by writing CLAUDE_CODE_OAUTH_TOKEN to .env).
+    @State private var expanded = false
+    @State private var token = ""
+    @State private var saveError: String?
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: symbol).foregroundStyle(tint)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack {
-                    Text(check.name.capitalized).font(.callout).bold()
-                    Text(check.detail).font(.callout).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: symbol).foregroundStyle(tint)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack {
+                        Text(check.name.capitalized).font(.callout).bold()
+                        Text(check.detail).font(.callout).foregroundStyle(.secondary)
+                    }
+                    if !check.ok, !check.remedy.isEmpty {
+                        Text(check.remedy).font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
-                if !check.ok, !check.remedy.isEmpty {
-                    Text(check.remedy).font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                Spacer()
+                trailingButton
             }
-            Spacer()
-            if !check.ok, let action {
+            if isClaude, expanded { claudeForm }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var isClaude: Bool { check.name == "claude" }
+
+    @ViewBuilder private var trailingButton: some View {
+        if !check.ok {
+            if isClaude {
+                Button(expanded ? "Cancel" : "Set up login…") { expanded.toggle(); saveError = nil }
+                    .buttonStyle(.bordered)
+            } else if let action {
                 Button(copied ? "Copied ✓" : action.label) { run(action) }.buttonStyle(.bordered)
             }
         }
-        .padding(.vertical, 2)
+    }
+
+    // Guide the user through `claude setup-token` and persist its output. An interactive login
+    // doesn't carry to headless workers, so this token (in .env) is what actually authorizes them.
+    private var claudeForm: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Text("1.").font(.caption).foregroundStyle(.secondary)
+                Text("claude setup-token").font(.system(.caption, design: .monospaced))
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
+                Button(copied ? "Copied ✓" : "Copy") { copyCommand() }.buttonStyle(.borderless).font(.caption)
+                Text("in a terminal; log in when prompted.").font(.caption).foregroundStyle(.secondary)
+            }
+            Text("2. Paste the token it prints (starts with sk-ant-oat…):")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                SecureField("paste token", text: $token).textFieldStyle(.roundedBorder)
+                Button("Save") { save() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            if let saveError {
+                Text(saveError).font(.caption).foregroundStyle(.red)
+            } else if appState.controller.isRunning {
+                // Env is frozen at Manager launch, so a running Manager needs a restart to read it.
+                Text("If the Manager is already running, restart it (Stop, then Start) after saving.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.leading, 24).padding(.top, 2)
     }
 
     private var symbol: String {
@@ -184,11 +235,11 @@ private struct SetupCheckRow: View {
 
     // A concrete next step per failing check: open Patch to mint a token, or copy the one-liner
     // that fixes it. Checks without a mechanical fix (tmux/git/config) just show their remedy text.
+    // (claude is handled by claudeForm, not here.)
     private struct CheckAction { let label: String; let value: String; let isCopy: Bool }
     private var action: CheckAction? {
         switch check.name {
         case "backlog": return CheckAction(label: "Mint token…", value: Instance.appBase, isCopy: false)
-        case "claude":  return CheckAction(label: "Copy fix command", value: "claude setup-token", isCopy: true)
         case "engine":  return CheckAction(label: "Copy start command", value: "orb start", isCopy: true)
         default:        return nil
         }
@@ -200,6 +251,25 @@ private struct SetupCheckRow: View {
             Task { try? await Task.sleep(nanoseconds: 1_500_000_000); copied = false }
         } else {
             openURL(action.value)
+        }
+    }
+
+    private func copyCommand() {
+        copyToPasteboard("claude setup-token")
+        copied = true
+        Task { try? await Task.sleep(nanoseconds: 1_500_000_000); copied = false }
+    }
+
+    private func save() {
+        let value = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return }
+        saveError = nil
+        do {
+            try ConfigStore.upsertEnvVar(key: "CLAUDE_CODE_OAUTH_TOKEN", value: value)
+            token = ""; expanded = false
+            appState.runDoctorNow()   // re-check reads the fresh .env → claude flips green
+        } catch {
+            saveError = "Couldn't save token: \(error.localizedDescription)"
         }
     }
 }
