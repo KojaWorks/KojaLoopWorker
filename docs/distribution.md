@@ -67,8 +67,13 @@ What it is:
   - *Caveat:* a hard **Force-Quit** sends `SIGKILL`, which no app can intercept — so use *Force
     stop*, not Force-Quit, when you want cards released. A normal quit/logout won't orphan the
     Manager (`applicationWillTerminate` sends a best-effort `SIGTERM`); an app *crash* can leave
-    a still-running, crash-safe Manager behind — adopting/force-stopping such an orphan on next
-    launch is a known Phase 1 follow-up.
+    a still-running, crash-safe Manager behind.
+- **Adopting an external Manager — attach, don't collide.** When `/health` answers but the app
+  didn't spawn that Manager (a crash-orphan, a hand-run one, a supervisor's), the app *attaches*:
+  it shows `ADOPTED` instead of a `Start` button that would just spawn a second Manager and die on
+  the host lock. It reads the Manager's pid from `state/host/host.lock` so Stop/Force stop still
+  work; Quit leaves an adopted Manager running (it isn't the app's child to drain). Attachment
+  drops once `/health` goes quiet and the lock pid is gone.
 - **Status panel — a native render of `/json`.** Slots, current cards, per-slot activity,
   the recent log tail. Icon state reflects fleet health (idle / working / error) so the
   menu bar itself is the at-a-glance signal.

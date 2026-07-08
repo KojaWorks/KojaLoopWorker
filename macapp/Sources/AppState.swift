@@ -56,7 +56,8 @@ final class AppState: NSObject, ObservableObject, NSApplicationDelegate {
     // MARK: NSApplicationDelegate — quitting the app is the off switch; don't orphan the Manager.
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard controller.isRunning else { return .terminateNow }
+        // An adopted (external) Manager isn't our child — leave it running when we quit.
+        guard controller.isRunning, !controller.isAdopted else { return .terminateNow }
         controller.beginQuitDrain { NSApp.reply(toApplicationShouldTerminate: true) }
         return .terminateLater   // stay alive (draining…) until the Manager actually exits
     }
@@ -117,11 +118,15 @@ final class AppState: NSObject, ObservableObject, NSApplicationDelegate {
             snapshot = try? await client.snapshot()
             statusNote = nil
             healthFailures = 0
-            controller.markRunning()   // first good read: the Manager's dashboard is up
+            controller.markRunning()      // first good read: the Manager's dashboard is up
+            controller.attachExternal()   // adopt a Manager we didn't spawn (no-op if it's our child)
         } catch {
             // Don't nuke the last-known status on a single blip — mirror the Manager's own
             // "keep the last-known set on a failed read" scar. Clear only when genuinely down.
             healthFailures += 1
+            // Drop adoption only on a real death signal; for a pid-less adoption, not until the
+            // poller has given up on reachability (same debounce that guards last-known status).
+            controller.detachExternal(unreachable: healthFailures >= failuresBeforeUnknown)
             if case .stopped = controller.state {
                 health = nil; snapshot = nil; statusNote = "Manager not running"
             } else if healthFailures >= failuresBeforeUnknown {

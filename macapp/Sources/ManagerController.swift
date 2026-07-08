@@ -19,8 +19,17 @@ final class ManagerController: ObservableObject {
     /// True while a drain was started by App-quit (vs a plain Stop) — so the UI can say "Quit now"
     /// instead of "Stop now" and mean it: force-stopping now completes the quit.
     @Published private(set) var isQuitting = false
+    /// True when we're attached to a host Manager the app did NOT spawn — a hand-run one, a
+    /// supervisor's, or a not-yet-self-terminated orphan of a killed previous app instance. Its
+    /// dashboard answers /health, so the app shows it as running and (given its lockfile pid) can
+    /// Stop it — but it never offers a colliding Start (a second Manager just dies on the host
+    /// lock) and never auto-drains it on quit, since it isn't the app's child to tear down.
+    @Published private(set) var isAdopted = false
     @Published var loopworkerPath: String?
 
+    /// The pid of an adopted external Manager, read from the host lockfile — nil if we couldn't
+    /// read it (e.g. it was launched from a non-standard cwd), which leaves Stop unavailable.
+    private var adoptedPID: Int32?
     private var process: Process?
     private var intentionalStop = false
     private var consecutiveCrashes = 0
@@ -31,6 +40,19 @@ final class ManagerController: ObservableObject {
 
     /// Raw Manager stdout+stderr (incl. Python tracebacks the structured filelog never sees).
     private var outURL: URL { ConfigStore.dir.appendingPathComponent("state/manager.out") }
+    /// The host Manager's lockfile (holds its pid) — same path the Manager writes when launched
+    /// bare from ~/.loopworker (host mode's default --state-dir is state/host, cwd ~/.loopworker).
+    private var lockfileURL: URL { ConfigStore.dir.appendingPathComponent("state/host/host.lock") }
+
+    /// The pid to signal for Stop/drain: our own child if we spawned it, else the adopted external
+    /// one — re-checked live at access time, so a recycled pid can't be signalled after it died.
+    private var signalPID: Int32? {
+        if let own = process?.processIdentifier { return own }
+        guard let pid = adoptedPID, kill(pid, 0) == 0 else { return nil }
+        return pid
+    }
+    /// Whether Stop/Force stop can act — false only for an adopted Manager whose pid we couldn't read.
+    var canSignal: Bool { signalPID != nil }
 
     init(loopworkerPath: String?) {
         self.loopworkerPath = loopworkerPath
@@ -41,7 +63,7 @@ final class ManagerController: ObservableObject {
     }
 
     func start() {
-        guard case .stopped = state else { return }
+        guard case .stopped = state, !isAdopted else { return }   // never spawn a second, colliding Manager
         guard let path = loopworkerPath else {
             state = .stopped(reason: "loopworker binary not found — install it (pipx) or set its path")
             return
@@ -103,8 +125,10 @@ final class ManagerController: ObservableObject {
     }
 
     /// Graceful: let current workers finish, spawn none, then exit. (SIGINT)
+    /// Works for an adopted Manager too — signals its lockfile pid; its exit is then seen when
+    /// /health stops responding (detachExternal), since it fires no terminationHandler of ours.
     func drain() {
-        guard isRunning, let pid = process?.processIdentifier else { return }
+        guard isRunning, let pid = signalPID else { return }
         intentionalStop = true
         state = .draining
         kill(pid, SIGINT)
@@ -112,9 +136,46 @@ final class ManagerController: ObservableObject {
 
     /// Immediate: reap workers and release their claimed cards back to Backlog. (SIGTERM)
     func forceStop() {
-        guard isRunning, let pid = process?.processIdentifier else { return }
+        guard isRunning, let pid = signalPID else { return }
         intentionalStop = true
         kill(pid, SIGTERM)
+    }
+
+    /// Called on a good /health read. If we don't own the Manager process, an external one is up:
+    /// attach to it so the app reflects it as running (not stopped-with-a-Start-button) and picks
+    /// up its lockfile pid for Stop control. No-op when the Manager is our own child.
+    func attachExternal() {
+        guard process == nil else { return }
+        if !isAdopted { isAdopted = true }
+        let pid = livingLockfilePID()
+        if adoptedPID != pid { adoptedPID = pid }
+        if case .stopped = state { state = .running }
+    }
+
+    /// Called when /health stops responding while adopted. Drop the attachment only on a real
+    /// death signal — never thrash on a single blip:
+    ///   • If we hold the Manager's pid, detach the moment THAT pid is dead (positive signal).
+    ///   • If we never got a pid (unreadable lock — a Manager run from a non-standard cwd), we
+    ///     have no death signal, so wait for the poller to give up on reachability (`unreachable`)
+    ///     before dropping — matching AppState's keep-last-known-through-a-blip debounce.
+    func detachExternal(unreachable: Bool) {
+        guard isAdopted else { return }
+        if let pid = adoptedPID {
+            guard kill(pid, 0) != 0 else { return }   // still alive — a blip, keep the attachment
+        } else if !unreachable {
+            return                                     // pid-less: no signal yet, don't drop on a blip
+        }
+        isAdopted = false
+        adoptedPID = nil
+        state = .stopped(reason: nil)
+    }
+
+    /// The lockfile pid, if it names a live process — else nil (stale/absent lock, or unreadable).
+    private func livingLockfilePID() -> Int32? {
+        guard let text = try? String(contentsOf: lockfileURL, encoding: .utf8),
+              let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)),
+              pid > 0, kill(pid, 0) == 0 else { return nil }
+        return pid
     }
 
     /// App-quit path: drain, and call `reply` only once the Manager has ACTUALLY exited — so the

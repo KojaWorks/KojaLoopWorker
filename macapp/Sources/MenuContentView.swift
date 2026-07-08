@@ -19,6 +19,12 @@ struct MenuContentView: View {
                 Banner(text: "This app is too old for the running Manager. Update the app.",
                        symbol: "exclamationmark.triangle.fill", tint: .orange)
             }
+            if appState.controller.isAdopted {
+                Banner(text: appState.controller.canSignal
+                       ? "Attached to a Manager started outside this app. Quitting leaves it running."
+                       : "Attached to a Manager started outside this app; can't Stop it from here (no pid).",
+                       symbol: "link", tint: .gray)
+            }
             AttentionLine()
             Divider()
             SlotsPanel()
@@ -179,7 +185,9 @@ private struct Controls: View {
                 EmptyView()                 // the draining banner owns the stop affordance
             case .running, .starting:
                 Button("Stop (drain)") { appState.controller.drain() }
+                    .disabled(!appState.controller.canSignal)
                 Button("Force stop") { appState.controller.forceStop() }.foregroundStyle(.red)
+                    .disabled(!appState.controller.canSignal)
             case .stopped:
                 Button("Start Manager") { appState.controller.startFresh() }
                     .disabled(!appState.loopworkerFound || !appState.isConfigured)
@@ -239,6 +247,7 @@ private struct Banner: View {
 
 extension ManagerController {
     var stateLabel: String {
+        if isAdopted, case .running = state { return "ADOPTED" }
         switch state {
         case .stopped: return "STOPPED"
         case .starting: return "STARTING"
