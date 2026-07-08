@@ -124,7 +124,9 @@ final class AppState: NSObject, ObservableObject, NSApplicationDelegate {
             // Don't nuke the last-known status on a single blip — mirror the Manager's own
             // "keep the last-known set on a failed read" scar. Clear only when genuinely down.
             healthFailures += 1
-            controller.detachExternal()   // drop adoption once the external Manager is truly gone
+            // Drop adoption only on a real death signal; for a pid-less adoption, not until the
+            // poller has given up on reachability (same debounce that guards last-known status).
+            controller.detachExternal(unreachable: healthFailures >= failuresBeforeUnknown)
             if case .stopped = controller.state {
                 health = nil; snapshot = nil; statusNote = "Manager not running"
             } else if healthFailures >= failuresBeforeUnknown {
