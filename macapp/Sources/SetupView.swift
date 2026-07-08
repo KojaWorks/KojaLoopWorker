@@ -1,4 +1,5 @@
 import AppKit
+import ServiceManagement
 import SwiftUI
 
 /// The Setup window: onboarding (connect to Patch) AND the health/fix-it checklist, unified into
@@ -13,6 +14,8 @@ struct SetupView: View {
                 ConnectionSection()
                 Divider()
                 ReadinessSection()
+                Divider()
+                LoginItemSection()
             }
             .padding(20)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -276,6 +279,52 @@ private struct SetupCheckRow: View {
         } catch {
             saveError = "Couldn't save token: \(error.localizedDescription)"
         }
+    }
+}
+
+// MARK: - Start at login (SMAppService.mainApp)
+
+/// A per-user machine setting (not part of config.toml): register the main app as a login item so a
+/// reboot doesn't silently leave the fleet unmanaged. Drives the toggle off the live SMAppService
+/// status so it reflects reality (incl. the .requiresApproval case where the OS gates it behind
+/// System Settings), rather than a bool we could drift from.
+private struct LoginItemSection: View {
+    @State private var status = SMAppService.mainApp.status
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Start at login", systemImage: "power").font(.headline)
+            Toggle("Launch Koja Loops Manager when I log in", isOn: Binding(
+                get: { status == .enabled },
+                set: { setEnabled($0) }
+            ))
+            Text("Relaunches the menu-bar app at login; it won't auto-start the Manager unless it was running.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if status == .requiresApproval {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    Text("Approve in System Settings > General > Login Items.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Open Login Items") { SMAppService.openSystemSettingsLoginItems() }
+                        .buttonStyle(.borderless).font(.caption)
+                }
+            }
+            if let error { Text(error).font(.caption).foregroundStyle(.red) }
+        }
+        .onAppear { status = SMAppService.mainApp.status }
+    }
+
+    private func setEnabled(_ on: Bool) {
+        error = nil
+        do {
+            if on { try SMAppService.mainApp.register() }
+            else { try SMAppService.mainApp.unregister() }
+        } catch {
+            self.error = "Couldn't \(on ? "enable" : "disable") start at login: \(error.localizedDescription)"
+        }
+        status = SMAppService.mainApp.status
     }
 }
 
