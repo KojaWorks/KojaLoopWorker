@@ -6,7 +6,7 @@ import Foundation
 final class FakeGit: GitDriving, @unchecked Sendable {
     struct State {
         var calls: [String] = []
-        var pushes: [(worktree: URL, branch: String, environment: [String: String])] = []
+        var pushes: [(worktree: URL, url: String, branch: String, environment: [String: String])] = []
         var fetchEnvironments: [[String: String]] = []
         var commitsAhead: [String: Int] = [:]
         var defaultCommitsAhead = 1
@@ -39,7 +39,7 @@ final class FakeGit: GitDriving, @unchecked Sendable {
         state { $0.calls.append("ensureWorktree \(slot)") }
     }
 
-    func resetWorktree(_ worktree: URL, base: String, branch: String, environment: [String: String]) async throws -> String {
+    func resetWorktree(_ worktree: URL, url: String, base: String, branch: String, environment: [String: String]) async throws -> String {
         state { $0.calls.append("resetWorktree \(branch)") }
         return "base123"
     }
@@ -48,10 +48,10 @@ final class FakeGit: GitDriving, @unchecked Sendable {
         state { $0.commitsAhead[worktree.path] ?? $0.defaultCommitsAhead }
     }
 
-    func push(_ worktree: URL, branch: String, environment: [String: String]) async throws {
+    func push(_ worktree: URL, to url: String, branch: String, environment: [String: String]) async throws {
         try state {
             if $0.failPushOnce { $0.failPushOnce = false; throw FakeError("git push \(branch) failed") }
-            $0.pushes.append((worktree, branch, environment))
+            $0.pushes.append((worktree, url, branch, environment))
         }
     }
 

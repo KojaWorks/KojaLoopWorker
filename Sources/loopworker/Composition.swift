@@ -32,7 +32,7 @@ func makeDependencies(config: HostConfig, environment: [String: String]) throws 
         runner: runner,
         tmux: Tmux(runner: runner, socket: config.stateDir.appending(path: "tmux"), scrubbedVariables: secretNames),
         git: git,
-        lifecycle: ScriptedSlotLifecycle(runner: runner, git: git, log: fileLog, gitEnvironment: { _ in forge.gitEnvironment() }),
+        lifecycle: ScriptedSlotLifecycle(runner: runner, git: git, log: fileLog, gitRemote: { (forge.cloneURL(for: $0), forge.gitEnvironment()) }),
         engine: EngineRecovery(config: config.engine, runner: runner, log: fileLog,
                                notify: { message in Task { await notifier.send(key: "engine", message) } }),
         log: fileLog,

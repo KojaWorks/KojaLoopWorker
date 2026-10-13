@@ -435,7 +435,7 @@ extension Manager {
             try await stuck(spec, card: card, blocker: "The worker reported done, but branch `\(branch)` has no commits ahead of `\(base)`.")
             return
         }
-        try await step("pushing \(branch)") { try await self.deps.git.push(spec.worktree, branch: branch, environment: self.deps.forge.gitEnvironment()) }
+        try await step("pushing \(branch)") { try await self.deps.git.push(spec.worktree, to: self.deps.forge.cloneURL(for: spec.project), branch: branch, environment: self.deps.forge.gitEnvironment()) }
         var guideLink: URL?
         if let guide, let file = resolveGuide(guide, in: spec) {
             do { guideLink = try await step("attaching \(guide)") { try await self.deps.forge.attach(file, to: spec.project) } }
@@ -457,7 +457,7 @@ extension Manager {
         let ahead = try await step("counting commits on \(branch)") { try await self.deps.git.commitsAhead(spec.worktree, base: base) }
         var text = blocker
         if ahead > 0 {
-            try await step("pushing \(branch)") { try await self.deps.git.push(spec.worktree, branch: branch, environment: self.deps.forge.gitEnvironment()) }
+            try await step("pushing \(branch)") { try await self.deps.git.push(spec.worktree, to: self.deps.forge.cloneURL(for: spec.project), branch: branch, environment: self.deps.forge.gitEnvironment()) }
             text += "\n\nThe worker's commits are on branch `\(branch)`."
         }
         try await stuck(spec, card: card, blocker: text)

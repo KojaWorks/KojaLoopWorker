@@ -266,6 +266,7 @@ func fileMode(_ url: URL) throws -> Int {
 
         #expect(h.git.state.get.pushes.map(\.branch) == ["loopworker-12-fix-it"])
         #expect(h.git.state.get.pushes[0].environment == FakeForge.environment)
+        #expect(h.git.state.get.pushes[0].url == "https://forge.example/g/app.git")
         let draft = try #require(h.forge.state.get.opened.first)
         #expect(draft.title == "Fix it" && draft.draft && draft.targetBranch == "main")
         #expect(draft.body == "Did it.\n\n---\nCard: [g/app#12](https://forge.example/g/app/-/issues/12)\nReview guide: [guide.html](https://forge.example/uploads/guide.html)\n")

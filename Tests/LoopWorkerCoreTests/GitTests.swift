@@ -60,7 +60,7 @@ struct GitFixture {
     func slotOnBranch(_ branch: String) async throws -> URL {
         try await git.cloneOrFetch(url: origin.path, into: clone, environment: [:])
         try await git.ensureWorktree(clone: clone, worktree: slot(1), slot: 1)
-        _ = try await git.resetWorktree(slot(1), base: "main", branch: branch, environment: [:])
+        _ = try await git.resetWorktree(slot(1), url: origin.path, base: "main", branch: branch, environment: [:])
         return slot(1)
     }
 
@@ -111,7 +111,7 @@ struct GitFixture {
         try await f.commit(in: f.seed, file: "README", "two\n")
         try await f.run(["-C", f.seed.path, "push", "origin", "main"])
 
-        let base = try await f.git.resetWorktree(slot, base: "main", branch: "loopworker-2-second", environment: [:])
+        let base = try await f.git.resetWorktree(slot, url: f.origin.path, base: "main", branch: "loopworker-2-second", environment: [:])
         #expect(base == (try await f.run(["-C", f.seed.path, "rev-parse", "HEAD"])))
         #expect(try await f.run(["-C", slot.path, "branch", "--show-current"]) == "loopworker-2-second")
         #expect(try f.read(slot.appending(path: "README")) == "two\n")
@@ -130,13 +130,56 @@ struct GitFixture {
         try await f.commit(in: slot, file: "feature", "x\n")
         #expect(try await f.git.commitsAhead(slot, base: "main") == 1)
 
-        try await f.git.push(slot, branch: "loopworker-1-card", environment: [:])
+        try await f.git.push(slot, to: f.origin.path, branch: "loopworker-1-card", environment: [:])
         let remote = { try await f.run(["ls-remote", f.origin.path, "refs/heads/loopworker-1-card"]) }
         #expect(try await remote().hasPrefix(try await f.run(["-C", slot.path, "rev-parse", "HEAD"])))
 
         try await f.run(["-C", slot.path, "commit", "--amend", "-m", "retried"])
-        try await f.git.push(slot, branch: "loopworker-1-card", environment: [:])
+        try await f.git.push(slot, to: f.origin.path, branch: "loopworker-1-card", environment: [:])
         #expect(try await remote().hasPrefix(try await f.run(["-C", slot.path, "rev-parse", "HEAD"])))
+    }
+
+    @Test("credentialed fetch and push run no repo hook or credential helper and ignore a rewritten origin")
+    func credentialedCallsIgnoreRepoConfig() async throws {
+        let f = try await GitFixture()
+        defer { f.cleanUp() }
+        let slot = try await f.slotOnBranch("loopworker-1-card")
+        let ran = f.root.appending(path: "ran")
+        let recorder = f.root.appending(path: "record.sh")
+        try f.write("#!/bin/sh\necho \"$0 $*\" >> '\(ran.path)'\ncat >> '\(ran.path)'\n", to: recorder)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: recorder.path)
+        let hooks = f.clone.appending(path: ".git/hooks")
+        for hook in ["pre-push", "reference-transaction", "post-merge"] {
+            try FileManager.default.createDirectory(at: hooks, withIntermediateDirectories: true)
+            try? FileManager.default.removeItem(at: hooks.appending(path: hook))
+            try FileManager.default.createSymbolicLink(at: hooks.appending(path: hook), withDestinationURL: recorder)
+        }
+        let evil = f.root.appending(path: "evil.git")
+        try await f.run(["init", "--bare", "-b", "main", evil.path])
+        try await f.run(["-C", f.clone.path, "config", "credential.helper", "!\(recorder.path) helper"])
+        try await f.run(["-C", f.clone.path, "config", "remote.origin.url", evil.path])
+        try await f.run(["-C", f.clone.path, "config", "remote.origin.pushurl", evil.path])
+
+        try await f.commit(in: slot, file: "feature", "x\n")
+        try FileManager.default.removeItem(at: ran)  // the fixture's own commits ran the hooks
+        try await f.git.push(slot, to: f.origin.path, branch: "loopworker-1-card", environment: [:])
+        // New commits on origin make each fetch update refs, which is what triggers the hooks.
+        try await f.commit(in: f.seed, file: "README", "two\n")
+        try await f.run(["-C", f.seed.path, "push", "origin", "main"])
+        try await f.git.cloneOrFetch(url: f.origin.path, into: f.clone, environment: [:])
+        #expect(!f.exists(ran), "\((try? f.read(ran)) ?? "")")
+        try await f.commit(in: f.seed, file: "README", "three\n")
+        try await f.run(["-C", f.seed.path, "push", "origin", "main"])
+        _ = try await f.git.resetWorktree(slot, url: f.origin.path, base: "main", branch: "loopworker-2-next", environment: [:])
+        // The local reset and checkout after the fetch still run hooks; they carry no credentials.
+        #expect(!((try? f.read(ran)) ?? "").contains("refs/remotes/"))
+        #expect(!((try? f.read(ran)) ?? "").contains("helper"))
+        #expect(try f.read(slot.appending(path: "README")) == "three\n")
+        #expect(try await f.run(["ls-remote", f.origin.path, "refs/heads/loopworker-1-card"]) != "")
+        #expect(try await f.run(["ls-remote", evil.path]) == "")
+
+        try await f.run(["-C", slot.path, "push", f.origin.path, "HEAD:refs/heads/control"])
+        #expect(try f.read(ran).contains("pre-push"))  // the same hook does run for plain git
     }
 
     @Test("detach frees the card branch for another worktree")
@@ -146,10 +189,10 @@ struct GitFixture {
         let first = try await f.slotOnBranch("loopworker-1-card")
         try await f.git.ensureWorktree(clone: f.clone, worktree: f.slot(2), slot: 2)
         await #expect(throws: GitError.self) {
-            try await f.git.resetWorktree(f.slot(2), base: "main", branch: "loopworker-1-card", environment: [:])
+            try await f.git.resetWorktree(f.slot(2), url: f.origin.path, base: "main", branch: "loopworker-1-card", environment: [:])
         }
         try await f.git.detach(first)
-        _ = try await f.git.resetWorktree(f.slot(2), base: "main", branch: "loopworker-1-card", environment: [:])
+        _ = try await f.git.resetWorktree(f.slot(2), url: f.origin.path, base: "main", branch: "loopworker-1-card", environment: [:])
         #expect(try await f.run(["-C", f.slot(2).path, "branch", "--show-current"]) == "loopworker-1-card")
     }
 
@@ -171,7 +214,7 @@ struct GitFixture {
     /// A runner that "clones" by creating the target directory, and times out on `timingOut`.
     static func fakeGit(timingOut: String) -> FakeRunner {
         FakeRunner { spec in
-            if spec.arguments.first == "clone", let target = spec.arguments.last {
+            if spec.arguments.contains("clone"), let target = spec.arguments.last {
                 try? FileManager.default.createDirectory(atPath: target, withIntermediateDirectories: true)
             }
             return spec.arguments.contains(timingOut) ? ProcessResult(status: -9, output: "", timedOut: true)
@@ -189,7 +232,7 @@ struct GitFixture {
         try await git.cloneOrFetch(url: "https://forge.invalid/a.git", into: clone, environment: ["GIT_ASKPASS": "/x"])
         #expect(FileManager.default.fileExists(atPath: clone.path))
         try await git.cloneOrFetch(url: "https://forge.invalid/a.git", into: clone, environment: [:])
-        try await git.push(clone, branch: "b", environment: [:])
+        try await git.push(clone, to: "https://forge.invalid/a.git", branch: "b", environment: [:])
         try await git.detach(clone)
         let error = try await #require(throws: GitError.self) { try await git.commitsAhead(clone, base: "main") }
         #expect(error.description.contains("rev-list --count origin/main..HEAD timed out"))
@@ -197,7 +240,7 @@ struct GitFixture {
         let calls = runner.calls
         #expect(calls.map { $0.timeout } == [.seconds(1800), .seconds(600), .seconds(600), .seconds(120), .seconds(120)])
         #expect(calls[0].environment["GIT_ASKPASS"] == "/x")
-        #expect(calls[1].arguments == ["-C", clone.path, "fetch", "--prune", "origin"])
+        #expect(calls[1].arguments == Git.credentialed + ["-C", clone.path, "fetch", "--prune", "https://forge.invalid/a.git", Git.trackingRefspec])
     }
 
     @Test("a clone killed at its timeout leaves no half-clone behind")

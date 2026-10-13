@@ -12,13 +12,13 @@ private actor SlotFakeGit: GitDriving {
     func syncCheckout(_ clone: URL, base: String) async throws { calls.append("syncCheckout") }
     func detach(_ worktree: URL) async throws { calls.append("detach \(worktree.lastPathComponent)") }
     func ensureWorktree(clone: URL, worktree: URL, slot: Int) async throws { calls.append("ensureWorktree \(slot)") }
-    func resetWorktree(_ worktree: URL, base: String, branch: String, environment: [String: String]) async throws -> String {
-        calls.append("resetWorktree \(base) \(branch) \(environment["GIT_ASKPASS"] ?? "-")")
+    func resetWorktree(_ worktree: URL, url: String, base: String, branch: String, environment: [String: String]) async throws -> String {
+        calls.append("resetWorktree \(url) \(base) \(branch) \(environment["GIT_ASKPASS"] ?? "-")")
         if let resetError { throw resetError }
         return "abc1234"
     }
     func commitsAhead(_ worktree: URL, base: String) async throws -> Int { 0 }
-    func push(_ worktree: URL, branch: String, environment: [String: String]) async throws { calls.append("push") }
+    func push(_ worktree: URL, to url: String, branch: String, environment: [String: String]) async throws { calls.append("push") }
     func removeWorktree(clone: URL, worktree: URL) async { calls.append("removeWorktree \(worktree.lastPathComponent)") }
 }
 
@@ -41,7 +41,7 @@ private struct Fixture {
     }
 
     var lifecycle: ScriptedSlotLifecycle {
-        ScriptedSlotLifecycle(runner: runner, git: git, log: log, gitEnvironment: { _ in ["GIT_ASKPASS": "/askpass"] })
+        ScriptedSlotLifecycle(runner: runner, git: git, log: log, gitRemote: { _ in ("https://forge.invalid/app.git", ["GIT_ASKPASS": "/askpass"]) })
     }
 
     func slot(hot: Bool) -> SlotSpec {
@@ -95,7 +95,7 @@ private struct Fixture {
         let slot = f.slot(hot: false)
         let commit = try await f.lifecycle.acquire(slot, contract: f.contract, base: "main", branch: "loopworker-12-fix")
         #expect(commit == "abc1234")
-        #expect(await f.git.calls == ["ensureWorktree 0", "resetWorktree main loopworker-12-fix /askpass"])
+        #expect(await f.git.calls == ["ensureWorktree 0", "resetWorktree https://forge.invalid/app.git main loopworker-12-fix /askpass"])
         #expect(f.scriptsRun() == ["provision.sh"])
         #expect(f.log.lines.contains { $0.contains("origin/main @ abc1234") && $0.contains("loopworker-12-fix") })
 
