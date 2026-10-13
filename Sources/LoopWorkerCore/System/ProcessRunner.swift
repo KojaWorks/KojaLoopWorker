@@ -108,7 +108,9 @@ public struct ProcessRunner: ProcessRunning {
         let argv = CStrings([spec.executable] + spec.arguments)
         let envp = CStrings(environment.map { "\($0.key)=\($0.value)" })
         var pid: pid_t = 0
-        let code = posix_spawnp(&pid, spec.executable, &actions, &attributes, argv.pointers, envp.pointers)
+        let code = withExtendedLifetime((argv, envp)) {
+            posix_spawnp(&pid, spec.executable, &actions, &attributes, argv.pointers, envp.pointers)
+        }
         guard code == 0 else {
             close(readEnd)
             throw fail(code)
