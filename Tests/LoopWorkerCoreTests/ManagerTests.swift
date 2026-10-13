@@ -477,6 +477,18 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(slots[0].state == "busy" && slots[0].card == "g/app#1")
     }
 
+    @Test func extraSlotBeyondThePoolIsRetiredWhenItsCardMovedOn() async throws {
+        let h = try ManagerHarness(projects: "[[project]]\npath = \"g/app\"\nhot = true")
+        h.addCard(2, state: .review)
+        try FileManager.default.createDirectory(at: h.stateDir("g--app", 3), withIntermediateDirectories: true)
+        try record(2, slot: 3).write(h.stateDir("g--app", 3).appending(path: "card.json"))
+        try await h.manager.start()
+        await h.manager.settle()
+        #expect(h.lifecycle.calls.contains("retire g--app/3"))
+        await h.manager.writeStatus(h.clock.now())
+        #expect(try h.status().projects[0].slots.map(\.index) == [0])
+    }
+
     @Test func cardsOfUnconfiguredProjectsAreReported() async throws {
         let h = try ManagerHarness(projects: oneColdProject)
         let gone = h.stateDir("g--gone", 0)

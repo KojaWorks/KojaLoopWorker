@@ -132,6 +132,8 @@ extension Manager {
                 if !p.spec.hot {
                     update(ref) { $0.task = .recycling }
                     track { await self.recycle(ref, keepOutcome: false) }
+                } else {
+                    retireIfDue(ref)  // an extra slot beyond the pool
                 }
                 continue
             }
