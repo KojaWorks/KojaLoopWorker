@@ -58,3 +58,12 @@ public protocol SlotLifecycle: Sendable {
     /// Removes a slot for good: `teardown.sh`, then the worktree. Best effort.
     func retire(_ slot: SlotSpec, contract: ProjectContract) async
 }
+
+/// Restarts the host's container engine after lifecycle scripts reported it down. One
+/// instance per host, shared by every slot.
+public protocol EngineRecovering: Sendable {
+    /// Tries to bring the engine back. Returns true when it answers again. Returns false
+    /// without doing anything when recovery is disabled or still backing off from the last
+    /// attempt, so callers can call it freely.
+    func recover() async -> Bool
+}
