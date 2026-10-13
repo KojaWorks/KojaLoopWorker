@@ -33,6 +33,8 @@ let package = Package(
             dependencies: [
                 "LoopWorkerCore",
                 "GitLabBackend",
+                "PatchBackend",
+                "GitHubBackend",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
