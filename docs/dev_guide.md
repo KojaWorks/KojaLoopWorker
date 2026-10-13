@@ -7,7 +7,7 @@ How to develop and test LoopWorker, and the gotchas that cost time on a live hos
 ```bash
 python3 -m venv .venv
 ./.venv/bin/pip install -e ".[dev]"      # httpx (runtime) + pytest (tests)
-./.venv/bin/python -m pytest tests/ -q
+./.venv/bin/python -m pytest pytests/ -q
 ```
 
 The whole suite runs in seconds and needs **no network, git, supabase, or real tmux** — it

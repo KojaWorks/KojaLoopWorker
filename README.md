@@ -126,7 +126,7 @@ project's stack.
 
 ```bash
 ./.venv/bin/pip install pytest
-./.venv/bin/python -m pytest tests/ -q
+./.venv/bin/python -m pytest pytests/ -q
 ```
 
 ## Host setup (needs you)

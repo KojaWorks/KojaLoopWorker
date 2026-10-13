@@ -1,0 +1,115 @@
+import Foundation
+import Testing
+@testable import LoopWorkerCore
+
+@Suite struct ConfigTests {
+    let home = URL(filePath: "/tmp/lw-home")
+
+    @Test func minimalConfigGetsDefaults() throws {
+        let c = try HostConfig.parse("""
+            [backlog]
+            kind = "gitlab"
+
+            [[project]]
+            path = "Group/My.App"
+            """, home: home)
+        #expect(c.backlogKind == "gitlab")
+        #expect(c.forgeKind == "gitlab")
+        #expect(c.maxSlots == 4)
+        #expect(c.maxAttempts == 3)
+        #expect(c.clonesDir.path == "/tmp/lw-home/clones")
+        #expect(c.projects.map(\.key) == ["group--my-app"])
+        #expect(c.projects[0].draftReviewRequests)
+    }
+
+    @Test func backlogKindIsRequired() {
+        #expect(throws: ConfigError.self) { try HostConfig.parse("max_slots = 2", home: home) }
+    }
+
+    @Test func projectsWithTheSameKeyAreRejected() {
+        #expect(throws: ConfigError.self) {
+            try HostConfig.parse("""
+                [backlog]
+                kind = "gitlab"
+                [[project]]
+                path = "a/b"
+                [[project]]
+                path = "A/B"
+                """, home: home)
+        }
+    }
+
+    @Test func nonPositiveWeightCountsAsOne() throws {
+        let c = try HostConfig.parse("""
+            [backlog]
+            kind = "gitlab"
+            [[project]]
+            path = "a/b"
+            weight = 0
+            """, home: home)
+        #expect(c.projects[0].weight == 1)
+    }
+
+    @Test func homeComesFromTheEnvironment() {
+        #expect(HostConfig.home(environment: ["LOOPWORKER_HOME": "/x/y"]).path == "/x/y")
+    }
+}
+
+@Suite struct OutcomeTests {
+    @Test func parsesDone() {
+        let o = Outcome.parse(Data(#"{"outcome":"done","title":"T","body":"B","guide":"g.html"}"#.utf8))
+        #expect(o == .done(title: "T", body: "B", guide: "g.html"))
+    }
+
+    @Test func parsesStuck() {
+        #expect(Outcome.parse(Data(#"{"outcome":"stuck","blocker":"why"}"#.utf8)) == .stuck(blocker: "why"))
+    }
+
+    @Test func garbageBecomesStuckNotAnError() {
+        guard case .stuck(let why) = Outcome.parse(Data("nope".utf8)) else { Issue.record("not stuck"); return }
+        #expect(why.contains("not valid JSON"))
+    }
+
+    @Test func doneWithoutTitleBecomesStuck() {
+        guard case .stuck = Outcome.parse(Data(#"{"outcome":"done"}"#.utf8)) else { Issue.record("not stuck"); return }
+    }
+}
+
+@Suite struct ConfigValidationTests {
+    let home = URL(filePath: "/tmp/lw-home")
+    let base = "[backlog]\nkind = \"gitlab\"\n"
+
+    @Test func rejectsRelativeClonesDirAndHome() {
+        #expect(throws: ConfigError.self) { try HostConfig.parse("clones_dir = \"rel\"\n" + base, home: home) }
+        #expect(throws: ConfigError.self) { try HostConfig.parse(base, home: URL(filePath: "rel")) }
+    }
+
+    @Test func rejectsZeroConcurrency() {
+        #expect(throws: ConfigError.self) { try HostConfig.parse("max_concurrent_workers = 0\n" + base, home: home) }
+    }
+
+    @Test func tildeNeedsASlash() {
+        #expect(expandTilde("~foo") == "~foo")
+        #expect(expandTilde("~/x").hasSuffix("/x"))
+    }
+
+    @Test func workerEnvComesFromHostConfig() throws {
+        let c = try HostConfig.parse(base + "[[project]]\npath = \"a/b\"\nworker_env = [\"FOO\"]\n", home: home)
+        #expect(c.projects[0].workerEnv == ["FOO"])
+    }
+
+    @Test func branchTemplateNeedsNumber() throws {
+        let dir = FileManager.default.temporaryDirectory.appending(path: "contract-\(UUID())")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try "[worker]\nbranch = \"lw-{slug}\"\n".write(to: dir.appending(path: "manifest.toml"), atomically: true, encoding: .utf8)
+        #expect(throws: ConfigError.self) { try ProjectContract.load(from: dir) }
+    }
+
+    @Test func outcomeTitleIsOneBoundedLine() {
+        let long = String(repeating: "x", count: 500)
+        guard case .done(let title, _, _) = Outcome.parse(Data(#"{"outcome":"done","title":"\#(long)\nsecond"}"#.utf8)) else {
+            Issue.record("not done"); return
+        }
+        #expect(title.count == Outcome.maxTitleLength)
+    }
+}

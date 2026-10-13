@@ -5,11 +5,11 @@ Manager's own codebase — you are a worker improving the tool that spawned you.
 
 ## Verify (the merge gate)
 
-- `.venv/bin/python -m pytest tests/ -q` — this is `verify.sh`. The whole suite mocks
+- `.venv/bin/python -m pytest pytests/ -q` — this is `verify.sh`. The whole suite mocks
   tmux/git/network and runs in seconds; run it often.
 - There is no dev server or stack; "observable" verification means tests. Manager
   behaviors (spawn/reap/reconcile) are tested by monkeypatching the `tmux` module —
-  see `tests/test_manager_integration.py` for the pattern.
+  see `pytests/test_manager_integration.py` for the pattern.
 - Do NOT start a real Manager to test: this host already runs the live one (shared
   lockfile, real backlog). Never write test data to the prod backlog.
 

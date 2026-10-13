@@ -6,12 +6,20 @@ on:
   pull_request:
 
 jobs:
-  test:
-    runs-on: ubuntu-latest   # GitHub-hosted, not self-hosted: this repo is public, so a fork
-                             # PR's pytest/pip must NOT run on our own raheth. Free on public repos.
+  swift:
+    # GitHub-hosted, not self-hosted: this repo is public, so a fork PR must not run on our hosts.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift --version
+      - run: swift build
+      - run: swift test
+
+  python:
+    # The Python reference implementation, until the Swift cutover deletes it.
+    runs-on: ubuntu-latest
     strategy:
       matrix:
-        # requires-python floor and the version the miquon host actually runs
         python-version: ["3.11", "3.14"]
     steps:
       - uses: actions/checkout@v4
@@ -19,4 +27,4 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]"
-      - run: pytest tests/ -q
+      - run: pytest pytests/ -q
