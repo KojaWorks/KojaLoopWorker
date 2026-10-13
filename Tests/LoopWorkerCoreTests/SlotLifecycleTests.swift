@@ -15,7 +15,7 @@ private actor SlotFakeGit: GitDriving {
     func resetWorktree(_ worktree: URL, url: String, base: String, branch: String, environment: [String: String]) async throws -> String {
         calls.append("resetWorktree \(url) \(base) \(branch) \(environment["GIT_ASKPASS"] ?? "-")")
         if let resetError { throw resetError }
-        return "abc1234"
+        return "abc1234def5678901234567890abcdef12345678"
     }
     func commitsAhead(_ worktree: URL, base: String) async throws -> Int { 0 }
     func push(_ worktree: URL, to url: String, branch: String, environment: [String: String]) async throws { calls.append("push") }
@@ -94,10 +94,10 @@ private struct Fixture {
         let f = try Fixture()
         let slot = f.slot(hot: false)
         let commit = try await f.lifecycle.acquire(slot, contract: f.contract, base: "main", branch: "loopworker-12-fix")
-        #expect(commit == "abc1234")
+        #expect(commit == "abc1234def5678901234567890abcdef12345678")
         #expect(await f.git.calls == ["ensureWorktree 0", "resetWorktree https://forge.invalid/app.git main loopworker-12-fix /askpass"])
         #expect(f.scriptsRun() == ["provision.sh"])
-        #expect(f.log.lines.contains { $0.contains("origin/main @ abc1234") && $0.contains("loopworker-12-fix") })
+        #expect(f.log.lines.contains { Redactor.redact($0).contains("origin/main @ abc1234def56, branch loopworker-12-fix") })
 
         await f.lifecycle.recycle(slot, contract: f.contract)
         #expect(f.scriptsRun() == ["provision.sh", "teardown.sh"])

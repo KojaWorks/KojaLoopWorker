@@ -44,7 +44,7 @@ public struct ScriptedSlotLifecycle: SlotLifecycle {
         } catch {
             throw SlotFailure("\(Self.name(slot)): resetting \(slot.worktree.path) to origin/\(base) on branch \(branch) failed: \(error)")
         }
-        log.info("\(Self.name(slot)): worktree at origin/\(base) @ \(commit), branch \(branch)")
+        log.info("\(Self.name(slot)): worktree at origin/\(base) @ \(commit.prefix(12)), branch \(branch)")  // a full SHA trips the redactor's hex rule
         try await runScript(slot.project.hot ? .reset : .provision, slot, contract)
         return commit
     }
