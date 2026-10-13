@@ -14,7 +14,7 @@ final class FakeForge: Forge, @unchecked Sendable {
         var defaultBranch = "main"
     }
 
-    let state = Locked(State())
+    let state = Guarded(State())
     static let environment = ["GIT_ASKPASS": "/fake/askpass", "LOOPWORKER_GIT_PASSWORD": "fabricated"]
 
     func cloneURL(for project: ProjectSpec) -> String { "https://forge.example/\(project.path).git" }

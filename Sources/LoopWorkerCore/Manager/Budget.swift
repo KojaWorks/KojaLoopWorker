@@ -12,11 +12,11 @@ public enum Budget {
     ///
     /// Hot projects reserve their slots in config order, each capped by what the budget still
     /// affords. Cold projects provision per card, so their pools only bound concurrency: each is
-    /// capped at `ceil(maxSlots)` so its slots stay inside its port band, and fill checks the
-    /// budget before each start.
-    public static func slotTargets(for projects: [ProjectSpec], maxSlots: Double) -> [Int] {
+    /// capped at `band` (default `ceil(maxSlots)`) so its slots stay inside its port band, and
+    /// fill checks the budget before each start.
+    public static func slotTargets(for projects: [ProjectSpec], maxSlots: Double, band: Int? = nil) -> [Int] {
         var remaining = maxSlots
-        let band = bandSize(maxSlots: maxSlots)
+        let band = band ?? bandSize(maxSlots: maxSlots)
         return projects.map { p in
             guard p.hot else { return min(p.slots, band) }
             let n = min(p.slots, affordable(remaining: remaining, weight: p.weight))
@@ -28,9 +28,10 @@ public enum Budget {
     /// Slots per port band: `max(ceil(maxSlots), 1)`.
     public static func bandSize(maxSlots: Double) -> Int { max(Int(maxSlots.rounded(.up)), 1) }
 
-    /// The first port of slot `index` of the project that holds port band `band`.
-    public static func port(basePort: Int, portStep: Int, maxSlots: Double, band: Int, index: Int) -> Int {
-        basePort + (band * bandSize(maxSlots: maxSlots) + index) * portStep
+    /// The first port of slot `index` of the project that holds port band `band`, with
+    /// `bandSize` slots per band.
+    public static func port(basePort: Int, portStep: Int, bandSize: Int, band: Int, index: Int) -> Int {
+        basePort + (band * bandSize + index) * portStep
     }
 
     /// The lowest band index not in `used`, so a band freed by a removed project is reused.

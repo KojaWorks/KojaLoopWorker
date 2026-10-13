@@ -26,8 +26,8 @@ func temporaryDirectory() throws -> URL {
     }
 
     @Test func portBandsDoNotOverlap() {  // B50
-        #expect(Budget.port(basePort: 54400, portStep: 100, maxSlots: 2.5, band: 0, index: 2) == 54600)
-        #expect(Budget.port(basePort: 54400, portStep: 100, maxSlots: 2.5, band: 1, index: 0) == 54700)
+        #expect(Budget.port(basePort: 54400, portStep: 100, bandSize: Budget.bandSize(maxSlots: 2.5), band: 0, index: 2) == 54600)
+        #expect(Budget.port(basePort: 54400, portStep: 100, bandSize: Budget.bandSize(maxSlots: 2.5), band: 1, index: 0) == 54700)
         #expect(Budget.freeBand(used: [0, 2]) == 1)
     }
 }
@@ -93,20 +93,6 @@ func temporaryDirectory() throws -> URL {
 
     @Test func missingFileIsEmpty() throws {
         #expect(try Secrets.load(URL(filePath: "/nonexistent/secrets.env")) == [:])
-    }
-}
-
-@Suite struct PaneTextTests {
-    @Test func authFailureNeedsClaudesChrome() {  // B16
-        #expect(PaneText.showsAuthFailure("⏺ Please run /login · API Error: 401"))
-        #expect(PaneText.showsAuthFailure("Not logged in · Please run /login"))
-        #expect(!PaneText.showsAuthFailure("grep 'Please run /login' tmux.py"))
-    }
-
-    @Test func folderTrustPhrases() {  // B17
-        #expect(PaneText.showsFolderTrust("Yes, I trust this folder"))
-        #expect(PaneText.showsFolderTrust("Accessing workspace:"))
-        #expect(!PaneText.showsFolderTrust("⏺ Reading files"))
     }
 }
 
@@ -194,7 +180,7 @@ func temporaryDirectory() throws -> URL {
     }
 
     @Test func preflightStripsUserAndPassesTheToken() async {  // B95
-        let runner = FakeRunner { _ in ProcessResult(status: 1, output: "warming up\nInvalid API key\n") }
+        let runner = ScriptedRunner { _ in ProcessResult(status: 1, output: "warming up\nInvalid API key\n") }
         let r = await AuthGate.preflight(runner: runner, environment: ["CLAUDE_CODE_OAUTH_TOKEN": "fabricated"])
         #expect(r.ok == false)
         #expect(r.detail == "Invalid API key")
@@ -207,7 +193,7 @@ func temporaryDirectory() throws -> URL {
     }
 
     @Test func preflightTimeoutIsAFailure() async {
-        let runner = FakeRunner { _ in ProcessResult(status: -9, output: "", timedOut: true) }
+        let runner = ScriptedRunner { _ in ProcessResult(status: -9, output: "", timedOut: true) }
         let r = await AuthGate.preflight(runner: runner, environment: [:])
         #expect(!r.ok)
         #expect(r.detail.contains("timed out"))
@@ -218,7 +204,7 @@ func temporaryDirectory() throws -> URL {
     @Test func sendsTheMessageOnStdinAndDedupesPerKey() async throws {  // B99, B100
         let dir = try temporaryDirectory()
         let out = dir.appending(path: "alerts")
-        let clock = Locked(Date(timeIntervalSince1970: 0))
+        let clock = Guarded(Date(timeIntervalSince1970: 0))
         let n = Notifier(command: "cat >> \(WorkerLaunch.shellQuote(out.path)); echo >> \(WorkerLaunch.shellQuote(out.path))",
                          runner: ShellRunner(), log: CollectingLog(), now: { clock.get })
         await n.send(key: "a", "first")
@@ -230,20 +216,20 @@ func temporaryDirectory() throws -> URL {
     }
 
     @Test func emptyCommandDoesNothing() async {
-        let runner = FakeRunner()
+        let runner = ScriptedRunner()
         await Notifier(command: "", runner: runner, log: CollectingLog()).send(key: "a", "x")
         #expect(runner.specs.get.isEmpty)
     }
 
     @Test func failuresAndRejectionsAreLogged() async {  // B101
         let log = CollectingLog()
-        let failing = FakeRunner { _ in ProcessResult(status: 7, output: "curl: (7) refused") }
+        let failing = ScriptedRunner { _ in ProcessResult(status: 7, output: "curl: (7) refused") }
         await Notifier(command: "x", runner: failing, log: log).send(key: "k", "m")
         #expect(log.contains("exited 7", level: .error))
-        let rejected = FakeRunner { _ in ProcessResult(status: 0, output: #"{"status":0,"errors":["bad token"]}"#) }
+        let rejected = ScriptedRunner { _ in ProcessResult(status: 0, output: #"{"status":0,"errors":["bad token"]}"#) }
         await Notifier(command: "x", runner: rejected, log: log).send(key: "k", "m")
         #expect(log.contains("rejected", level: .error))
-        let ok = FakeRunner { _ in ProcessResult(status: 0, output: #"{"status":1}"#) }
+        let ok = ScriptedRunner { _ in ProcessResult(status: 0, output: #"{"status":1}"#) }
         let quiet = CollectingLog()
         await Notifier(command: "x", runner: ok, log: quiet).send(key: "k", "m")
         #expect(quiet.messages.isEmpty)

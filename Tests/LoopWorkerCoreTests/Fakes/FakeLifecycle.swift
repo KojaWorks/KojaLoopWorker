@@ -10,7 +10,7 @@ final class FakeLifecycle: SlotLifecycle, @unchecked Sendable {
         var acquiredBranches: [String] = []
     }
 
-    let state = Locked(State())
+    let state = Guarded(State())
     var calls: [String] { state.get.calls }
 
     private func id(_ slot: SlotSpec) -> String { "\(slot.project.key)/\(slot.index)" }
@@ -43,8 +43,8 @@ final class FakeLifecycle: SlotLifecycle, @unchecked Sendable {
 }
 
 final class FakeEngine: EngineRecovering, @unchecked Sendable {
-    let result = Locked(true)
-    let calls = Locked(0)
+    let result = Guarded(true)
+    let calls = Guarded(0)
 
     func recover() async -> Bool {
         calls { $0 += 1 }

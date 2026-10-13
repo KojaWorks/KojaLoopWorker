@@ -20,9 +20,11 @@ final class FakeTmux: TmuxDriving, @unchecked Sendable {
         var entersSent: [String] = []
         var failSpawn = false
         var failIsAlive: Set<String> = []
+        /// The pane a freshly spawned session shows.
+        var spawnPane = ""
     }
 
-    let state = Locked(State())
+    let state = Guarded(State())
 
     func set(_ session: String, alive: Bool? = nil, pane: String? = nil) {
         state {
@@ -44,7 +46,7 @@ final class FakeTmux: TmuxDriving, @unchecked Sendable {
         try state {
             if $0.failSpawn { throw FakeError("tmux new-session \(session) failed") }
             $0.spawned.append(Spawned(session: session, directory: directory, script: script))
-            $0.sessions[session] = Session()
+            $0.sessions[session] = Session(pane: $0.spawnPane)
         }
     }
 

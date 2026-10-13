@@ -2,12 +2,12 @@ import Foundation
 @testable import LoopWorkerCore
 
 /// Records every `ProcessSpec` and answers from `handler`, so no test runs a real `claude`.
-final class FakeRunner: ProcessRunning, @unchecked Sendable {
-    let specs = Locked<[ProcessSpec]>([])
-    let handler: Locked<@Sendable (ProcessSpec) -> ProcessResult>
+final class ScriptedRunner: ProcessRunning, @unchecked Sendable {
+    let specs = Guarded<[ProcessSpec]>([])
+    let handler: Guarded<@Sendable (ProcessSpec) -> ProcessResult>
 
     init(_ handler: @escaping @Sendable (ProcessSpec) -> ProcessResult = { _ in ProcessResult(status: 0, output: "") }) {
-        self.handler = Locked(handler)
+        self.handler = Guarded(handler)
     }
 
     func run(_ spec: ProcessSpec) async throws -> ProcessResult {
@@ -40,7 +40,7 @@ struct ShellRunner: ProcessRunning {
 
 /// Collects log lines in memory.
 final class CollectingLog: LogSink, @unchecked Sendable {
-    let lines = Locked<[(level: LogLevel, message: String)]>([])
+    let lines = Guarded<[(level: LogLevel, message: String)]>([])
 
     func log(_ level: LogLevel, _ message: String) {
         lines { $0.append((level, message)) }

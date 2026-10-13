@@ -2,7 +2,7 @@ import Foundation
 
 /// A value guarded by a lock, so fakes can be configured synchronously from tests and still
 /// be `Sendable`.
-final class Locked<Value>: @unchecked Sendable {
+final class Guarded<Value>: @unchecked Sendable {
     private let lock = NSLock()
     private var value: Value
 

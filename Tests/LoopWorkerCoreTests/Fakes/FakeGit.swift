@@ -14,7 +14,7 @@ final class FakeGit: GitDriving, @unchecked Sendable {
         var failPushOnce = false
     }
 
-    let state = Locked(State())
+    let state = Guarded(State())
     var calls: [String] { state.get.calls }
     var pushedBranches: [String] { state.get.pushes.map(\.branch) }
 

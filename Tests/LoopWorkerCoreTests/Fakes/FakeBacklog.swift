@@ -24,7 +24,7 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
         var workableCalls: [[String]] = []
     }
 
-    let state = Locked(State())
+    let state = Guarded(State())
 
     @discardableResult
     func add(_ card: Card, snapshot: CardSnapshot? = nil) -> Card {
