@@ -15,16 +15,3 @@ jobs:
       - run: swift build
       - run: swift test
 
-  python:
-    # The Python reference implementation, until the Swift cutover deletes it.
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.14"]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-      - run: pip install -e ".[dev]"
-      - run: pytest pytests/ -q
