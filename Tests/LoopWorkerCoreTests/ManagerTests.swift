@@ -643,6 +643,7 @@ func fileMode(_ url: URL) throws -> Int {
 
         try h.writeOutcome(#"{"outcome":"stuck","blocker":"?"}"#, index: 1)
         #expect(await h.manager.handle(.interrupt) == .forcing)
+        #expect(h.log.contains("second SIGINT: force-stopping; reaping 2 worker(s)", level: .warning))
         await h.manager.forceStop()
         #expect(h.backlog.writes.contains(.release("id-1", reason: "LoopWorker released this card: the Manager stopped before the worker finished.", countsAsAttempt: false)))
         #expect(h.backlog.card(id: "id-2")?.state == .working)
@@ -664,7 +665,8 @@ func fileMode(_ url: URL) throws -> Int {
         _ = await manager.handle(.interrupt)
         try await run.value
         #expect(await lockReleased(h.home.appending(path: "state/manager.lock")))
-        #expect(h.log.contains("drained"))
+        #expect(h.log.contains("SIGINT: draining; 0 worker(s) still running", level: .warning))
+        #expect(h.log.messages.last == "stopped: drained: no worker was left running")
     }
 
     @Test func forceStopDoesNotWaitBehindTheRemainingCardReads() async throws {
@@ -692,6 +694,7 @@ func fileMode(_ url: URL) throws -> Int {
     @Test func sigtermForcesAtOnce() async throws {  // B106
         let h = try ManagerHarness(projects: oneColdProject)
         #expect(await h.manager.handle(.terminate) == .forcing)
+        #expect(h.log.contains("SIGTERM: force-stopping", level: .warning))
     }
 }
 

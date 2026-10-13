@@ -151,6 +151,8 @@ public actor Manager {
     var draining = false
     var forceRequested = false
     var interrupts = 0
+    /// The signal that asked for a force stop, for the final log line.
+    var stopSignal: String?
     var lastFill: Date?
     var fillSoon = false
     var lastSweep: Date?
@@ -207,15 +209,17 @@ public actor Manager {
     public func run() async throws {
         try await start()
         defer { heldLock.release() }
+        let reason: String
         while true {
             if forceRequested {
                 await forceStop()
+                reason = "force-stopped after \(stopSignal ?? "a stop request")"
                 break
             }
             await tick()
             if draining && !hasBusySlot {
-                log.info("drained: no worker is running; exiting")
                 await cancelTasks()
+                reason = "drained: no worker was left running"
                 break
             }
             // One-second steps so a SIGTERM doesn't wait out the whole interval.
@@ -224,12 +228,14 @@ public actor Manager {
             }
         }
         writeStatus(clock.now())
+        log.info("stopped: \(reason)")
     }
 
     /// Escalates on each SIGINT: drain, then force, then exit. SIGTERM forces at once.
     public func handle(_ request: StopRequest) -> StopResponse {
         if request == .terminate {
-            log.warning("SIGTERM: force-stopping: reaping workers and releasing their cards")
+            log.warning("SIGTERM: force-stopping; reaping \(busyCount) worker(s) and releasing cards that have no outcome")
+            stopSignal = "SIGTERM"
             forceRequested = true
             return .forcing
         }
@@ -237,14 +243,15 @@ public actor Manager {
         switch interrupts {
         case 1:
             draining = true
-            log.warning("SIGINT: draining: \(busyCount) worker(s) finish, no new claims. SIGINT again to force-stop.")
+            log.warning("SIGINT: draining; \(busyCount) worker(s) still running, no new claims (send SIGINT again to force)")
             return .draining
         case 2:
             forceRequested = true
-            log.warning("SIGINT again: force-stopping: reaping workers and releasing their cards. SIGINT again to exit at once.")
+            stopSignal = "a second SIGINT"
+            log.warning("second SIGINT: force-stopping; reaping \(busyCount) worker(s) and releasing cards that have no outcome (send SIGINT again to exit at once)")
             return .forcing
         default:
-            log.error("third SIGINT: exiting at once; workers and stacks may be left running")
+            log.error("third SIGINT: stopped at once; workers and stacks may be left running")
             dumpState()
             heldLock.release()
             return .exitNow
