@@ -327,14 +327,15 @@ private func make(_ fake: FakePatch, _ patchKeys: String = "", log: LogRecorder 
         #expect(try await backlog.claim(c) == false)
     }
 
-    @Test func claimOfACardWithNoStatusFiltersOnNull() async throws {
+    @Test(arguments: [(String?.none, "is.null"), ("", "eq.")])
+    func claimOfACardWithNoStatusFiltersOnWhatItRead(stored: String?, filter: String) async throws {
         let fake = FakePatch()
-        fake.rows["roadmap"] = [card(1, status: nil)]
+        fake.rows["roadmap"] = [card(1, status: stored)]
         let backlog = try make(fake)
         #expect(try await backlog.claim(try #require(try await backlog.workable(in: [app]).first)))
         let patch = try #require(fake.requests("PATCH", "/rest/v1/roadmap").first)
         #expect(URLComponents(url: patch.url!, resolvingAgainstBaseURL: false)!.queryItems!
-            .contains(URLQueryItem(name: "status", value: "is.null")))
+            .contains(URLQueryItem(name: "status", value: filter)))
     }
 
     @Test func claimRefusesACardThatIsNoLongerReady() async throws {

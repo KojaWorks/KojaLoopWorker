@@ -140,7 +140,7 @@ public actor PatchBacklog: Backlog {
         var id: String
         var number: Int
         var title: String
-        /// Nil when the cell is empty or null.
+        /// Exactly as stored: nil for null, so `claim` can filter on the value it read.
         var status: String?
         var priority: Double
         var isEpic: Bool
@@ -157,7 +157,7 @@ public actor PatchBacklog: Backlog {
             self.id = id
             self.number = Int(number)
             title = j["title"]?.string ?? ""
-            status = j["status"]?.string
+            if case .string(let s)? = j["status"] { status = s } else { status = nil }
             priority = j["priority"]?.double ?? 0
             isEpic = j["area"]?.strings.contains("epic") ?? false
             blockedBy = j["blocked_by"]?.strings ?? []
@@ -168,7 +168,7 @@ public actor PatchBacklog: Backlog {
         }
     }
 
-    private func isReady(_ status: String?) -> Bool { status == nil || status == config.status.ready }
+    private func isReady(_ status: String?) -> Bool { (status ?? "").isEmpty || status == config.status.ready }
 
     private func state(_ r: Row, trusted: Set<String>) -> CardState {
         switch r.status {
