@@ -16,7 +16,10 @@ let package = Package(
             name: "LoopWorkerCore",
             dependencies: [.product(name: "TOMLDecoder", package: "TOMLDecoder")]
         ),
-        .target(name: "GitLabBackend", dependencies: ["LoopWorkerCore"]),
+        .target(
+            name: "GitLabBackend",
+            dependencies: ["LoopWorkerCore", .product(name: "TOMLDecoder", package: "TOMLDecoder")]
+        ),
         .executableTarget(
             name: "loopworker",
             dependencies: [
