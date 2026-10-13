@@ -97,10 +97,10 @@ extension Manager {
 
     // MARK: Startup adoption
 
-    /// Adopts each slot whose `card.json` names a card that is still `working`, clears the
-    /// others, and reaps every session of this project that no slot adopted.
-    func adoptPreviousWorkers(_ key: String) async {
-        guard let p = projects[key] else { return }
+    /// Adopts each slot whose `card.json` names a card that is still `working` and clears the
+    /// others. Returns the sessions of the adopted workers.
+    func adoptPreviousWorkers(_ key: String) async -> Set<String> {
+        guard let p = projects[key] else { return [] }
         let fm = FileManager.default
         let dir = config.slotsStateDir.appending(path: key)
         let onDisk = ((try? fm.contentsOfDirectory(atPath: dir.path)) ?? []).compactMap(Int.init)
@@ -146,15 +146,35 @@ extension Manager {
                 log.info("\(label(s.spec)): adopted the worker for \(fresh.ref) on \(record.branch)")
             }
         }
+        return adopted
+    }
 
-        let prefix = SlotSpec.sessionPrefix(for: p.spec)
+    /// Reaps every worker session on this home's tmux server that no slot adopted. The socket
+    /// is private to this home, so this also catches workers of projects that left the config
+    /// while the Manager was down.
+    func reapUnadoptedSessions(_ adopted: Set<String>) async {
         do {
-            for session in try await deps.tmux.sessions(prefix: prefix) where !adopted.contains(session) {
+            for session in try await deps.tmux.sessions(prefix: "lw_") where !adopted.contains(session) {
                 log.warning("reaping worker session \(session): no slot holds a working card for it")
                 try? await deps.tmux.kill(session)
             }
         } catch {
-            log.error("can't list tmux sessions \(prefix)*: \(error); unadopted workers may still run")
+            log.error("can't list tmux sessions: \(error); unadopted workers may still run")
+        }
+    }
+
+    /// Logs each `card.json` left by a project that is no longer configured. The backlog can't
+    /// be asked about such a project, so a human must check the card.
+    func reportUnconfiguredCards() {
+        let fm = FileManager.default
+        let root = config.slotsStateDir
+        for key in ((try? fm.contentsOfDirectory(atPath: root.path)) ?? []).sorted() where projects[key] == nil {
+            let dir = root.appending(path: key)
+            for index in ((try? fm.contentsOfDirectory(atPath: dir.path)) ?? []).sorted() {
+                let file = dir.appending(path: "\(index)/card.json")
+                guard let record = CardRecord.read(file) else { continue }
+                log.error("\(file.path) says \(record.ref) of \(record.project) was being worked on, but that project is no longer in config.toml: check the card in the backlog (it may still be marked working), then delete \(file.path)")
+            }
         }
     }
 

@@ -189,7 +189,10 @@ public actor Manager {
 
         for spec in config.projects { addProject(spec) }
         resizeAll()
-        for key in order { await adoptPreviousWorkers(key) }
+        var adopted: Set<String> = []
+        for key in order { adopted.formUnion(await adoptPreviousWorkers(key)) }
+        await reapUnadoptedSessions(adopted)
+        reportUnconfiguredCards()
         for key in order { startRefresh(key) }
         lastSweep = clock.now()
         sweepStranded()

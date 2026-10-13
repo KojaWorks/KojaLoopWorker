@@ -467,7 +467,7 @@ func fileMode(_ url: URL) throws -> Int {
 
         #expect(h.tmux.exists("lw_g--app_0"))
         #expect(!h.tmux.exists("lw_g--app_7"))
-        #expect(h.tmux.exists("lw_g--apple_0"))
+        #expect(!h.tmux.exists("lw_g--apple_0"))  // a project removed while the Manager was down
         #expect(!FileManager.default.fileExists(atPath: h.stateDir("g--app", 1).appending(path: "card.json").path))
         let writes = h.backlog.writes
         #expect(writes.contains(.release("id-3", reason: "LoopWorker released this card: the Manager restarted and the worker was gone without an outcome.", countsAsAttempt: false)))
@@ -475,6 +475,20 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(!writes.contains { if case .release("id-1", _, _) = $0 { true } else { false } })
         let slots = try h.status().projects[0].slots
         #expect(slots[0].state == "busy" && slots[0].card == "g/app#1")
+    }
+
+    @Test func cardsOfUnconfiguredProjectsAreReported() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        let gone = h.stateDir("g--gone", 0)
+        try FileManager.default.createDirectory(at: gone, withIntermediateDirectories: true)
+        var r = record(9, slot: 0)
+        r.project = "g/gone"
+        try r.write(gone.appending(path: "card.json"))
+        try await h.boot()
+        let errors = h.log.lines.get.filter { $0.level == .error && $0.message.contains("g/app#9 of g/gone") }
+        #expect(errors.count == 1)
+        #expect(errors.first?.message.contains(gone.appending(path: "card.json").path) == true)
+        #expect(h.backlog.writes.isEmpty)
     }
 
     @Test func adoptedWorkerWithAnOutcomeIsFinished() async throws {  // B94
