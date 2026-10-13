@@ -46,3 +46,124 @@ public protocol GitDriving: Sendable {
     /// logs failures, never throws.
     func removeWorktree(clone: URL, worktree: URL) async
 }
+
+/// `GitDriving` over the `git` CLI. Each call throws `GitError` naming the command when git
+/// fails or exceeds its timeout: 30 min for clone, 10 min for fetch and push, 2 min for local
+/// operations.
+public struct Git: GitDriving {
+    private let runner: any ProcessRunning
+    private let log: any LogSink
+
+    /// - Parameters:
+    ///   - runner: Runs every git command.
+    ///   - log: Receives the failures of `removeWorktree`, which never throws.
+    public init(runner: any ProcessRunning, log: any LogSink) {
+        self.runner = runner
+        self.log = log
+    }
+
+    private static let cloneTimeout: Duration = .seconds(30 * 60)
+    private static let networkTimeout: Duration = .seconds(10 * 60)
+    private static let localTimeout: Duration = .seconds(2 * 60)
+
+    /// Clones into a temporary sibling and renames it into place, so a clone killed at its
+    /// timeout leaves no half-clone at `directory` for later fetches to fail on.
+    public func cloneOrFetch(url: String, into directory: URL, environment: [String: String]) async throws {
+        if FileManager.default.fileExists(atPath: directory.path) {
+            try await git(["-C", directory.path, "fetch", "--prune", "origin"], Self.networkTimeout, environment)
+            return
+        }
+        let partial = directory.deletingLastPathComponent()
+            .appending(path: ".\(directory.lastPathComponent).cloning-\(UUID().uuidString.prefix(8))")
+        do {
+            try await git(["clone", url, partial.path], Self.cloneTimeout, environment)
+            try FileManager.default.moveItem(at: partial, to: directory)
+        } catch {
+            try? FileManager.default.removeItem(at: partial)
+            throw error
+        }
+    }
+
+    public func syncCheckout(_ clone: URL, base: String) async throws {
+        try await git(["-C", clone.path, "reset", "--hard", "origin/\(base)"])
+        try await git(["-C", clone.path, "clean", "-fd"])
+    }
+
+    public func detach(_ worktree: URL) async throws {
+        try await git(["-C", worktree.path, "checkout", "--detach"])
+    }
+
+    public func ensureWorktree(clone: URL, worktree: URL, slot: Int) async throws {
+        if try await isWorktree(worktree, of: clone) { return }
+        try FileManager.default.createDirectory(at: worktree.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try await git(["-C", clone.path, "worktree", "prune"])
+        try await git(["-C", clone.path, "worktree", "add", "-B", "loopworker-slot-\(slot)", worktree.path, "HEAD"])
+    }
+
+    public func resetWorktree(_ worktree: URL, base: String, branch: String, environment: [String: String]) async throws -> String {
+        let path = worktree.path
+        try await git(["-C", path, "fetch", "origin"], Self.networkTimeout, environment)
+        try await git(["-C", path, "reset", "--hard", "origin/\(base)"])
+        // Plain -fd keeps ignored build caches, which keeps hot slots fast.
+        try await git(["-C", path, "clean", "-fd"])
+        try await git(["-C", path, "clean", "-fdx", "--", ".claude", "CLAUDE.local.md"])
+        try await git(["-C", path, "checkout", "-B", branch])
+        return try await git(["-C", path, "rev-parse", "HEAD"]).output.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    public func commitsAhead(_ worktree: URL, base: String) async throws -> Int {
+        let command = ["-C", worktree.path, "rev-list", "--count", "origin/\(base)..HEAD"]
+        let result = try await git(command)
+        guard let count = Int(result.output.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            throw GitError(command: command.joined(separator: " "), result: result)
+        }
+        return count
+    }
+
+    /// Uses `--force-with-lease`, because a finish retried after a restart pushes the same
+    /// branch again.
+    public func push(_ worktree: URL, branch: String, environment: [String: String]) async throws {
+        try await git(["-C", worktree.path, "push", "--force-with-lease", "origin", "HEAD:refs/heads/\(branch)"],
+                      Self.networkTimeout, environment)
+    }
+
+    public func removeWorktree(clone: URL, worktree: URL) async {
+        for command in [["worktree", "remove", "--force", worktree.path], ["worktree", "prune"]] {
+            do {
+                try await git(["-C", clone.path] + command)
+            } catch {
+                log.warning("removing worktree \(worktree.path): \(error)")
+            }
+        }
+    }
+
+    /// True when `worktree` is the top level of a worktree that shares `clone`'s repository.
+    private func isWorktree(_ worktree: URL, of clone: URL) async throws -> Bool {
+        guard FileManager.default.fileExists(atPath: worktree.path) else { return false }
+        let probe = try await runner.run(ProcessSpec(
+            "git", ["-C", worktree.path, "rev-parse", "--show-toplevel", "--git-common-dir"], timeout: Self.localTimeout))
+        let lines = probe.output.split(separator: "\n").map(String.init)
+        guard probe.succeeded, lines.count == 2 else { return false }
+        let cloneCommon = try await git(["-C", clone.path, "rev-parse", "--git-common-dir"]).output
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return Self.same(URL(filePath: lines[0]), worktree)
+            && Self.same(Self.resolve(lines[1], in: worktree), Self.resolve(cloneCommon, in: clone))
+    }
+
+    /// rev-parse prints `--git-common-dir` relative to `-C` in a main checkout, absolute in a worktree.
+    private static func resolve(_ path: String, in directory: URL) -> URL {
+        path.hasPrefix("/") ? URL(filePath: path) : directory.appending(path: path)
+    }
+
+    private static func same(_ a: URL, _ b: URL) -> Bool {
+        a.standardizedFileURL.resolvingSymlinksInPath().path == b.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    @discardableResult
+    private func git(_ arguments: [String], _ timeout: Duration = localTimeout, _ environment: [String: String] = [:]) async throws -> ProcessResult {
+        let result = try await runner.run(ProcessSpec(
+            "git", arguments, environment: environment.mapValues { $0 }, timeout: timeout))
+        guard result.succeeded else { throw GitError(command: arguments.joined(separator: " "), result: result) }
+        return result
+    }
+}

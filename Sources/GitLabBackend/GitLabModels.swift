@@ -1,0 +1,131 @@
+import Foundation
+
+// REST v4 shapes, decoded with snake_case conversion. Only the fields LoopWorker reads.
+
+struct GLUser: Decodable, Sendable, Equatable {
+    var id: Int
+    var username: String
+}
+
+struct GLProject: Decodable, Sendable {
+    var id: Int
+    var pathWithNamespace: String
+    var defaultBranch: String?
+}
+
+struct GLIssue: Decodable, Sendable {
+    /// Global id; also the work item's id.
+    var id: Int
+    var iid: Int
+    var projectId: Int
+    var title: String
+    var description: String?
+    /// `opened` or `closed`.
+    var state: String
+    var labels: [String]
+    var assignees: [GLUser]?
+    var author: GLUser
+    var createdAt: Date
+    var webUrl: String
+    var movedToId: Int?
+}
+
+struct GLNote: Decodable, Sendable {
+    var id: Int
+    var body: String
+    var author: GLUser
+    var createdAt: Date
+    var system: Bool
+}
+
+struct GLLabelEvent: Decodable, Sendable {
+    struct Label: Decodable, Sendable { var name: String }
+    var id: Int
+    var user: GLUser?
+    var createdAt: Date
+    /// Null when the label was deleted since.
+    var label: Label?
+    /// `add` or `remove`.
+    var action: String
+}
+
+struct GLMergeRequest: Decodable, Sendable {
+    var iid: Int
+    var webUrl: String
+}
+
+struct GLUpload: Decodable, Sendable {
+    /// Relative to the project, e.g. `/uploads/<secret>/shot.png`.
+    var url: String
+    /// Relative to the instance, e.g. `/-/project/12/uploads/<secret>/shot.png`.
+    var fullPath: String?
+}
+
+// GraphQL shapes. Snake-case conversion leaves camelCase keys untouched.
+
+struct GQLUser: Decodable, Sendable {
+    /// `gid://gitlab/User/<id>`.
+    var id: String
+    var username: String
+
+    var numericID: Int? { Int(id.split(separator: "/").last ?? "") }
+}
+
+struct GQLNote: Decodable, Sendable {
+    /// `gid://gitlab/Note/<id>`.
+    var id: String
+    var body: String
+    var system: Bool
+    var createdAt: Date
+    var lastEditedAt: Date?
+    var lastEditedBy: GQLUser?
+    /// Null for a deleted user.
+    var author: GQLUser?
+
+    var numericID: String { String(id.split(separator: "/").last ?? Substring(id)) }
+}
+
+struct GQLPageInfo: Decodable, Sendable {
+    var hasNextPage: Bool
+    var endCursor: String?
+}
+
+/// One page of the snapshot query: the work item's title and description widget, and a page
+/// of the issue's notes. `Issue` has no edit metadata; the description widget does, and GitLab
+/// updates it when either the title or the description changes.
+struct GQLSnapshotPage: Decodable, Sendable {
+    struct Namespace: Decodable, Sendable { var workItem: WorkItem? }
+    struct WorkItem: Decodable, Sendable {
+        var title: String
+        var widgets: [Widget]
+    }
+    /// Only the description widget's fragment fills the optional fields.
+    struct Widget: Decodable, Sendable {
+        var typename: String
+        var description: String?
+        var lastEditedAt: Date?
+        var lastEditedBy: GQLUser?
+        enum CodingKeys: String, CodingKey {
+            case typename = "__typename", description, lastEditedAt, lastEditedBy
+        }
+    }
+    struct Project: Decodable, Sendable { var issue: Issue? }
+    struct Issue: Decodable, Sendable { var notes: Notes }
+    struct Notes: Decodable, Sendable {
+        var pageInfo: GQLPageInfo
+        var nodes: [GQLNote]
+    }
+    var namespace: Namespace?
+    var project: Project?
+}
+
+/// An issue's title and description with the metadata the trust check needs.
+struct IssueText: Sendable {
+    var title: String
+    var description: String?
+    var createdAt: Date
+    var author: GQLUser?
+    /// Covers title and description edits; nil when neither was ever edited.
+    var lastEditedAt: Date?
+    var lastEditedBy: GQLUser?
+}
