@@ -655,6 +655,28 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.log.contains("drained"))
     }
 
+    @Test func forceStopDoesNotWaitBehindTheRemainingCardReads() async throws {
+        let h = try ManagerHarness(projects: "[[project]]\npath = \"g/app\"\nslots = 2")
+        h.addCard(1)
+        h.addCard(2)
+        try await h.boot()
+        await h.cycle()
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 2)
+        let gate = Gate()
+        h.backlog.state {
+            $0.cardCalls = []
+            $0.cardGate = gate
+        }
+        let manager = h.manager!
+        let tick = Task { await manager.tick() }
+        try await until { gate.waiting == 1 }
+        #expect(await manager.handle(.terminate) == .forcing)
+        gate.open()
+        await tick.value
+        #expect(h.backlog.state.get.cardCalls.count == 1)
+    }
+
     @Test func sigtermForcesAtOnce() async throws {  // B106
         let h = try ManagerHarness(projects: oneColdProject)
         #expect(await h.manager.handle(.terminate) == .forcing)

@@ -22,6 +22,9 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
         var failMarkReview: (any Error)?
         var claimOverride: Bool?
         var workableCalls: [[String]] = []
+        var cardCalls: [String] = []
+        /// When set, `card(_:)` waits on it after recording the call.
+        var cardGate: Gate?
     }
 
     let state = Guarded(State())
@@ -51,7 +54,12 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
     }
 
     func card(_ ref: CardRef) async throws -> Card? {
-        try state {
+        let gate = state {
+            $0.cardCalls.append(ref.id)
+            return $0.cardGate
+        }
+        await gate?.wait()
+        return try state {
             if $0.failCard.contains(ref.id) { throw FakeError("card \(ref.display) read failed") }
             return $0.cards[ref.id]
         }

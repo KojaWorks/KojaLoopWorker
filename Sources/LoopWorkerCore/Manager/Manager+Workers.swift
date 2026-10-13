@@ -294,7 +294,8 @@ extension Manager {
             (projects[key]?.slots ?? []).filter { $0.phase == .busy && $0.task == nil && $0.card != nil }
                 .map { SlotRef(key: key, id: $0.id) }
         }
-        for ref in refs { await reconcile(ref, now) }
+        // A force stop must not wait behind one slow backlog read per remaining slot.
+        for ref in refs where !forceRequested { await reconcile(ref, now) }
     }
 
     func reconcile(_ ref: SlotRef, _ now: Date) async {

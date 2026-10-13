@@ -267,6 +267,7 @@ public actor Manager {
             startRefresh(key)
         }
         await reconcileBusySlots(now)
+        if forceRequested { return }  // run() force-stops next; don't start new work first
         retireAllDue()
         reviveBrokenSlots(now)
         if let last = lastSweep, now.timeIntervalSince(last) >= Self.sweepInterval {
