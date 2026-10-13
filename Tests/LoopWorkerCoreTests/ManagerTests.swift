@@ -399,6 +399,22 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.backlog.writes.filter { if case .claim = $0 { true } else { false } }.count == claims + 1)
     }
 
+    @Test func aCleanFinishClearsTheAuthBackoff() async throws {  // B92, B98
+        let h = try await spawned("[[project]]\npath = \"g/app\"\nslots = 2")
+        h.addCard(13)
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 2)
+        h.tmux.set("lw_g--app_0", pane: "Please run /login · API Error: 401")
+        await h.cycle()
+        #expect(try h.status().auth.backoffUntil != nil)
+        try h.writeOutcome(#"{"outcome":"stuck","blocker":"?"}"#, index: 1)
+        h.tmux.set("lw_g--app_1", alive: false)
+        await h.cycle()
+        await h.cycle()
+        #expect(try h.status().auth.backoffUntil == nil)
+        #expect(h.log.contains("auth backoff cleared"))
+    }
+
     @Test func aHumanMovingTheCardAbandonsWithoutBacklogWrites() async throws {  // B55
         let h = try await spawned()
         let before = h.backlog.writes
