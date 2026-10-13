@@ -19,6 +19,9 @@ public final class ManagerLock: @unchecked Sendable {
 
     public let file: URL
     private let lock = NSLock()
+
+    /// `state/manager.lock` under `stateDir`.
+    public static func file(stateDir: URL) -> URL { stateDir.appending(path: "manager.lock") }
     private var fd: Int32
 
     private init(file: URL, fd: Int32) {

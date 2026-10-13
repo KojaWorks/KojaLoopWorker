@@ -138,7 +138,8 @@ public actor Manager {
     let hostName: String
     /// Slots per port band, fixed at startup so a live `max_slots` change never moves a band.
     let bandSize: Int
-    nonisolated let heldLock = LockBox()
+    /// The Manager's lock, for a signal handler that must release it without awaiting the actor.
+    public nonisolated let heldLock = LockBox()
 
     var projects: [String: Project] = [:]
     var order: [String] = []
@@ -178,7 +179,7 @@ public actor Manager {
     /// project refreshes, the stranded-card sweep and the notifier self-test.
     /// - Throws: `ManagerLock.Held` when another Manager runs for this home.
     public func start() async throws {
-        heldLock.set(try ManagerLock.acquire(at: stateDir.appending(path: "manager.lock"), log: log))
+        heldLock.set(try ManagerLock.acquire(at: ManagerLock.file(stateDir: stateDir), log: log))
         started = clock.now()
         configModified = modificationDate(configFile)
         let token = deps.environment["CLAUDE_CODE_OAUTH_TOKEN"].map { $0.isEmpty ? "empty" : "set" } ?? "not set"
@@ -348,9 +349,9 @@ public actor Manager {
 
     func cardRecordFile(_ spec: SlotSpec) -> URL { spec.stateDir.appending(path: "card.json") }
 
-    var hostPaused: Bool { FileManager.default.fileExists(atPath: stateDir.appending(path: "PAUSED").path) }
+    var hostPaused: Bool { FileManager.default.fileExists(atPath: KillSwitch.file(stateDir: stateDir).path) }
     func projectPaused(_ key: String) -> Bool {
-        FileManager.default.fileExists(atPath: stateDir.appending(path: "projects/\(key)/PAUSED").path)
+        FileManager.default.fileExists(atPath: KillSwitch.file(stateDir: stateDir, projectKey: key).path)
     }
 
     func modificationDate(_ file: URL) -> Date? {

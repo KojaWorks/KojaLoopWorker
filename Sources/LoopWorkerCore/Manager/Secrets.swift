@@ -45,6 +45,13 @@ public enum Secrets {
         return values
     }
 
+    /// `base` (the process environment) with `file`'s values overlaid: what the backend
+    /// factories and the worker and preflight token lookups see.
+    /// - Throws: whatever `load` throws.
+    public static func overlay(_ base: [String: String], with file: URL) throws -> [String: String] {
+        base.merging(try load(file)) { _, secret in secret }
+    }
+
     private static func isName(_ s: String) -> Bool {
         guard let first = s.first, first == "_" || (first.isASCII && first.isLetter) else { return false }
         return s.allSatisfy { $0 == "_" || ($0.isASCII && ($0.isLetter || $0.isNumber)) }

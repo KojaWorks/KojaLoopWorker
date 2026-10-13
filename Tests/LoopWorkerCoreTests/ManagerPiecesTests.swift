@@ -248,3 +248,58 @@ func temporaryDirectory() throws -> URL {
             .contains("--model"))
     }
 }
+
+@Suite struct StatusReportTests {
+    let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+    func status(updated: Date) -> ManagerStatus {
+        ManagerStatus(
+            pid: 7, host: "box", started: updated.addingTimeInterval(-3700), updated: updated, paused: true, draining: false,
+            auth: .init(state: "failing", detail: "Invalid API key"),
+            projects: [.init(path: "g/app", key: "g--app", hot: false, ready: true, error: nil, paused: false, removing: false,
+                             slots: [.init(index: 0, state: "busy", task: "finishing", card: "g/app#12", branch: "loopworker-12-x",
+                                           runningFor: 125, lastError: "finish failed: 502", port: 54400,
+                                           pane: ["a", "thinking"], finishFailing: true)])],
+            log: ["INFO hello"])
+    }
+
+    @Test func runningManagerIsSummarized() {  // B149
+        let r = StatusReport.render(status(updated: now.addingTimeInterval(-5)), lockHolder: 7, now: now)
+        #expect(r.running)
+        #expect(r.text == """
+            LoopWorker 0.0.0-dev on box, pid 7, up 1h 01m, PAUSED
+            auth: failing (Invalid API key)
+            g/app (cold)
+              slot 0: busy g/app#12 on loopworker-12-x for 2m, finishing, FINISH FAILING
+                last error: finish failed: 502
+                > thinking
+            recent log:
+              INFO hello
+
+            """)
+    }
+
+    @Test func noLockHolderMeansNotRunning() {
+        let r = StatusReport.render(status(updated: now), lockHolder: nil, now: now)
+        #expect(!r.running)
+        #expect(r.text.hasPrefix("The Manager is not running.\nIts last status, from "))
+        #expect(StatusReport.render(nil, lockHolder: nil, now: now).text == "The Manager is not running.\n")
+    }
+
+    @Test func staleStatusWhileLockedIsWedged() {
+        let r = StatusReport.render(status(updated: now.addingTimeInterval(-61)), lockHolder: 7, now: now)
+        #expect(!r.running)
+        #expect(r.text.hasPrefix("The Manager (pid 7) looks wedged"))
+    }
+}
+
+@Suite struct SecretsOverlayTests {
+    @Test func secretsOverrideTheProcessEnvironment() throws {
+        let dir = try temporaryDirectory()
+        let file = dir.appending(path: "secrets.env")
+        try "CLAUDE_CODE_OAUTH_TOKEN=from-file\nLOOPWORKER_GITLAB_TOKEN=glpat-fabricated\n".write(to: file, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        let merged = try Secrets.overlay(["PATH": "/bin", "CLAUDE_CODE_OAUTH_TOKEN": "from-env"], with: file)
+        #expect(merged == ["PATH": "/bin", "CLAUDE_CODE_OAUTH_TOKEN": "from-file", "LOOPWORKER_GITLAB_TOKEN": "glpat-fabricated"])
+    }
+}
