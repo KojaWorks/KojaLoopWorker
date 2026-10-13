@@ -54,3 +54,25 @@ public enum GitLabBackend {
         return (backlog, forge)
     }
 }
+
+extension GitLabBacklog: Diagnosable {
+    /// Reads the token's user (`GET /user`) and reports who it is.
+    public func diagnose() async -> [DoctorCheck] { [await client.identityCheck("backlog gitlab")] }
+}
+
+extension GitLabForge: Diagnosable {
+    /// Reads the token's user (`GET /user`) and reports who it is.
+    public func diagnose() async -> [DoctorCheck] { [await client.identityCheck("forge gitlab")] }
+}
+
+extension GitLabClient {
+    func identityCheck(_ name: String) async -> DoctorCheck {
+        let base = connection.baseURL.absoluteString
+        do {
+            let user = try await me()
+            return DoctorCheck(name, .ok, "\(connection.tokenEnv) belongs to @\(user.username) (id \(user.id)) on \(base)")
+        } catch {
+            return DoctorCheck(name, .fail, "\(error)", remedy: "check that this host reaches \(base) and that \(connection.tokenEnv) holds a token for it with the api scope")
+        }
+    }
+}

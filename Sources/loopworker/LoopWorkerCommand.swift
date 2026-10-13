@@ -9,7 +9,7 @@ struct LoopWorkerCommand: AsyncParsableCommand {
         abstract: "Claims cards from a backlog and runs one claude worker per card.",
         discussion: "State lives in $LOOPWORKER_HOME (default ~/.loopworker).",
         version: loopworkerVersion,
-        subcommands: [Run.self, Status.self, Pause.self, Resume.self, Service.self, Version.self],
+        subcommands: [Run.self, Status.self, Pause.self, Resume.self, Doctor.self, Service.self, Version.self],
         defaultSubcommand: Run.self)
 }
 
@@ -145,6 +145,43 @@ struct Resume: ParsableCommand {
 struct Version: ParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Print the version.")
     func run() { print(loopworkerVersion) }
+}
+
+struct Doctor: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Check this host's config, secrets, tools, claude login, backends and state. Exits 1 when a check fails.")
+
+    @Flag(help: "Print the checks as JSON.")
+    var json = false
+
+    func run() async throws {
+        let process = ProcessInfo.processInfo.environment
+        let userHome = FileManager.default.homeDirectoryForCurrentUser
+        let doctor = LoopWorkerCore.Doctor(
+            home: HostConfig.home(environment: process), environment: process, runner: ProcessRunner(),
+            servicePath: LaunchdService.path(userHome: userHome),
+            credentialVariables: { try credentialVariables(config: $0) },
+            makeBackends: { config, environment in
+                try checkWorkerEnv(config: config, secretNames: try secretVariables(config: config, environment: environment))
+                return try makeBackends(config: config, log: StderrLog(), environment: environment)
+            })
+        let checks = await doctor.run()
+        if json {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            FileHandle.standardOutput.write(try encoder.encode(checks) + Data("\n".utf8))
+        } else {
+            print(LoopWorkerCore.Doctor.render(checks), terminator: "")
+        }
+        if !LoopWorkerCore.Doctor.passed(checks) { throw ExitCode.failure }
+    }
+}
+
+/// Backend log lines during `doctor`, redacted, on stderr.
+struct StderrLog: LogSink {
+    func log(_ level: LogLevel, _ message: String) {
+        FileHandle.standardError.write(Data("\(level.rawValue): \(Redactor.redact(message))\n".utf8))
+    }
 }
 
 struct Service: AsyncParsableCommand {
