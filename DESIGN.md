@@ -1,286 +1,218 @@
-# LoopWorker — design
+# LoopWorker design
 
-An outer **Manager** that polls a project's backlog and spawns disposable **Workers**, each of
-which implements exactly one card and exits. It externalizes the build loop that previously lived
-*inside* a single Claude session (self-pacing via `ScheduleWakeup`, self-registering, self-selecting
-cards). That in-session loop was the fragile part; LoopWorker moves all the statefulness out to the
-Manager and leaves the Worker stateless and throwaway.
+LoopWorker is a deterministic **Manager** daemon that claims cards from a **backlog** and spawns
+one disposable **Worker** (a `claude` session in tmux) per card. The worker implements the card
+in its own slot and writes an **outcome** file. The Manager then **finishes** the card: it pushes
+the branch to the **forge**, opens a review request, and moves the card on. Terms are defined in
+[docs/glossary.md](docs/glossary.md).
 
-LoopWorker is project-agnostic. It targets any repo that ships a `.loopworker/` contract (see below).
-The first supported backlog is [Patch](https://patch.d.nevyn.dev); Notion/GitHub/etc. are future
-adapters behind the same interface.
+This document describes the Swift implementation. Behaviour that the Python implementation
+learned the hard way, and which the port must keep or fix, is listed in
+[docs/behavior-spec.md](docs/behavior-spec.md).
 
 ## Principles
 
-- **The Worker is stateless and disposable.** It is told its card, its name, and that it is already
-  claimed. It does one card, reports the outcome to the card, goes idle, and is reaped. No
-  self-pacing, no card selection, no backlog re-query, no registration. A crashed Worker just dies —
-  it cannot corrupt loop state because it holds none.
-- **The Manager is deterministic and non-AI.** Polling, claiming, slot lifecycle, and crash recovery
-  are mechanical. No model runs in the loop — it's cheap, debuggable, and predictable. (This is *why*
-  the Manager talks to the backlog over its HTTP API, not the MCP — see "Manager is not a Claude".)
-- **The card status is the source of truth**, not the process. "Card left In progress" is the exit
-  signal; "Worker process gone while card still In progress" is the crash signal. The Manager
-  reconciles process state against card state every tick.
-- **One fact, one home.** Blocking is the `blocked_by` relation, never a duplicate status column.
-  The claim is the card's `Assignee`. Slot state lives in the Manager's memory + dashboard.
+- **The Manager is deterministic and non-AI.** It talks to backlogs and forges over their HTTP
+  APIs. No model runs in the loop.
+- **The Worker is stateless, disposable and powerless.** It gets a worktree, a snapshot of its
+  card and a brief. It holds no backlog or forge credentials, so it cannot change anything
+  outside its worktree: a worker that follows a prompt injection can at worst write bad code
+  into a draft review request.
+- **The card state is the source of truth.** The Manager reconciles live sessions, outcome files
+  and card states every tick. A card in `working` with no live worker and no outcome is a crash;
+  a card that a human moved out of `working` means the worker is reaped without finishing.
+- **Reconcile, don't fire once.** Every step that touches the outside world is re-derived from
+  observed state on the next tick, so a Manager restart in the middle of any step heals itself.
+- **Nothing slow runs inside a tick.** Lifecycle scripts, git, forge writes and auth preflights
+  run as tracked tasks with hard timeouts. A tick only observes and starts work, so one wedged
+  project never stalls the others.
+- **Errors surface.** Every failure reaches the log and, when a slot or card is affected, the
+  status file, with enough detail for a human to act. A failed backlog read is never treated as
+  "no cards" or "no projects".
 
-## Components
+## Package layout
 
-### Host Manager (`host.py`)
+| Target | Contents | May import |
+| --- | --- | --- |
+| `LoopWorkerCore` | Models, the `Backlog` and `Forge` protocols, config, process control, tmux, git, slots, the reconciler, the Manager loop, status, notify, doctor checks. | Foundation, TOMLDecoder |
+| `GitLabBackend` | `GitLabBacklog`, `GitLabForge`, the REST/GraphQL client. | Core |
+| `PatchBackend` | `PatchBacklog` (PostgREST). | Core |
+| `GitHubBackend` | `GitHubForge`; later `GitHubBacklog`. | Core |
+| `loopworker` | The CLI (swift-argument-parser). Builds backends from config and runs the Manager. | all of the above |
 
-One process per **host**. It reads the shared backlog's `projects` table for rows whose
-`worker_manager` is this host's, clones each repo on demand under `clones_dir`, and runs a
-per-project Manager over a single shared backlog adapter. A host-wide `max_slots` budget
-bounds live stacks: **hot** projects keep a warm pool (counted permanently); **cold**
-projects provision a slot per card from the leftover budget and tear it down after. The
-budget is spent in WEIGHTED units, not raw slot counts: each project's `weight` (default 1)
-is its relative RAM cost per slot — a warm Supabase stack (a dozen containers, several GB
-resident) is nothing like a cold native build (idle at rest) — so a heavier project's slots
-draw down more of the shared budget than a cheap one's. A project's `model` (CLI alias:
-opus/fable/sonnet/haiku) sets the default a worker is spawned with (`--model`); a card's
-own `model` (roadmap table) overrides it for that one card. Resolved in
-`Manager._resolve_model` and applied in `_write_launch`; neither set omits `--model`
-entirely, so the CLI's own default is unchanged. Host config lives in
-`~/.loopworker/config.toml` (backlog connection, host id, clones dir, budget) — NOT in any
-project repo, so onboarding a project is just a table row + a `.loopworker/` contract. The
-host owns the lockfile, signals (⌃C drain→force→hard-exit), and the dashboard; it delegates
-per-project reconcile/spawn/reap to the Manager below.
+Core never imports a backend. A future Notion backlog is one more target.
 
-The `projects` table is treated as **live config**: `reconcile_projects` re-reads it every
-poll and reconciles the delta into the running Managers without a restart — a newly assigned
-project is cloned + built, an unassigned one is drained + torn down, a changed `slots`
-count resizes the pool in place (`SlotPool.resize`; a BUSY slot is flagged `retiring` and
-torn down by `recycle` only after its card finishes, so a worker is never yanked mid-card),
-and a changed `weight` takes effect on the next budget recompute (`_apply_slot_targets`/
-`_fill_all`) — no restart either. A failed read leaves the current set untouched — a
-transient backlog error must never be read as "no projects, retire everything." A
-`hot`⇄`cold` flip is the one change that still needs a restart (different provisioning
-model); it's logged when seen.
+## Backlog and forge are separate seams
 
-A teammate runs their own Host Manager on their own box (their compute + `claude` login)
-against the same backlog, scoped to their `worker_manager` — the owner's LLM budget is never
-spent on workers; the PAT is backlog access only.
+A backlog decides what to work on. A forge receives the code. GitLab provides both, but
+Patch+GitHub and Notion+GitHub are real combinations, so the host config names each one
+separately.
 
-### Manager (`manager.py`)
+```swift
+public protocol Backlog: Sendable {
+    func workable(in projects: [ProjectSpec]) async throws -> [Card]  // ready + trusted, best first
+    func card(_ ref: CardRef) async throws -> Card?                  // nil: the card is gone
+    func working(in projects: [ProjectSpec]) async throws -> [Card]   // for stranded-card recovery
+    func claim(_ card: Card) async throws -> Bool                     // false: lost a race, skip
+    func snapshot(_ card: Card) async throws -> CardSnapshot
+    func markReview(_ card: Card, review: ReviewRequest) async throws
+    func markStuck(_ card: Card, blocker: String) async throws
+    func release(_ card: Card, reason: String) async throws
+}
 
-A single long-lived Python process. Each tick (~5 min) it **reconciles** two sets — live Worker
-processes (tmux sessions) against card statuses — and fixes any divergence. It is a reconciler, not
-just a spawner; the happy path (spawn workable cards) is one of four cases:
-
-| tmux session | card state | meaning | Manager action |
-|---|---|---|---|
-| alive | In progress, assigned to it | healthy | leave it |
-| **dead** | **In progress, assigned to it** | **Worker crashed** | reclaim: clear `Assignee`, move card to Backlog, log |
-| alive | left In progress (Shipped / Needs refinement / Backlog) | done or bailed | reap tmux after 120s grace |
-| alive | In progress, `Last active` stale (hrs) | hung | watchdog reap + reclaim |
-
-The crash case (row 2) is the one that silently stalls the system if missing: a card stuck
-`In progress` with a dead owner is skipped by every other Worker forever. The Manager owns crash
-recovery precisely because the Worker, by definition, cannot.
-
-Per tick, for each free slot, the Manager also: finds the highest-priority **workable** card
-(Backlog, unassigned, not an epic, all direct `blocked_by` targets Shipped), claims it (`Assignee` +
-`In progress`) **before** spawning so its own next tick skips it, and spawns a Worker into that slot.
-
-### Worker
-
-An interactive `claude` running in a tmux session, one per in-flight card. Spawned with the brief
-delivered as the **initial-prompt argv** (reliable; no `send-keys` timing races):
-
-```
-tmux new-session -d -s lw-<project>-<cardid> \
-  "cd $SLOT_DIR && claude --permission-mode acceptEdits 'You are <Name>. ...one-card brief...'"
+public protocol Forge: Sendable {
+    func gitEnvironment() -> [String: String]                 // credentials for clone/fetch/push
+    func cloneURL(for project: ProjectSpec) -> String
+    func openReviewRequest(_ draft: ReviewRequestDraft) async throws -> ReviewRequest  // idempotent per branch
+    func attach(_ file: URL, to project: ProjectSpec) async throws -> URL?           // nil: forge has no attachments
+}
 ```
 
-Interactive (not `claude -p`) so the session is human-attachable for intervention and has the full
-tool surface — notably **Chrome DevTools MCP** for browser verification. The Manager only ever uses
-`send-keys` for follow-up nudges into a stuck Worker, never for the initial delivery.
+The source of truth for these signatures is `Sources/LoopWorkerCore/Backend/`.
 
-The Worker:
-1. Reads its card body (via the Patch MCP — Workers *are* Claudes and do use the MCP).
-2. Decides workability. Not workable → moves the card to Needs refinement (with sharp numbered
-   questions) or back to Backlog, clears `Assignee`, and stops.
-3. Workable → implements the minimum that works, runs `verify.sh`, opens a PR, runs a
-   **clean-context self-review subagent** over the diff, addresses findings, merges on green CI.
-4. Reports outcome to the card: Shipped + `solved_in_pr` + a summary at the bottom.
-5. **Env survey** (wind-down): writes one row to the shared Env-feedback table — *"anything missing
-   from your environment, any gate that blocked you wrongly, anything that slowed you down?"*
-6. Goes idle. The Manager reaps the pane next tick (scrollback preserved for inspection).
+### Card states
 
-The Worker never picks a second card. Iteration is the Manager's job.
+Every backlog maps its own fields onto five states:
 
-### Slot pool
+| State | Meaning | GitLab (labels mode) | Patch |
+| --- | --- | --- | --- |
+| `ready` | Trusted and waiting to be claimed. | open, assigned to me, `loopworker:next`, status To Do | Backlog, unassigned |
+| `working` | Claimed; a worker should be running. | `loopworker:working`, status In progress | In progress |
+| `review` | Finished; a review request exists. | `loopworker:review`, status In review | (round 2) |
+| `stuck` | The worker needs a human. | `loopworker:stuck`, status To Do, still assigned to me | Needs refinement |
+| `other` | Anything else. Never claimed, never reaped on its own. | | |
 
-`supabase start` (or any project's stack bring-up) is the expensive part, so stacks are **warm and
-reused**. A slot = `(worktree dir, port, long-lived stack)`. The Manager builds N slots once at
-pool-init and reuses them across many cards. With ~3 slots on miquon (RAM-bound: 3 stacks + 3
-Claudes + 3 headless Chromes), N is a config knob; expect to land at 2–3.
+GitLab can express status either as the native work-item status field or as labels; the
+adapter supports both (`status_mode` in the host config). The `loopworker:*` labels always
+carry the Manager's own state, so the Manager never depends on how a team uses its board.
 
-**Reset on acquire, never trust release.** A crashed Worker leaves its slot dirty (uncommitted
-files, polluted DB). Resetting on release would skip that cleanup on the exact path that needs it.
-So the Manager resets a slot *before* every spawn:
+### Trust
 
-```
-git -C $SLOT fetch origin -q
-git -C $SLOT reset --hard origin/main && git -C $SLOT clean -fd   # keep .git / node_modules
-git -C $SLOT checkout -B claude/<slug> origin/main
-<project reset.sh>          # e.g. supabase db reset — the test-isolation guarantee
-```
+A backlog only reports a card as `ready` if its own identity (the token's user) vouched for it.
+For GitLab that means all of these hold:
 
-The stack stays *up* across jobs; only the DB content resets. Seconds, not minutes.
+- the issue is assigned to me, and the assignment event's author is me;
+- the most recent `loopworker:next` label event was added by me;
+- the issue's project is inside the configured allowlist.
 
-### Backlog adapter
+The snapshot only contains content that I vouched for: the description if I edited it last or
+it was last edited before my label event, and comments that I wrote or that were posted before
+my label event. Everything left out is named in the snapshot's `excluded` list and logged, so a
+human can see why a worker didn't see something.
 
-The Manager talks to the backlog through a narrow interface so new backends slot in later:
+## The worker lifecycle
 
-```
-list_workable() -> [Card]      # Backlog, unassigned, not epic, blockers all Shipped, sorted by priority
-claim(card, worker)            # set Assignee + In progress
-release(card)                  # clear Assignee, set Backlog (crash recovery)
-is_unblocked(card) -> bool     # all direct blocked_by targets Shipped
-```
+1. **Fill.** For a free slot, the Manager takes the best `workable` card of that slot's project
+   and calls `claim`. A lost claim skips the card.
+2. **Acquire.** A task resets the slot's worktree to the base branch, checks out
+   `loopworker/<card-slug>`, and runs `reset.sh` (hot) or `provision.sh` (cold).
+3. **Spawn.** The Manager writes the snapshot, the brief and a launch script into the slot's
+   state directory (never into the worktree) and starts `claude` in a tmux session. The worker
+   gets `LOOPWORKER_OUTCOME`, the path where its outcome goes, and an MCP config that contains
+   only the project's declared servers (`--strict-mcp-config`).
+4. **Work.** The worker implements, runs `verify.sh`, reviews its own diff with fresh-context
+   subagents, optionally writes a review guide, commits, and writes the outcome:
 
-v1 ships the **Patch adapter** only, hitting PostgREST at `api.patch.d.nevyn.dev` with a service
-token. Notion/GitHub adapters are future work behind the same four methods.
+   ```json
+   {"outcome": "done", "title": "...", "body": "markdown", "guide": "relative/path.html"}
+   {"outcome": "stuck", "blocker": "markdown: what is missing and who can provide it"}
+   ```
 
-## Manager is not a Claude
+5. **Finish.** When the outcome file exists, the Manager reaps the session after a short grace
+   period and runs the finish task:
+   - `done`: check that the branch has commits ahead of the base (otherwise treat the outcome
+     as `stuck`), push, attach the guide, open a draft review request, `markReview`.
+   - `stuck`: `markStuck` with the blocker. Commits stay on the local branch.
+   - The slot is recycled only after the finish task succeeds. A failed finish is retried on
+     the next tick from the same outcome file.
+6. **Recycle.** Hot slots reset; cold slots tear down.
 
-The `mcp__…__*` tools exist only inside a Claude session. The Manager is deliberately non-AI, so it
-**cannot use the Patch MCP** — it hits Patch's REST API (PostgREST) directly, authenticating with a
-PAT it exchanges for a short-lived owner session (RLS-scoped, no service_role).
-This is a feature: deterministic, cheap, no model in the polling loop, and it makes the
-backlog-adapter boundary clean. It also means no `claude -p` preflight is needed — the initial-prompt
-argv *is* the kickoff, a static template with no AI in the Manager anywhere.
+## Reconcile
 
-## The project contract
+Each tick, for every busy slot, the pure function `Reconciler.decide` maps an observation to one
+decision:
 
-A repo is **LoopWorker-compatible** iff it ships a valid `.loopworker/` directory. The Manager owns
-git/worktree mechanics (generic); the project owns its stack (Supabase, Rails, docker-compose, …).
+| Observation | Decision |
+| --- | --- |
+| Outcome file present | `finish` |
+| Card gone, or a human moved it out of `working` | `abandon`: reap, recycle, no backlog write |
+| Session dead, no outcome, card `working` | `release(crashed)` |
+| Pane shows claude's login or 401 screen | `release(auth)`, and the auth circuit breaker backs off |
+| Running longer than the wall-clock cap | `release(hung)` |
+| Otherwise | `keep` |
 
-```
-myproject/.loopworker/
-  manifest.toml      # portal/backlog location, brief source, required MCPs, slot hints, script paths
-  provision.sh       # FIRST time per slot: heavy, idempotent. Brings the stack up. Emits port(s).
-  reset.sh           # per-acquire: cheap. DB reset + project clean. The isolation gate.
-  verify.sh          # the merge gate: typecheck + tests. Nonzero exit = do not ship.
-  teardown.sh        # slot retirement: stop stack, free ports.
-```
+A release increments the card's attempt count. When it reaches `max_attempts`, the Manager marks
+the card `stuck` instead, with the releases as the blocker, so a card that always crashes its
+worker can't loop forever.
 
-Why `provision` (heavy, once) is split from `reset` (cheap, every acquire): that split *is* the
-warm-stack optimization. Port handshake: the Manager injects `LOOPWORKER_SLOT_DIR` and
-`LOOPWORKER_PORT` into the script + Worker environment; scripts read them.
+At startup, and every few minutes after, the Manager calls `working(in:)` and compares it
+against its slots. A `working` card with no slot is either finishable (its slot directory has an
+outcome file) or stranded (released with reason "Manager restarted").
 
-**Auto-scaffolding a missing contract.** A `projects` row can be added before its repo ships a
-`.loopworker/` contract — the host clones it, `Manifest.load` raises, and (once per project, a
-marker file in the host's state dir) `HostManager._scaffold_if_needed` kicks a one-off `claude`
-agent in a throwaway clone of its own (never the shared `clones_dir/<project>` directory
-`_ensure_clone` refreshes with `git reset --hard`, so the agent's in-progress commit can't be
-stomped by the next poll). The agent inspects the repo's shape, writes a best-guess contract, and
-opens a PR — a human reviews and merges it once, then the project onboards like any other on the
-next clone refresh. No AI runs in the host's own poll loop; the scaffolding work happens entirely
-inside the spawned agent, same as a card Worker. Known gap: unlike a card Worker, a scaffolding
-session has no wallclock cap or reaper — a hung agent's tmux session (`lw-scaffold-<project>`)
-just sits there until someone notices. Fine for an occasional, human-glanced-at one-off; would
-need the same reconcile/reap treatment as card Workers if this starts happening often.
+## Host config
 
-The **loop instructions / worker brief** are pointed to by the manifest and can be whatever suits the
-project: a Markdown file in the repo, a URL, or a Patch page (the live, canonical form today). For
-repo-file/url sources the Manager inlines the text into the spawn prompt; for a `patch-page` it hands
-the Worker a *pointer* and lets the Worker read it via the Patch MCP (`get_page`) — the Manager stays
-out of brief-parsing, which keeps it free of the blocks-table API. Either way the Manager wraps the
-brief with the per-card preamble (you're pre-claimed, do this one card, report, then stop).
-
-### `manifest.toml` (schema sketch)
+`~/.loopworker/config.toml` (or `$LOOPWORKER_HOME/config.toml`) is the only config source.
+All state paths are absolute and derive from `LOOPWORKER_HOME`, never from the working
+directory. Secrets come from environment variables named in the config, never from the file.
 
 ```toml
-[project]
-name = "myproject"
+clones_dir             = "~/Dev/loopworker"   # clones and slot worktrees
+max_slots              = 4                    # weighted budget
+max_concurrent_workers = 2
+max_attempts           = 3
 
 [backlog]
-adapter = "patch"                                  # patch | notion | github (only patch in v1)
-portal  = "https://patch.d.nevyn.dev/app/projects-myproject-roadmap-<uuid>"
-# adapter-specific resolution of roadmap table / workers table / brief lives under [backlog.patch]
+kind      = "gitlab"
+base_url  = "https://gitlab.com"
+token_env = "LOOPWORKER_GITLAB_TOKEN"
+allowed   = ["mygroup/"]                      # path prefixes; anything else is ignored
+status_mode = "labels"                        # or "work_item_status"
 
-[brief]
-source = "patch-page"                              # patch-page | repo-file | url
-ref    = "https://patch.d.nevyn.dev/app/loop-runner-instructions-<uuid>"
-# or: source = "repo-file"; ref = ".loopworker/BRIEF.md"
+[forge]
+kind      = "gitlab"                          # shares the backlog's base_url and token by default
 
-[worker]
-mcp = ["patch", "chrome-devtools"]                 # required MCP servers; .mcp.json ships in repo
-wallclock_cap_minutes = 90                         # Manager reaps regardless after this
-
-[slots]
-count = 3                                           # pool size; RAM-bound on the host
+[[project]]
+path     = "mygroup/myapp"                    # forge path; also the backlog's project key
+slots    = 1
+hot      = false
+weight   = 1
+model    = "opus"
+contract = "~/.loopworker/contracts/myapp"    # optional host-local overlay of .loopworker/
 ```
 
-## Gates (merge-to-main is autonomous and unattended)
-
-1. `verify.sh` — typecheck + unit, must pass before PR. *Project-defined.*
-2. **Clean-context self-review subagent** before merge — an independent read of the diff; the main
-   quality gate.
-3. **CI green + branch protection** (up-to-date-with-main, required checks) — the hard gate the
-   Worker cannot bypass.
-4. **Slot isolation** (per-acquire `reset.sh`) — a bad Worker can't poison another's tree or DB.
-5. **Manager kill-switch** — a flag file checked each tick that halts new spawns (panic button).
-6. **Per-Worker wallclock cap** — Manager reaps after N minutes regardless of state, so a stuck
-   Worker can't burn tokens all night.
-
-Gates 5 and 6 are the ones required *before* running unattended.
-
-## Manager state & dashboard
-
-The Manager holds slot/worker state in memory and serves it as a **local HTTP status page** (it's
-already a long-lived process; serving its own state is cheap and gives real-time richness for free).
-Optionally it mirrors a compact heartbeat row to a Patch page for phone-glanceability — but Patch is
-never the primary store of Manager state.
-
-## Runtime & first-time setup
+## State on disk
 
 ```
-cd ~/Dev && git clone git@…/myproject
-git clone git@…/KojaLoopWorker && cd KojaLoopWorker
-uv venv && uv pip install -e .            # venv, not system pip
-cp .env.example .env                       # PATCH_PAT (mint in Patch → Settings → Tokens)
-tmux new -s loopworker './loopworker.py --project ~/Dev/myproject'
-#   first run builds N slots + provisions N stacks (slow, once), then starts reconciling
+$LOOPWORKER_HOME/
+  config.toml
+  state/manager.lock          pid lock: one Manager per home
+  state/status.json           written atomically each tick; `loopworker status` reads it
+  state/manager.log           redacted
+  state/PAUSED                host killswitch; state/projects/<key>/PAUSED per project
+  slots/<key>/<n>/            brief, snapshot, launch script, outcome, MCP config
+<clones_dir>/<key>/           the clone
+<clones_dir>/<key>.slots/<n>/ slot worktrees
 ```
 
-The working copy's `manifest.toml` is the source of truth; CLI flags are overrides. `--project` is
-the only required argument.
+## Concurrency
 
-Credentials on the host:
-- Manager needs a **Patch PAT** — `PATCH_PAT` in `.env`, minted once in Patch (Settings ->
-  Tokens). It exchanges the PAT for a short-lived owner session (REST, not MCP); RLS-scoped,
-  no service_role, revocable. The deployment's public anon key goes in the manifest.
-- The Workers' `claude` CLI must be **logged in on the host once** — interactive `claude` inherits
-  that auth; there is no per-Worker login.
-- Worker `.mcp.json` (Patch + Chrome DevTools) ships in the project repo; the Manager injects secrets
-  via env.
+The Manager is an actor. The tick runs every 15 s and only does fast work: reading tmux state,
+reading outcome files, a bounded number of backlog reads, and starting tasks. Acquire, finish,
+recycle, provision, clone refresh and the auth preflight are tasks owned by their slot or
+project, each under its own timeout. A slot with a running task is skipped by fill and by
+reconcile until the task completes and records its result on the slot.
 
-For "survives reboot," run the Manager under **launchd KeepAlive** rather than a tmux session. tmux
-is the right v1 (attach and watch it reconcile); the spawned Workers stay in tmux regardless.
+Every subprocess, including git and tmux, runs through one `ProcessRunner`: its own process
+group, stdin from `/dev/null`, `GIT_TERMINAL_PROMPT=0`, a hard timeout that kills the group, and
+output read without waiting on grandchildren that keep the pipe open.
 
-## Notable capability shift from the old in-session loop
+## Signals
 
-The previous Workers ran inside the **Claude Desktop app**, whose verification leaned on the
-**Preview MCP** (`preview_start`, `preview_eval`, in-page session minting). CLI Workers in tmux do
-not have Preview — they have **Chrome DevTools MCP**, with different primitives. So porting the
-worker brief is not just trimming the loop/selection/registration sections: the *verification
-recipes need a real rewrite* against Chrome DevTools MCP. The iOS-simulator path (`simctl`) is plain
-CLI and survives unchanged.
+The first SIGINT drains, the second force-stops (reap every worker and release its card), the
+third exits immediately. SIGTERM force-stops. launchd and systemd send SIGTERM.
 
-## Open questions / future
+## Distribution
 
-- **Worker brief: generic protocol vs project specifics.** The generic protocol (you're pre-claimed,
-  do one card, verify, PR, self-review, report, survey, stop) belongs to LoopWorker; project
-  specifics (stack quirks, verify recipes, gotchas) belong to the project's brief. The spawn prompt
-  composes both. Exact seam TBD when we write the brief.
-- **Poison-card protection.** A card that crashes its Worker is reclaimed to Backlog and
-  re-picked on the next fill with no backoff or attempt cap — so a reliably-crashing card
-  would spin forever. Add a per-card attempt counter that quarantines to Needs refinement
-  after N crashes.
-- Notion / GitHub backlog adapters.
-- Whether the Env-feedback table auto-files recurring requests as LoopWorker backlog cards.
-- launchd packaging for the Manager.
+A single `loopworker` binary from the `nevyn/tap` Homebrew formula. `loopworker service install`
+writes a launchd plist (a LaunchDaemon with `UserName` when the host has no logged-in user, or a
+LaunchAgent). A menu-bar app may come back later as a client of `status.json`.
