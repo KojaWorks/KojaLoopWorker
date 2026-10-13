@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import LoopWorkerCore
 
-private actor FakeGit: GitDriving {
+private actor SlotFakeGit: GitDriving {
     var calls: [String] = []
     var resetError: (any Error)?
 
@@ -24,7 +24,7 @@ private actor FakeGit: GitDriving {
 
 private struct Fixture {
     let runner = FakeProcessRunner()
-    let git = FakeGit()
+    let git = SlotFakeGit()
     let log = SlotTestLog()
     let contract: ProjectContract
     let root: URL

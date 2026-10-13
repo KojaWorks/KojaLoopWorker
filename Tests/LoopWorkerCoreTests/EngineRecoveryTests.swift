@@ -3,7 +3,7 @@ import Testing
 @testable import LoopWorkerCore
 
 /// A clock that only moves when a test (or the recovery's sleep) advances it.
-private final class TestClock: @unchecked Sendable {
+private final class EngineTestClock: @unchecked Sendable {
     private let lock = NSLock()
     private var current = Date(timeIntervalSince1970: 1_000_000)
     var now: Date { lock.withLock { current } }
@@ -26,7 +26,7 @@ private final class Notes: @unchecked Sendable {
 private struct Fixture {
     let runner = FakeProcessRunner()
     let log = SlotTestLog()
-    let clock = TestClock()
+    let clock = EngineTestClock()
     let notes = Notes()
     let engine: EngineRecovery
 
