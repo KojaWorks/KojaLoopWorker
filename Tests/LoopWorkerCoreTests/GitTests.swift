@@ -130,13 +130,35 @@ struct GitFixture {
         try await f.commit(in: slot, file: "feature", "x\n")
         #expect(try await f.git.commitsAhead(slot, base: "main") == 1)
 
-        try await f.git.push(slot, to: f.origin.path, branch: "loopworker-1-card", environment: [:])
+        let first = try await f.git.push(slot, to: f.origin.path, branch: "loopworker-1-card", expected: nil, environment: [:])
         let remote = { try await f.run(["ls-remote", f.origin.path, "refs/heads/loopworker-1-card"]) }
-        #expect(try await remote().hasPrefix(try await f.run(["-C", slot.path, "rev-parse", "HEAD"])))
+        #expect(first == (try await f.run(["-C", slot.path, "rev-parse", "HEAD"])))
+        #expect(try await remote().hasPrefix(first))
 
         try await f.run(["-C", slot.path, "commit", "--amend", "-m", "retried"])
-        try await f.git.push(slot, to: f.origin.path, branch: "loopworker-1-card", environment: [:])
-        #expect(try await remote().hasPrefix(try await f.run(["-C", slot.path, "rev-parse", "HEAD"])))
+        let second = try await f.git.push(slot, to: f.origin.path, branch: "loopworker-1-card", expected: first, environment: [:])
+        #expect(try await remote().hasPrefix(second))
+        #expect(second != first)
+    }
+
+    @Test("push never overwrites a branch that LoopWorker didn't push")
+    func pushLeaseProtectsSomeoneElsesBranch() async throws {
+        let f = try await GitFixture()
+        defer { f.cleanUp() }
+        try await f.run(["-C", f.seed.path, "push", "origin", "main:refs/heads/123-fix-login"])
+        let theirs = try await f.run(["ls-remote", f.origin.path, "refs/heads/123-fix-login"])
+        let slot = try await f.slotOnBranch("123-fix-login")
+        try await f.commit(in: slot, file: "feature", "x\n")
+
+        let rejected = try await #require(throws: PushRejected.self) {
+            try await f.git.push(slot, to: f.origin.path, branch: "123-fix-login", expected: nil, environment: [:])
+        }
+        #expect(rejected.branch == "123-fix-login")
+        await #expect(throws: PushRejected.self) {  // a lease on some other commit is refused too
+            try await f.git.push(slot, to: f.origin.path, branch: "123-fix-login",
+                                 expected: try await f.run(["-C", slot.path, "rev-parse", "HEAD"]), environment: [:])
+        }
+        #expect(try await f.run(["ls-remote", f.origin.path, "refs/heads/123-fix-login"]) == theirs)
     }
 
     @Test("credentialed fetch and push run no repo hook or credential helper and ignore a rewritten origin")
@@ -162,7 +184,7 @@ struct GitFixture {
 
         try await f.commit(in: slot, file: "feature", "x\n")
         try FileManager.default.removeItem(at: ran)  // the fixture's own commits ran the hooks
-        try await f.git.push(slot, to: f.origin.path, branch: "loopworker-1-card", environment: [:])
+        _ = try await f.git.push(slot, to: f.origin.path, branch: "loopworker-1-card", expected: nil, environment: [:])
         // New commits on origin make each fetch update refs, which is what triggers the hooks.
         try await f.commit(in: f.seed, file: "README", "two\n")
         try await f.run(["-C", f.seed.path, "push", "origin", "main"])
@@ -232,13 +254,13 @@ struct GitFixture {
         try await git.cloneOrFetch(url: "https://forge.invalid/a.git", into: clone, environment: ["GIT_ASKPASS": "/x"])
         #expect(FileManager.default.fileExists(atPath: clone.path))
         try await git.cloneOrFetch(url: "https://forge.invalid/a.git", into: clone, environment: [:])
-        try await git.push(clone, to: "https://forge.invalid/a.git", branch: "b", environment: [:])
+        _ = try await git.push(clone, to: "https://forge.invalid/a.git", branch: "b", expected: nil, environment: [:])
         try await git.detach(clone)
         let error = try await #require(throws: GitError.self) { try await git.commitsAhead(clone, base: "main") }
         #expect(error.description.contains("rev-list --count origin/main..HEAD timed out"))
 
         let calls = runner.calls
-        #expect(calls.map { $0.timeout } == [.seconds(1800), .seconds(600), .seconds(600), .seconds(120), .seconds(120)])
+        #expect(calls.map { $0.timeout } == [.seconds(1800), .seconds(600), .seconds(120), .seconds(600), .seconds(120), .seconds(120)])  // push resolves HEAD first
         #expect(calls[0].environment["GIT_ASKPASS"] == "/x")
         #expect(calls[1].arguments == Git.credentialed + ["-C", clone.path, "fetch", "--prune", "https://forge.invalid/a.git", Git.trackingRefspec])
     }

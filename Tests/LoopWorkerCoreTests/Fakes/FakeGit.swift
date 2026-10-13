@@ -6,7 +6,9 @@ import Foundation
 final class FakeGit: GitDriving, @unchecked Sendable {
     struct State {
         var calls: [String] = []
-        var pushes: [(worktree: URL, url: String, branch: String, environment: [String: String])] = []
+        var pushes: [(worktree: URL, url: String, branch: String, expected: String?, environment: [String: String])] = []
+        /// When set, the next push throws this instead.
+        var pushFailure: (any Error)?
         var fetchEnvironments: [[String: String]] = []
         var commitsAhead: [String: Int] = [:]
         var defaultCommitsAhead = 1
@@ -48,10 +50,13 @@ final class FakeGit: GitDriving, @unchecked Sendable {
         state { $0.commitsAhead[worktree.path] ?? $0.defaultCommitsAhead }
     }
 
-    func push(_ worktree: URL, to url: String, branch: String, environment: [String: String]) async throws {
+    /// Returns `commit-<n>` for the n-th successful push.
+    func push(_ worktree: URL, to url: String, branch: String, expected: String?, environment: [String: String]) async throws -> String {
         try state {
             if $0.failPushOnce { $0.failPushOnce = false; throw FakeError("git push \(branch) failed") }
-            $0.pushes.append((worktree, url, branch, environment))
+            if let e = $0.pushFailure { $0.pushFailure = nil; throw e }
+            $0.pushes.append((worktree, url, branch, expected, environment))
+            return "commit-\($0.pushes.count)"
         }
     }
 

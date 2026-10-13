@@ -26,6 +26,13 @@ struct CardRecord: Codable, Equatable {
     }
 }
 
+/// The last commit the Manager pushed for a card, in `state/pushes.json` keyed by card id. It
+/// outlives the slot's `card.json`, so a card claimed again leases against its own last push.
+struct PushRecord: Codable, Equatable {
+    var branch: String
+    var commit: String
+}
+
 /// A start or finish step failed; `step` says which, for the log.
 struct StepError: Error, CustomStringConvertible {
     var step: String
@@ -412,15 +419,19 @@ extension Manager {
             return
         }
         do {
-            switch Outcome.parse(data) {
-            case .done(let title, let body, let guide):
-                do {
-                    try await finishDone(spec, card: card, branch: branch, base: base, title: title, body: body, guide: guide)
-                } catch let rejection as BackendRejection {
-                    try await stuck(spec, card: card, blocker: "Couldn't finish: the forge or backlog refused: \(rejection)")
+            do {
+                switch Outcome.parse(data) {
+                case .done(let title, let body, let guide):
+                    do {
+                        try await finishDone(spec, card: card, branch: branch, base: base, title: title, body: body, guide: guide)
+                    } catch let rejection as BackendRejection {
+                        try await stuck(spec, card: card, blocker: "Couldn't finish: the forge or backlog refused: \(rejection)")
+                    }
+                case .stuck(let blocker):
+                    try await finishStuck(spec, card: card, branch: branch, base: base, blocker: blocker)
                 }
-            case .stuck(let blocker):
-                try await finishStuck(spec, card: card, branch: branch, base: base, blocker: blocker)
+            } catch is PushRejected {
+                try await stuck(spec, card: card, blocker: "Branch `\(branch)` already exists on the forge and wasn't created by LoopWorker for this card, so LoopWorker didn't overwrite it. Rename or delete that branch (or change the project's branch template), then move the card back to ready.")
             }
         } catch {
             finishFailed(ref, card: card, error: error)
@@ -436,7 +447,7 @@ extension Manager {
             try await stuck(spec, card: card, blocker: "The worker reported done, but branch `\(branch)` has no commits ahead of `\(base)`.")
             return
         }
-        try await step("pushing \(branch)") { try await self.deps.git.push(spec.worktree, to: self.deps.forge.cloneURL(for: spec.project), branch: branch, environment: self.deps.forge.gitEnvironment()) }
+        try await pushBranch(spec, card: card, branch: branch)
         var guideLink: URL?
         if let guide, let file = resolveGuide(guide, in: spec) {
             do { guideLink = try await step("attaching \(guide)") { try await self.deps.forge.attach(file, to: spec.project) } }
@@ -454,11 +465,29 @@ extension Manager {
         log.info("\(label(spec)): finished \(card.ref): \(review.display) \(review.url.absoluteString)")
     }
 
+    /// Pushes the card branch with a lease on the commit the Manager last pushed for this
+    /// card (none: the branch must not exist yet), so a branch that someone else made is never
+    /// overwritten, then records the new commit.
+    func pushBranch(_ spec: SlotSpec, card: Card, branch: String) async throws {
+        let ledger = stateDir.appending(path: "pushes.json")
+        var pushes = (try? JSONDecoder().decode([String: PushRecord].self, from: Data(contentsOf: ledger))) ?? [:]
+        let last = pushes[card.ref.id].flatMap { $0.branch == branch ? $0.commit : nil }
+        let url = deps.forge.cloneURL(for: spec.project), env = deps.forge.gitEnvironment(), git = deps.git
+        let commit: String
+        do { commit = try await git.push(spec.worktree, to: url, branch: branch, expected: last, environment: env) }
+        catch let rejected as PushRejected { throw rejected }
+        catch { throw StepError(step: "pushing \(branch)", error: error) }
+        pushes[card.ref.id] = PushRecord(branch: branch, commit: commit)
+        // Failing the finish here would retry the push against a stale lease.
+        do { try JSONEncoder().encode(pushes).write(to: ledger, options: .atomic) }
+        catch { log.error("\(label(spec)): pushed \(branch) at \(commit.prefix(12)) but can't record it in \(ledger.path): \(error); the card's next push will be refused as someone else's branch") }
+    }
+
     func finishStuck(_ spec: SlotSpec, card: Card, branch: String, base: String, blocker: String) async throws {
         let ahead = try await step("counting commits on \(branch)") { try await self.deps.git.commitsAhead(spec.worktree, base: base) }
         var text = blocker
         if ahead > 0 {
-            try await step("pushing \(branch)") { try await self.deps.git.push(spec.worktree, to: self.deps.forge.cloneURL(for: spec.project), branch: branch, environment: self.deps.forge.gitEnvironment()) }
+            try await pushBranch(spec, card: card, branch: branch)
             text += "\n\nThe worker's commits are on branch `\(branch)`."
         }
         try await stuck(spec, card: card, blocker: text)

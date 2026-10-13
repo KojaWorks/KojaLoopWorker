@@ -18,7 +18,10 @@ private actor SlotFakeGit: GitDriving {
         return "abc1234def5678901234567890abcdef12345678"
     }
     func commitsAhead(_ worktree: URL, base: String) async throws -> Int { 0 }
-    func push(_ worktree: URL, to url: String, branch: String, environment: [String: String]) async throws { calls.append("push") }
+    func push(_ worktree: URL, to url: String, branch: String, expected: String?, environment: [String: String]) async throws -> String {
+        calls.append("push")
+        return "pushed"
+    }
     func removeWorktree(clone: URL, worktree: URL) async { calls.append("removeWorktree \(worktree.lastPathComponent)") }
 }
 

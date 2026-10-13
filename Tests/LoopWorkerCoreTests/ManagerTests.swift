@@ -344,9 +344,41 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(calls.count == 2)
         // The forge dedupes per source branch, so the retry must name the same one.
         #expect(calls.map(\.sourceBranch) == ["loopworker-12-fix-it", "loopworker-12-fix-it"])
+        #expect(h.git.state.get.pushes.map(\.expected) == [nil, "commit-1"])  // the retry leases on its own push
         #expect(h.forge.state.get.opened.count == 1)
         #expect(h.backlog.card(id: "id-12")?.state == .review)
         #expect(try h.status().projects[0].slots[0].state == "idle")
+    }
+
+    @Test func aBranchSomeoneElsePushedEndsTheCardStuck() async throws {
+        let h = try await spawned()
+        h.git.state { $0.pushFailure = PushRejected(branch: "loopworker-12-fix-it", url: "https://forge.example/g/app.git") }
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        guard case .markStuck("id-12", let blocker)? = h.backlog.writes.last else {
+            Issue.record("expected markStuck, got \(h.backlog.writes)")
+            return
+        }
+        #expect(blocker.hasPrefix("Branch `loopworker-12-fix-it` already exists on the forge and wasn't created by LoopWorker for this card"))
+        #expect(h.forge.state.get.openCalls.isEmpty)
+        #expect(try h.status().projects[0].slots[0].state == "idle")
+    }
+
+    @Test func aReclaimedCardLeasesOnItsEarlierPush() async throws {
+        let h = try await spawned()
+        try h.writeOutcome(#"{"outcome":"stuck","blocker":"Which endpoint?"}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.backlog.card(id: "id-12")?.state == .stuck)
+        h.backlog.setState("id-12", .ready)  // a human answered and sent it back
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 2)
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.git.state.get.pushes.map(\.expected) == [nil, "commit-1"])
+        #expect(h.backlog.card(id: "id-12")?.state == .review)
     }
 
     @Test func backendRejectionEndsTheCardStuck() async throws {  // B90

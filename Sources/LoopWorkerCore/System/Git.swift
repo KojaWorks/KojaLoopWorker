@@ -13,6 +13,18 @@ public struct GitError: Error, CustomStringConvertible {
     }
 }
 
+/// The forge refused a push because `branch` there isn't at the commit the Manager expected:
+/// someone else made or moved a branch of that name. Retrying can't fix it.
+public struct PushRejected: Error, CustomStringConvertible, Equatable {
+    public var branch: String
+    public var url: String
+    public init(branch: String, url: String) {
+        self.branch = branch
+        self.url = url
+    }
+    public var description: String { "\(url) refused the push of \(branch): the branch there is not the one LoopWorker last pushed" }
+}
+
 /// The git operations the Manager needs. Every call runs under a timeout.
 ///
 /// Calls that talk to the forge take its URL and environment (askpass credentials). They
@@ -44,8 +56,13 @@ public protocol GitDriving: Sendable {
     /// Number of commits on HEAD that `origin/<base>` doesn't have.
     func commitsAhead(_ worktree: URL, base: String) async throws -> Int
 
-    /// Pushes HEAD to `branch` at `url`, creating or force-updating it, without running hooks.
-    func push(_ worktree: URL, to url: String, branch: String, environment: [String: String]) async throws
+    /// Pushes HEAD to `branch` at `url` without running hooks, and returns the pushed commit.
+    /// - Parameter expected: the commit that `branch` must be at on the forge, the one the
+    ///   Manager last pushed for this card; nil means the branch must not exist yet. A branch
+    ///   at that commit is force-updated.
+    /// - Throws: `PushRejected` when the branch on the forge doesn't match `expected`;
+    ///   `GitError` for any other failure.
+    func push(_ worktree: URL, to url: String, branch: String, expected: String?, environment: [String: String]) async throws -> String
 
     /// Removes the worktree directory (`git worktree remove --force`) and prunes. Best effort:
     /// logs failures, never throws.
@@ -131,11 +148,16 @@ public struct Git: GitDriving {
         return count
     }
 
-    /// Uses `--force`, because a finish retried after a restart pushes the same branch again.
-    /// `--force-with-lease` can't work here: a push to a URL has no tracking ref to lease against.
-    public func push(_ worktree: URL, to url: String, branch: String, environment: [String: String]) async throws {
-        try await git(Self.credentialed + ["-C", worktree.path, "push", "--no-verify", "--force", url, "HEAD:refs/heads/\(branch)"],
-                      Self.networkTimeout, environment)
+    /// The lease names its expected value, because a push to a URL has no tracking ref to
+    /// lease against.
+    public func push(_ worktree: URL, to url: String, branch: String, expected: String?, environment: [String: String]) async throws -> String {
+        let head = try await git(["-C", worktree.path, "rev-parse", "HEAD"]).output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let arguments = Self.credentialed + ["-C", worktree.path, "push", "--no-verify",
+                                             "--force-with-lease=refs/heads/\(branch):\(expected ?? "")", url, "\(head):refs/heads/\(branch)"]
+        let result = try await runner.run(ProcessSpec("git", arguments, environment: environment.mapValues { $0 }, timeout: Self.networkTimeout))
+        if result.succeeded { return head }
+        if result.output.contains("stale info") { throw PushRejected(branch: branch, url: url) }
+        throw GitError(command: arguments.joined(separator: " "), result: result)
     }
 
     public func removeWorktree(clone: URL, worktree: URL) async {
