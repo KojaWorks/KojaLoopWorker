@@ -57,7 +57,7 @@ public protocol Backlog: Sendable {
     func snapshot(_ card: Card) async throws -> CardSnapshot
     func markReview(_ card: Card, review: ReviewRequest) async throws
     func markStuck(_ card: Card, blocker: String) async throws
-    func release(_ card: Card, reason: String) async throws
+    func release(_ card: Card, reason: String, countsAsAttempt: Bool) async throws
 }
 
 public protocol Forge: Sendable {
@@ -105,11 +105,15 @@ human can see why a worker didn't see something.
 1. **Fill.** For a free slot, the Manager takes the best `workable` card of that slot's project
    and calls `claim`. A lost claim skips the card.
 2. **Acquire.** A task resets the slot's worktree to the base branch, checks out
-   `loopworker/<card-slug>`, and runs `reset.sh` (hot) or `provision.sh` (cold).
+   `loopworker-<card number>-<title slug>` (flat, so it can't collide with a branch named
+   `loopworker`), and runs `reset.sh` (hot) or `provision.sh` (cold).
 3. **Spawn.** The Manager writes the snapshot, the brief and a launch script into the slot's
    state directory (never into the worktree) and starts `claude` in a tmux session. The worker
    gets `LOOPWORKER_OUTCOME`, the path where its outcome goes, and an MCP config that contains
-   only the project's declared servers (`--strict-mcp-config`).
+   only the project's declared servers (`--strict-mcp-config`). The launch script starts from
+   `env -i` and adds back only `HOME`, `PATH`, `TERM`, `LANG`, `TMPDIR` and the variables in the
+   slot's `worker.env`, so no backlog or forge token in the Manager's environment, or in the
+   tmux server's, reaches the worker.
 4. **Work.** The worker implements, runs `verify.sh`, reviews its own diff with fresh-context
    subagents, optionally writes a review guide, commits, and writes the outcome:
 
@@ -141,19 +145,28 @@ decision:
 | Running longer than the wall-clock cap | `release(hung)` |
 | Otherwise | `keep` |
 
-A release increments the card's attempt count. When it reaches `max_attempts`, the Manager marks
-the card `stuck` instead, with the releases as the blocker, so a card that always crashes its
-worker can't loop forever.
+A release for a crash or a hang counts as a failed attempt; an auth release doesn't, because
+the host failed, not the card. When a counted release would reach `max_attempts`, the Manager
+marks the card `stuck` instead, with the release reasons as the blocker, so a card that always
+crashes its worker can't loop forever.
 
 At startup, and every few minutes after, the Manager calls `working(in:)` and compares it
 against its slots. A `working` card with no slot is either finishable (its slot directory has an
-outcome file) or stranded (released with reason "Manager restarted").
+outcome file) or stranded (released with reason "Manager restarted", not counted as an
+attempt). This assumes one Manager per backlog identity and project: two Managers that share a
+GitLab user and a project would release each other's cards.
 
 ## Host config
 
 `~/.loopworker/config.toml` (or `$LOOPWORKER_HOME/config.toml`) is the only config source.
-All state paths are absolute and derive from `LOOPWORKER_HOME`, never from the working
-directory. Secrets come from environment variables named in the config, never from the file.
+The Manager re-reads it when it changes: new projects start, removed ones drain, slot counts
+resize (busy slots retire after their card). All state paths are absolute and derive from
+`LOOPWORKER_HOME`, never from the working directory.
+
+Secrets come from environment variables named in the config, never from `config.toml`. At
+startup the Manager loads `$LOOPWORKER_HOME/secrets.env` (`NAME=value` lines) into its own
+environment, without overriding variables that are already set, and refuses to start if
+that file is readable by group or others. That is how a launchd service gets its tokens.
 
 ```toml
 clones_dir             = "~/Dev/loopworker"   # clones and slot worktrees
@@ -185,10 +198,12 @@ contract = "~/.loopworker/contracts/myapp"    # optional host-local overlay of .
 ```
 $LOOPWORKER_HOME/
   config.toml
+  secrets.env                 tokens, mode 0600
   state/manager.lock          pid lock: one Manager per home
   state/status.json           written atomically each tick; `loopworker status` reads it
   state/manager.log           redacted
   state/PAUSED                host killswitch; state/projects/<key>/PAUSED per project
+  state/tmux                  the Manager's own tmux server socket
   slots/<key>/<n>/            brief, snapshot, launch script, outcome, MCP config
 <clones_dir>/<key>/           the clone
 <clones_dir>/<key>.slots/<n>/ slot worktrees
@@ -205,6 +220,11 @@ reconcile until the task completes and records its result on the slot.
 Every subprocess, including git and tmux, runs through one `ProcessRunner`: its own process
 group, stdin from `/dev/null`, `GIT_TERMINAL_PROMPT=0`, a hard timeout that kills the group, and
 output read without waiting on grandchildren that keep the pipe open.
+
+Workers run on the Manager's own tmux server (`tmux -S $LOOPWORKER_HOME/state/tmux`), so a
+human's tmux sessions on a shared host are never listed or reaped, and workers survive a
+Manager restart: the next Manager adopts each live worker whose slot's `card.json` names a
+card that is still `working`.
 
 ## Signals
 

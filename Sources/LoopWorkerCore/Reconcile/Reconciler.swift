@@ -27,6 +27,10 @@ public struct SlotObservation: Sendable, Equatable {
 
 public enum ReleaseReason: String, Sendable, Equatable {
     case crashed, hung, auth
+
+    /// Crashes and hangs are the card's fault as far as the loop can tell; an auth failure
+    /// is the host's, so it doesn't bring the card closer to `max_attempts`.
+    public var countsAsAttempt: Bool { self != .auth }
 }
 
 public enum SlotDecision: Sendable, Equatable {

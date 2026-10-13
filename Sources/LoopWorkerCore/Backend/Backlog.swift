@@ -21,7 +21,7 @@ public protocol Backlog: Sendable {
     func working(in projects: [ProjectSpec]) async throws -> [Card]
 
     /// Moves a `ready` card to `working`. Returns false when the card is no longer `ready`
-    /// (someone else moved it); the Manager then skips it. Increments the card's attempts.
+    /// (someone else moved it); the Manager then skips it.
     func claim(_ card: Card) async throws -> Bool
 
     /// The card's trusted content for the worker. See `CardSnapshot`.
@@ -34,7 +34,9 @@ public protocol Backlog: Sendable {
     /// stays assigned to its human so it shows up in their queue.
     func markStuck(_ card: Card, blocker: String) async throws
 
-    /// Returns a `working` card to `ready` after a crash, hang or auth failure, and posts
-    /// `reason` on the card so the history shows why it bounced.
-    func release(_ card: Card, reason: String) async throws
+    /// Returns a `working` card to `ready` and posts `reason` on the card so the history shows
+    /// why it bounced. When `countsAsAttempt` is true (the worker crashed or hung), the release
+    /// is recorded so that later reads report `Card.attempts` one higher; releases caused by
+    /// the host (auth failures, Manager restarts) pass false and don't count.
+    func release(_ card: Card, reason: String, countsAsAttempt: Bool) async throws
 }

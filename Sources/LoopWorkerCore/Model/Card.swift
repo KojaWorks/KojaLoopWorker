@@ -44,8 +44,8 @@ public struct Card: Sendable, Equatable {
     public var priority: Double
     /// CLI model alias that overrides the project's default for this card only.
     public var model: String?
-    /// How many times the Manager has claimed this card before. Drives the poison-card guard:
-    /// at `max_attempts` a crash marks the card stuck instead of releasing it.
+    /// Failed attempts: releases recorded with `countsAsAttempt`. Drives the poison-card
+    /// guard: a crash that would reach `max_attempts` marks the card stuck instead.
     public var attempts: Int
     /// The card in the backlog's web UI.
     public var url: URL?
