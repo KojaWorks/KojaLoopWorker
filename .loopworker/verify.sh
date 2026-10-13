@@ -3,4 +3,7 @@
 set -euo pipefail
 cd "$LOOPWORKER_SLOT_DIR"
 
-.venv/bin/python -m pytest tests/ -q
+.venv/bin/python -m pytest pytests/ -q
+
+swift build
+swift test
