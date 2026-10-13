@@ -9,7 +9,7 @@ struct LoopWorkerCommand: AsyncParsableCommand {
         abstract: "Claims cards from a backlog and runs one claude worker per card.",
         discussion: "State lives in $LOOPWORKER_HOME (default ~/.loopworker).",
         version: loopworkerVersion,
-        subcommands: [Run.self, Status.self, Pause.self, Resume.self, Version.self],
+        subcommands: [Run.self, Status.self, Pause.self, Resume.self, Service.self, Version.self],
         defaultSubcommand: Run.self)
 }
 
@@ -145,4 +145,44 @@ struct Resume: ParsableCommand {
 struct Version: ParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Print the version.")
     func run() { print(loopworkerVersion) }
+}
+
+struct Service: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Run the Manager under launchd.",
+        subcommands: [Install.self, Uninstall.self])
+
+    static func current() -> LaunchdService {
+        LaunchdService(
+            binary: invokedBinaryPath(), home: HostConfig.home(),
+            userHome: FileManager.default.homeDirectoryForCurrentUser,
+            userName: NSUserName(), uid: getuid(), runner: ProcessRunner(),
+            output: { print($0) })
+    }
+
+    struct Install: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Write a launchd plist for `loopworker run` and load it as a LaunchAgent.")
+
+        @Flag(help: "Make a LaunchDaemon for a host where nobody logs in: writes the plist to the state dir and prints the sudo commands that install it.")
+        var daemon = false
+
+        @Flag(help: "Print the plist and the commands; change nothing.")
+        var dryRun = false
+
+        func run() async throws {
+            do { try await Service.current().install(daemon: daemon, dryRun: dryRun) }
+            catch { throw fail("\(error)") }
+        }
+    }
+
+    struct Uninstall: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Unload and remove the LaunchAgent; print the sudo commands for a LaunchDaemon.")
+
+        func run() async throws {
+            do { try await Service.current().uninstall() }
+            catch { throw fail("\(error)") }
+        }
+    }
 }
