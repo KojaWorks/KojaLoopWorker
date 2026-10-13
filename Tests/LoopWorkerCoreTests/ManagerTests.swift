@@ -641,7 +641,7 @@ func fileMode(_ url: URL) throws -> Int {
         let lock = h.home.appending(path: "state/manager.lock")
         #expect(ManagerLock.holder(at: lock) == getpid())
         #expect(await h.manager.handle(.interrupt) == .exitNow)
-        #expect(ManagerLock.holder(at: lock) == nil)
+        #expect(await lockReleased(lock))
     }
 
     @Test func runExitsAfterADrainAndReleasesTheLock() async throws {  // B105
@@ -651,7 +651,7 @@ func fileMode(_ url: URL) throws -> Int {
         while ManagerLock.holder(at: h.home.appending(path: "state/manager.lock")) == nil { await Task.yield() }
         _ = await manager.handle(.interrupt)
         try await run.value
-        #expect(ManagerLock.holder(at: h.home.appending(path: "state/manager.lock")) == nil)
+        #expect(await lockReleased(h.home.appending(path: "state/manager.lock")))
         #expect(h.log.contains("drained"))
     }
 
@@ -801,4 +801,14 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(slot.port == 54400)
         #expect(!status.log.isEmpty)
     }
+}
+
+/// True once no process holds the lock at `file`, within 2 s. A child that another test forks
+/// shares the lock's file description until it execs, so one probe can see a holder briefly.
+func lockReleased(_ file: URL) async -> Bool {
+    for _ in 0..<200 {
+        if ManagerLock.holder(at: file) == nil { return true }
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+    return false
 }

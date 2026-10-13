@@ -102,7 +102,7 @@ func temporaryDirectory() throws -> URL {
 }
 
 @Suite struct ManagerLockTests {
-    @Test func secondHolderIsRefusedWithThePid() throws {  // B109
+    @Test func secondHolderIsRefusedWithThePid() async throws {  // B109
         let dir = try temporaryDirectory()
         let file = dir.appending(path: "manager.lock")
         let log = CollectingLog()
@@ -111,8 +111,8 @@ func temporaryDirectory() throws -> URL {
         #expect(held?.pid == getpid())
         #expect(ManagerLock.holder(at: file) == getpid())
         lock.release()
-        #expect(ManagerLock.holder(at: file) == nil)
-        #expect(!FileManager.default.fileExists(atPath: file.path))
+        #expect(await lockReleased(file))
+        #expect(FileManager.default.fileExists(atPath: file.path))
     }
 
     @Test func staleLockFromADeadPidIsTakenOver() throws {
@@ -122,8 +122,19 @@ func temporaryDirectory() throws -> URL {
         let log = CollectingLog()
         let lock = try ManagerLock.acquire(at: file, log: log)
         defer { lock.release() }
-        #expect(log.contains("from pid 999999", level: .warning))
+        #expect(log.contains("previous Manager pid 999999 has exited", level: .info))
         #expect(try String(contentsOf: file, encoding: .utf8) == "\(getpid())\n")
+    }
+
+    @Test func aConcurrentHolderProbeDoesNotFailAStart() throws {
+        let dir = try temporaryDirectory()
+        let file = dir.appending(path: "manager.lock")
+        try "".write(to: file, atomically: true, encoding: .utf8)
+        let probe = open(file.path, O_RDONLY)
+        #expect(flock(probe, LOCK_SH | LOCK_NB) == 0)  // what holder(at:) holds while it reads
+        #expect(ManagerLock.holder(at: file) == nil)  // two probes don't collide
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) { close(probe) }
+        try ManagerLock.acquire(at: file, log: CollectingLog()).release()
     }
 
     @Test func corruptLockFileDoesNotBlock() throws {

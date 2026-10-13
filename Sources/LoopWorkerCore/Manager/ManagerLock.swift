@@ -7,7 +7,9 @@ import Glibc
 
 /// `state/manager.lock`: one Manager per home. The file holds the owner's pid and an
 /// exclusive `flock` for the owner's lifetime, so the kernel drops the lock when the owner
-/// dies however it dies, and a reused pid can't keep a dead Manager's lock alive.
+/// dies however it dies, and a reused pid can't keep a dead Manager's lock alive. The file
+/// itself stays after release: unlinking it would let a second Manager lock a fresh file
+/// while a third still holds the old inode.
 public final class ManagerLock: @unchecked Sendable {
     public struct Held: Error, CustomStringConvertible {
         public var pid: Int32?
@@ -30,20 +32,27 @@ public final class ManagerLock: @unchecked Sendable {
     }
 
     /// Takes the lock and writes this process's pid into it. A lock file left by a Manager
-    /// that is no longer running is taken over with a warning.
+    /// that has exited is normal and is taken over with an info line. Retries for up to 1 s,
+    /// so a concurrent `holder(at:)` probe can't make a starting Manager fail.
     /// - Throws: `Held` naming the holder's pid and the file when a live Manager holds it,
     ///   or `ConfigError` when the file can't be opened.
     public static func acquire(at file: URL, log: any LogSink) throws -> ManagerLock {
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let fd = open(file.path, O_RDWR | O_CREAT, 0o644)
+        // CLOEXEC: a child that inherits the fd (a tmux server lives on) would hold the lock.
+        let fd = open(file.path, O_RDWR | O_CREAT | O_CLOEXEC, 0o644)
         guard fd >= 0 else { throw ConfigError("can't open \(file.path): \(String(cString: strerror(errno)))") }
-        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
+        var locked = flock(fd, LOCK_EX | LOCK_NB) == 0
+        for _ in 0..<20 where !locked {
+            usleep(50_000)
+            locked = flock(fd, LOCK_EX | LOCK_NB) == 0
+        }
+        guard locked else {
             let pid = readPid(fd)
             close(fd)
             throw Held(pid: pid, file: file)
         }
         if let old = readPid(fd), old != getpid() {
-            log.warning("took over \(file.path) from pid \(old), which no longer holds it")
+            log.info("previous Manager pid \(old) has exited; taking over \(file.path)")
         }
         let pid = Array("\(getpid())\n".utf8)
         _ = ftruncate(fd, 0)
@@ -54,23 +63,23 @@ public final class ManagerLock: @unchecked Sendable {
     /// The pid of the Manager holding the lock at `file`, or nil when no live Manager holds
     /// it. Returns 0 when it is held but the file has no readable pid.
     public static func holder(at file: URL) -> Int32? {
-        let fd = open(file.path, O_RDONLY)
+        let fd = open(file.path, O_RDONLY | O_CLOEXEC)
         guard fd >= 0 else { return nil }
         defer { close(fd) }
-        if flock(fd, LOCK_EX | LOCK_NB) == 0 {
+        // Shared, so two probes don't collide; acquire retries past a probe that holds it.
+        if flock(fd, LOCK_SH | LOCK_NB) == 0 {
             flock(fd, LOCK_UN)
             return nil
         }
         return readPid(fd) ?? 0
     }
 
-    /// Removes the file and drops the lock. Safe to call more than once and from a signal
+    /// Drops the lock, leaving the file. Safe to call more than once and from a signal
     /// handler's queue.
     public func release() {
         lock.lock()
         defer { lock.unlock() }
         guard fd >= 0 else { return }
-        unlink(file.path)
         close(fd)
         fd = -1
     }
