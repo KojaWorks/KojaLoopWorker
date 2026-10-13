@@ -219,12 +219,16 @@ private struct Fixture {
     @Test("B32: a long script logs that it is still running, repeatedly")
     func stillRunning() async throws {
         let f = try Fixture { $0.provisionTimeout = .milliseconds(200) }
+        let marker = "[group--app/0 provision] still running after"
+        // The script "runs" until the watchdog has spoken twice, so a slow machine can't race it.
         f.runner.on("bash") { _ in
-            try await Task.sleep(for: .milliseconds(500))
+            for _ in 0..<500 where f.log.lines.filter({ $0.contains(marker) }).count < 2 {
+                try await Task.sleep(for: .milliseconds(20))
+            }
             return ProcessResult(status: 0, output: "")
         }
         try await f.lifecycle.prepare(f.slot(hot: true), contract: f.contract)
-        let lines = f.log.lines.filter { $0.contains("[group--app/0 provision] still running after") }
+        let lines = f.log.lines.filter { $0.contains(marker) }
         #expect(lines.count >= 2)
         let after = f.log.lines.count
         try await Task.sleep(for: .milliseconds(250))

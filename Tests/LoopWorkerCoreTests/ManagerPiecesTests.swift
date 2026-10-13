@@ -130,7 +130,7 @@ func temporaryDirectory() throws -> URL {
         let dir = try temporaryDirectory()
         let file = dir.appending(path: "manager.lock")
         try "".write(to: file, atomically: true, encoding: .utf8)
-        let probe = open(file.path, O_RDONLY)
+        let probe = open(file.path, O_RDONLY | O_CLOEXEC)  // parallel tests fork; an inherited fd would keep the lock
         #expect(flock(probe, LOCK_SH | LOCK_NB) == 0)  // what holder(at:) holds while it reads
         #expect(ManagerLock.holder(at: file) == nil)  // two probes don't collide
         DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) { close(probe) }
