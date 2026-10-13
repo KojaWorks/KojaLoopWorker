@@ -133,8 +133,9 @@ func temporaryDirectory() throws -> URL {
         let probe = open(file.path, O_RDONLY | O_CLOEXEC)  // parallel tests fork; an inherited fd would keep the lock
         #expect(flock(probe, LOCK_SH | LOCK_NB) == 0)  // what holder(at:) holds while it reads
         #expect(ManagerLock.holder(at: file) == nil)  // two probes don't collide
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) { close(probe) }
-        try ManagerLock.acquire(at: file, log: CollectingLog()).release()
+        // A plain thread, not GCD: on a loaded CI runner the global queue can miss the window.
+        Thread { usleep(200_000); close(probe) }.start()
+        try ManagerLock.acquire(at: file, log: CollectingLog(), attempts: 200).release()
     }
 
     @Test func corruptLockFileDoesNotBlock() throws {

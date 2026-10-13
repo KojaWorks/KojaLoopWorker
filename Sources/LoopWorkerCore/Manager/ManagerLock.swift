@@ -37,12 +37,16 @@ public final class ManagerLock: @unchecked Sendable {
     /// - Throws: `Held` naming the holder's pid and the file when a live Manager holds it,
     ///   or `ConfigError` when the file can't be opened.
     public static func acquire(at file: URL, log: any LogSink) throws -> ManagerLock {
+        try acquire(at: file, log: log, attempts: 20)
+    }
+
+    static func acquire(at file: URL, log: any LogSink, attempts: Int) throws -> ManagerLock {
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         // CLOEXEC: a child that inherits the fd (a tmux server lives on) would hold the lock.
         let fd = open(file.path, O_RDWR | O_CREAT | O_CLOEXEC, 0o644)
         guard fd >= 0 else { throw ConfigError("can't open \(file.path): \(String(cString: strerror(errno)))") }
         var locked = flock(fd, LOCK_EX | LOCK_NB) == 0
-        for _ in 0..<20 where !locked {
+        for _ in 0..<attempts where !locked {
             usleep(50_000)
             locked = flock(fd, LOCK_EX | LOCK_NB) == 0
         }
