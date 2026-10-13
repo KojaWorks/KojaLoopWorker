@@ -109,7 +109,7 @@ enum Trust {
     }
 
     /// Renders the trusted content of an issue. `notes` in any order; system notes are ignored.
-    static func snapshot(content: GQLIssueContent, notes: [GQLNote], me: GLUser, cutoff: Date) -> CardSnapshot {
+    static func snapshot(content: IssueText, notes: [GQLNote], me: GLUser, cutoff: Date) -> CardSnapshot {
         var excluded: [String] = []
         func name(_ u: GQLUser?) -> String { "@" + (u?.username ?? "ghost") }
         func time(_ d: Date) -> String { GitLabTime.format(d) }

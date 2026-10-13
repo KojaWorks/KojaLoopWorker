@@ -71,10 +71,21 @@ import Testing
 
     // MARK: - Snapshot
 
-    func snapshot(_ issue: [String: Any], cutoff: Int = 2) throws -> CardSnapshot {
-        let data = ((issue["data"] as! [String: Any])["project"] as! [String: Any])["issue"]!
-        let content: GQLIssueContent = try decode(data)
-        return Trust.snapshot(content: content, notes: content.notes.nodes, me: me, cutoff: Fixture.date(cutoff))
+    func snapshot(_ page: [String: Any], author: [String: Any] = Fixture.me, created: Int = 0, cutoff: Int = 2) throws -> CardSnapshot {
+        let decoded: GQLSnapshotPage = try decode(page["data"]!)
+        let text = try GitLabBacklog.issueText(decoded, issue: decode(Fixture.issue(author: author, created: created)), display: "mygroup/app#12")
+        return Trust.snapshot(content: text, notes: decoded.project!.issue!.notes.nodes, me: me, cutoff: Fixture.date(cutoff))
+    }
+
+    @Test func B125_aNeverEditedIssueBySomeoneElseCreatedAfterTheCutoffIsWithheld() throws {
+        let s = try snapshot(Fixture.gqlIssue(), author: Fixture.mallory, created: 5)
+        #expect(s.excluded == ["title and description: created by @mallory at \(Fixture.t(5)), after the card was approved"])
+        #expect(try snapshot(Fixture.gqlIssue(), author: Fixture.mallory, created: 1).excluded.isEmpty)
+    }
+
+    @Test func aWorkItemWithoutADescriptionWidgetThrows() throws {
+        let page: GQLSnapshotPage = try decode(["namespace": ["workItem": ["title": "x", "widgets": [["__typename": "WorkItemWidgetLabels"]]]]])
+        #expect(throws: GitLabError.self) { try GitLabBacklog.issueText(page, issue: decode(Fixture.issue()), display: "mygroup/app#12") }
     }
 
     @Test func B125_snapshotKeepsTrustedContentInOrder() throws {

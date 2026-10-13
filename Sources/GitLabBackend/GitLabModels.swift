@@ -90,16 +90,42 @@ struct GQLPageInfo: Decodable, Sendable {
     var endCursor: String?
 }
 
-struct GQLIssueContent: Decodable, Sendable {
+/// One page of the snapshot query: the work item's title and description widget, and a page
+/// of the issue's notes. `Issue` has no edit metadata; the description widget does, and GitLab
+/// updates it when either the title or the description changes.
+struct GQLSnapshotPage: Decodable, Sendable {
+    struct Namespace: Decodable, Sendable { var workItem: WorkItem? }
+    struct WorkItem: Decodable, Sendable {
+        var title: String
+        var widgets: [Widget]
+    }
+    /// Only the description widget's fragment fills the optional fields.
+    struct Widget: Decodable, Sendable {
+        var typename: String
+        var description: String?
+        var lastEditedAt: Date?
+        var lastEditedBy: GQLUser?
+        enum CodingKeys: String, CodingKey {
+            case typename = "__typename", description, lastEditedAt, lastEditedBy
+        }
+    }
+    struct Project: Decodable, Sendable { var issue: Issue? }
+    struct Issue: Decodable, Sendable { var notes: Notes }
     struct Notes: Decodable, Sendable {
         var pageInfo: GQLPageInfo
         var nodes: [GQLNote]
     }
+    var namespace: Namespace?
+    var project: Project?
+}
+
+/// An issue's title and description with the metadata the trust check needs.
+struct IssueText: Sendable {
     var title: String
     var description: String?
     var createdAt: Date
+    var author: GQLUser?
+    /// Covers title and description edits; nil when neither was ever edited.
     var lastEditedAt: Date?
     var lastEditedBy: GQLUser?
-    var author: GQLUser?
-    var notes: Notes
 }

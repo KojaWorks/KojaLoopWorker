@@ -150,15 +150,24 @@ enum Fixture {
     }
 
     static func gqlIssue(
-        title: String = "Fix it", description: String = "Do the thing", author: [String: Any] = me, created: Int = 0,
+        title: String = "Fix it", description: String = "Do the thing",
         editedBy: [String: Any]? = nil, editedAt: Int? = nil, notes: [[String: Any]] = [],
         hasNextPage: Bool = false, endCursor: String? = nil
     ) -> [String: Any] {
-        ["data": ["project": ["issue": [
-            "title": title, "description": description, "createdAt": t(created),
-            "lastEditedAt": orNull(editedAt.map { t($0) }), "lastEditedBy": orNull(editedBy.map(gid)),
-            "author": gid(author),
-            "notes": ["pageInfo": ["hasNextPage": hasNextPage, "endCursor": orNull(endCursor)], "nodes": notes],
-        ] as [String: Any]]]]
+        ["data": [
+            "namespace": ["workItem": [
+                "title": title,
+                "widgets": [
+                    ["__typename": "WorkItemWidgetAssignees"],
+                    [
+                        "__typename": "WorkItemWidgetDescription", "description": description,
+                        "lastEditedAt": orNull(editedAt.map { t($0) }), "lastEditedBy": orNull(editedBy.map(gid)),
+                    ],
+                ],
+            ] as [String: Any]],
+            "project": ["issue": [
+                "notes": ["pageInfo": ["hasNextPage": hasNextPage, "endCursor": orNull(endCursor)], "nodes": notes],
+            ]],
+        ] as [String: Any]]
     }
 }

@@ -274,6 +274,7 @@ import Testing
         #expect(snapshot.markdown.contains("first page") && snapshot.markdown.contains("second page"))
         let first = try #require(w.gitlab.requests("POST", "/api/graphql").first)
         #expect(first.json["variables"] as? [String: String] == ["path": "mygroup/app", "iid": "12"])
+        #expect((first.json["query"] as? String)?.contains("... on WorkItemWidgetDescription { description lastEditedAt") == true)
     }
 
     @Test func snapshotThrowsWhenTheCardIsNotTrusted() async throws {

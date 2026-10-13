@@ -140,33 +140,46 @@ public actor GitLabBacklog: Backlog {
         }
         var notes: [GQLNote] = []
         var after: String?
-        var content: GQLIssueContent
+        var text: IssueText?
         repeat {
             var variables = ["path": read.projectPath, "iid": String(read.issue.iid)]
             if let after { variables["after"] = after }
-            let data: SnapshotData = try await client.graphQL("issue snapshot \(card.ref.display)", Self.snapshotQuery, variables: variables)
-            guard let issue = data.project?.issue else {
-                throw GitLabError("\(card.ref.display): GraphQL returned no issue")
+            let page: GQLSnapshotPage = try await client.graphQL("issue snapshot \(card.ref.display)", Self.snapshotQuery, variables: variables)
+            guard let issueNotes = page.project?.issue?.notes else {
+                throw GitLabError("\(card.ref.display): GraphQL returned no issue notes")
             }
-            content = issue
-            notes += issue.notes.nodes
-            after = issue.notes.pageInfo.hasNextPage ? issue.notes.pageInfo.endCursor : nil
+            if text == nil { text = try Self.issueText(page, issue: read.issue, display: card.ref.display) }
+            notes += issueNotes.nodes
+            after = issueNotes.pageInfo.hasNextPage ? issueNotes.pageInfo.endCursor : nil
         } while after != nil
-        return Trust.snapshot(content: content, notes: notes, me: me, cutoff: cutoff)
+        return Trust.snapshot(content: text!, notes: notes, me: me, cutoff: cutoff)
     }
 
-    private struct SnapshotData: Decodable {
-        struct Project: Decodable { var issue: GQLIssueContent? }
-        var project: Project?
+    /// Title and description from the work item, author and creation time from the REST issue.
+    static func issueText(_ page: GQLSnapshotPage, issue: GLIssue, display: String) throws -> IssueText {
+        guard let item = page.namespace?.workItem else { throw GitLabError("\(display): GraphQL returned no work item") }
+        guard let widget = item.widgets.first(where: { $0.typename == "WorkItemWidgetDescription" }) else {
+            throw GitLabError("\(display): the work item has no description widget")
+        }
+        return IssueText(
+            title: item.title, description: widget.description, createdAt: issue.createdAt,
+            author: GQLUser(id: "gid://gitlab/User/\(issue.author.id)", username: issue.author.username),
+            lastEditedAt: widget.lastEditedAt, lastEditedBy: widget.lastEditedBy)
     }
 
     static let snapshotQuery = """
         query($path: ID!, $iid: String!, $after: String) {
+          namespace(fullPath: $path) {
+            workItem(iid: $iid) {
+              title
+              widgets {
+                __typename
+                ... on WorkItemWidgetDescription { description lastEditedAt lastEditedBy { id username } }
+              }
+            }
+          }
           project(fullPath: $path) {
             issue(iid: $iid) {
-              title description createdAt lastEditedAt
-              lastEditedBy { id username }
-              author { id username }
               notes(first: 100, after: $after) {
                 pageInfo { hasNextPage endCursor }
                 nodes { id body system createdAt lastEditedAt lastEditedBy { id username } author { id username } }
