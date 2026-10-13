@@ -1,9 +1,5 @@
 import Foundation
 
-/// The single-sourced build version, shown by `loopworker version`, the startup log and the
-/// status file.
-public let LoopWorkerVersion = "0.0.0-dev"
-
 /// `state/status.json`: the Manager's state, rewritten atomically every tick. `loopworker
 /// status` and any future app decode this type. Every string in it is redacted.
 public struct ManagerStatus: Codable, Sendable, Equatable {
@@ -104,7 +100,7 @@ public struct ManagerStatus: Codable, Sendable, Equatable {
     }
 
     public init(
-        version: String = LoopWorkerVersion, pid: Int32, host: String, started: Date, updated: Date,
+        version: String = loopworkerVersion, pid: Int32, host: String, started: Date, updated: Date,
         paused: Bool, draining: Bool, auth: Auth, projects: [Project], log: [String]
     ) {
         self.version = version

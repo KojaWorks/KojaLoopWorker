@@ -8,7 +8,7 @@ struct LoopWorkerCommand: AsyncParsableCommand {
         commandName: "loopworker",
         abstract: "Claims cards from a backlog and runs one claude worker per card.",
         discussion: "State lives in $LOOPWORKER_HOME (default ~/.loopworker).",
-        version: LoopWorkerVersion,
+        version: loopworkerVersion,
         subcommands: [Run.self, Status.self, Pause.self, Resume.self, Version.self],
         defaultSubcommand: Run.self)
 }
@@ -144,5 +144,5 @@ struct Resume: ParsableCommand {
 
 struct Version: ParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Print the version.")
-    func run() { print(LoopWorkerVersion) }
+    func run() { print(loopworkerVersion) }
 }
