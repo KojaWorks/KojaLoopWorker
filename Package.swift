@@ -16,13 +16,16 @@ let package = Package(
             name: "LoopWorkerCore",
             dependencies: [.product(name: "TOMLDecoder", package: "TOMLDecoder")]
         ),
-        .target(name: "GitLabBackend", dependencies: ["LoopWorkerCore"]),
         .target(
             name: "PatchBackend",
             dependencies: ["LoopWorkerCore", .product(name: "TOMLDecoder", package: "TOMLDecoder")]
         ),
         .target(
             name: "GitHubBackend",
+            dependencies: ["LoopWorkerCore", .product(name: "TOMLDecoder", package: "TOMLDecoder")]
+        ),
+        .target(
+            name: "GitLabBackend",
             dependencies: ["LoopWorkerCore", .product(name: "TOMLDecoder", package: "TOMLDecoder")]
         ),
         .executableTarget(
