@@ -41,12 +41,14 @@ struct Run: AsyncParsableCommand {
     }
 }
 
-/// Routes SIGINT and SIGTERM to the Manager instead of the default handlers.
+/// Routes SIGINT and SIGTERM to the Manager instead of the default handlers, and ignores SIGPIPE.
 final class SignalHandlers: Sendable {
     private let sources: [any DispatchSourceSignal]
 
     init(_ manager: Manager) {
         let queue = DispatchQueue(label: "loopworker.signals")
+        // A closed stdout (a dead `tee`, a closed terminal) must not kill the daemon mid-stop.
+        signal(SIGPIPE, SIG_IGN)
         sources = [(SIGINT, StopRequest.interrupt), (SIGTERM, StopRequest.terminate)].map { signo, request in
             signal(signo, SIG_IGN)
             let source = DispatchSource.makeSignalSource(signal: signo, queue: queue)
