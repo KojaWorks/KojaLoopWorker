@@ -10,7 +10,7 @@ public enum Outcome: Sendable, Equatable {
     /// The worker committed an implementation on its branch.
     /// - title: the review request title.
     /// - body: the review request description, markdown.
-    /// - guide: an optional file to attach (a review guide), relative to the worktree root.
+    /// - guide: an optional file to attach (a review guide), relative to the slot's state directory.
     case done(title: String, body: String, guide: String?)
     /// The worker can't proceed without a human. `blocker` is posted on the card.
     case stuck(blocker: String)

@@ -30,6 +30,20 @@ public struct ProjectContract: Sendable, Equatable {
         public init() {}
     }
 
+    public init(
+        directory: URL, scripts: Scripts = Scripts(), workerEnv: [String] = [],
+        wallclockCapMinutes: Double = 90, mcpConfig: String? = nil, reviewGuide: Bool = false,
+        brief: String? = nil
+    ) {
+        self.directory = directory
+        self.scripts = scripts
+        self.workerEnv = workerEnv
+        self.wallclockCapMinutes = wallclockCapMinutes
+        self.mcpConfig = mcpConfig
+        self.reviewGuide = reviewGuide
+        self.brief = brief
+    }
+
     /// The directory to read for `project` with its clone at `clone`.
     public static func directory(for project: ProjectSpec, clone: URL) -> URL {
         if let overlay = project.contract { return URL(filePath: overlay) }
