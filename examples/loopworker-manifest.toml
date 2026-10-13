@@ -1,61 +1,20 @@
-# Copy this to `<your-project>/.loopworker/manifest.toml`.
-# A repo is LoopWorker-compatible iff it ships a valid `.loopworker/` directory:
-# this manifest plus provision.sh / reset.sh / verify.sh / teardown.sh.
-# The Manager owns git/worktree mechanics; these scripts own your stack.
+# Copy to <your-project>/.loopworker/manifest.toml, or to a host-local contract overlay.
+# Every key is optional; the values below are the defaults. See docs/project-contract.md.
 
-# The loop builds a card only if its author (created_by) is trusted. The PAT owner is
-# ALWAYS trusted (read from the exchanged JWT); list extra author uids here to also act
-# on their cards. Keep it in this LOCAL manifest, never the shared backlog.
-# trusted_authors = ["11111111-2222-3333-4444-555555555555"]
-
-[project]
-name = "myproject"
-
-[backlog]
-# Where the roadmap lives and how the Manager reads it.
-adapter = "patch"                 # patch | notion | github   (only `patch` in v1)
-portal  = "https://patch.d.nevyn.dev/app/projects-myproject-roadmap-00000000-0000-0000-0000-000000000000"
-
-[backlog.patch]
-# Adapter-specific resolution. The Manager hits PostgREST directly (not the MCP),
-# authenticating with a PAT it exchanges for a short-lived owner session — set
-# PATCH_PAT in the Manager's .env (mint it in Patch -> Settings -> Tokens).
-api_base      = "https://api.patch.d.nevyn.dev"
-roadmap_table = "roadmap"
-workers_table = "loop_workers"
-# The deployment's PUBLIC anon key — PostgREST/Kong needs it as the apikey header.
-# Not secret (it's in the web bundle), so it lives here, not in .env.
-anon_key      = "eyJ...your-deployments-anon-key..."
-# Columns the adapter expects on the roadmap: status, priority, area (multiselect),
-# blocked_by (self-relation), assignee (relation -> workers_table), solved_in_pr.
-
-[brief]
-# The worker brief / loop instructions. Pick whatever suits the project.
-source = "patch-page"             # patch-page | repo-file | url
-ref    = "https://patch.d.nevyn.dev/app/loop-runner-instructions-00000000-0000-0000-0000-000000000000"
-# repo-file example:
-#   source = "repo-file"
-#   ref    = ".loopworker/BRIEF.md"
-
-[worker]
-# Required MCP servers for the spawned `claude`. The project ships its own .mcp.json;
-# the Manager injects secrets via env.
-mcp                   = ["patch", "chrome-devtools"]
-wallclock_cap_minutes = 90        # Manager reaps a Worker after this regardless of state
-
-[slots]
-count = 3                         # warm-stack pool size; RAM-bound on the host (miquon ~3)
-
-# --- Lifecycle scripts (paths relative to .loopworker/). Defaults shown; override if needed. ---
-# Each receives LOOPWORKER_SLOT_DIR and LOOPWORKER_PORT in its environment.
 [scripts]
-provision = "provision.sh"        # FIRST time per slot: heavy, idempotent. Brings the stack up.
-reset     = "reset.sh"            # per-acquire: cheap. DB reset + project clean. Isolation gate.
-verify    = "verify.sh"           # merge gate: typecheck + tests. Nonzero exit = do not ship.
-teardown  = "teardown.sh"         # slot retirement: stop stack, free ports.
-# Hard timeouts (minutes). A hung script (a wedged docker daemon can block `supabase
-# db reset` forever) gets its whole process group killed and the slot marked BROKEN,
-# instead of freezing the Manager. Defaults shown.
-provision_timeout_minutes = 45
+provision = "provision.sh"        # heavy, idempotent: brings a slot's stack up
+reset     = "reset.sh"            # cheap reset before each card on a hot slot
+verify    = "verify.sh"           # the gate: nonzero exit means the worker isn't done
+teardown  = "teardown.sh"         # best effort: stops the stack
+provision_timeout_minutes = 45    # a hung script's process group is killed at its timeout
 reset_timeout_minutes     = 15
 teardown_timeout_minutes  = 10
+
+[worker]
+branch = "loopworker-{number}-{slug}"
+env = []                          # variable names forwarded to the worker; never tokens
+wallclock_cap_minutes = 90
+# mcp_config = "mcp.json"         # MCP servers for the worker; unset means none
+
+[review]
+guide = false                     # ask for a storygrafter review guide
