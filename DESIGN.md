@@ -105,8 +105,9 @@ human can see why a worker didn't see something.
 1. **Fill.** For a free slot, the Manager takes the best `workable` card of that slot's project
    and calls `claim`. A lost claim skips the card.
 2. **Acquire.** A task resets the slot's worktree to the base branch, checks out
-   `loopworker-<card number>-<title slug>` (flat, so it can't collide with a branch named
-   `loopworker`), and runs `reset.sh` (hot) or `provision.sh` (cold).
+   a branch named from the contract's template (default `loopworker-{number}-{slug}`, flat so it
+   can't collide with a branch named `loopworker`; a project whose commit hooks parse branch
+   names sets its own), and runs `reset.sh` (hot) or `provision.sh` (cold).
 3. **Spawn.** The Manager writes the snapshot, the brief and a launch script into the slot's
    state directory (never into the worktree) and starts `claude` in a tmux session. The worker
    gets `LOOPWORKER_OUTCOME`, the path where its outcome goes, and an MCP config that contains

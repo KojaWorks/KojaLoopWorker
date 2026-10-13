@@ -72,7 +72,10 @@ public struct WorkerBrief: Sendable {
             `origin/\(baseBranch)`. The stack for this slot, if the project has one, listens \
             from port \(slot.port).
             - Don't push, don't open review requests and don't edit the card. You have no \
-            credentials for them; the Manager does all three after you stop.
+            credentials for them; the Manager does all three after you stop. If the \
+            repository's instructions tell you to use a forge or backlog tool (`glab`, `gh`, an \
+            MCP server) to read or update the card, skip that: the card's content is in the \
+            file above, and the Manager handles the rest.
             - Follow the repository's own conventions (AGENTS.md, CLAUDE.md, CONTRIBUTING) for \
             code, comments, tests and commit messages.
 

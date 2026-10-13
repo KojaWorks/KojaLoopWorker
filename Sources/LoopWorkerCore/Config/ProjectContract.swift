@@ -18,6 +18,12 @@ public struct ProjectContract: Sendable, Equatable {
     public var reviewGuide: Bool
     /// `BRIEF.md` content, appended to the built-in worker brief; nil when absent.
     public var brief: String?
+    /// Card branch name template. `{number}` is the card's number in its backlog (or a short
+    /// hash of its id when it has none) and `{slug}` the title as lowercase ASCII words joined
+    /// by `-`, at most 40 characters. Projects whose hooks parse branch names override it.
+    public var branchTemplate: String
+
+    public static let defaultBranchTemplate = "loopworker-{number}-{slug}"
 
     public struct Scripts: Sendable, Equatable {
         public var provision = "provision.sh"
@@ -33,7 +39,7 @@ public struct ProjectContract: Sendable, Equatable {
     public init(
         directory: URL, scripts: Scripts = Scripts(), workerEnv: [String] = [],
         wallclockCapMinutes: Double = 90, mcpConfig: String? = nil, reviewGuide: Bool = false,
-        brief: String? = nil
+        brief: String? = nil, branchTemplate: String = ProjectContract.defaultBranchTemplate
     ) {
         self.directory = directory
         self.scripts = scripts
@@ -42,6 +48,7 @@ public struct ProjectContract: Sendable, Equatable {
         self.mcpConfig = mcpConfig
         self.reviewGuide = reviewGuide
         self.brief = brief
+        self.branchTemplate = branchTemplate
     }
 
     /// The directory to read for `project` with its clone at `clone`.
@@ -79,6 +86,10 @@ public struct ProjectContract: Sendable, Equatable {
             if let m = s.teardown_timeout_minutes { scripts.teardownTimeout = .seconds(m * 60) }
         }
         let brief = try? String(contentsOf: directory.appending(path: "BRIEF.md"), encoding: .utf8)
+        let branch = raw.worker?.branch ?? defaultBranchTemplate
+        guard branch.contains("{number}") || branch.contains("{slug}") else {
+            throw ConfigError("\(file.path): [worker] branch must contain {number} or {slug}, or every card would share one branch")
+        }
         return ProjectContract(
             directory: directory,
             scripts: scripts,
@@ -86,7 +97,8 @@ public struct ProjectContract: Sendable, Equatable {
             wallclockCapMinutes: raw.worker?.wallclock_cap_minutes ?? 90,
             mcpConfig: raw.worker?.mcp_config,
             reviewGuide: raw.review?.guide ?? false,
-            brief: brief)
+            brief: brief,
+            branchTemplate: branch)
     }
 
     // Field names mirror the TOML keys.
@@ -108,6 +120,7 @@ public struct ProjectContract: Sendable, Equatable {
         var env: [String]?
         var wallclock_cap_minutes: Double?
         var mcp_config: String?
+        var branch: String?
     }
     private struct RawReview: Decodable { var guide: Bool? }
 }
