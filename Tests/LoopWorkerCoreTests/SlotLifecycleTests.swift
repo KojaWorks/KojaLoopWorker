@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import LoopWorkerCore
 
-private actor FakeGit: GitDriving {
+private actor SlotFakeGit: GitDriving {
     var calls: [String] = []
     var resetError: (any Error)?
 
@@ -12,19 +12,22 @@ private actor FakeGit: GitDriving {
     func syncCheckout(_ clone: URL, base: String) async throws { calls.append("syncCheckout") }
     func detach(_ worktree: URL) async throws { calls.append("detach \(worktree.lastPathComponent)") }
     func ensureWorktree(clone: URL, worktree: URL, slot: Int) async throws { calls.append("ensureWorktree \(slot)") }
-    func resetWorktree(_ worktree: URL, base: String, branch: String, environment: [String: String]) async throws -> String {
-        calls.append("resetWorktree \(base) \(branch) \(environment["GIT_ASKPASS"] ?? "-")")
+    func resetWorktree(_ worktree: URL, url: String, base: String, branch: String, environment: [String: String]) async throws -> String {
+        calls.append("resetWorktree \(url) \(base) \(branch) \(environment["GIT_ASKPASS"] ?? "-")")
         if let resetError { throw resetError }
-        return "abc1234"
+        return "abc1234def5678901234567890abcdef12345678"
     }
     func commitsAhead(_ worktree: URL, base: String) async throws -> Int { 0 }
-    func push(_ worktree: URL, branch: String, environment: [String: String]) async throws { calls.append("push") }
+    func push(_ worktree: URL, to url: String, branch: String, expected: String?, environment: [String: String]) async throws -> String {
+        calls.append("push")
+        return "pushed"
+    }
     func removeWorktree(clone: URL, worktree: URL) async { calls.append("removeWorktree \(worktree.lastPathComponent)") }
 }
 
 private struct Fixture {
     let runner = FakeProcessRunner()
-    let git = FakeGit()
+    let git = SlotFakeGit()
     let log = SlotTestLog()
     let contract: ProjectContract
     let root: URL
@@ -41,7 +44,7 @@ private struct Fixture {
     }
 
     var lifecycle: ScriptedSlotLifecycle {
-        ScriptedSlotLifecycle(runner: runner, git: git, log: log, gitEnvironment: { _ in ["GIT_ASKPASS": "/askpass"] })
+        ScriptedSlotLifecycle(runner: runner, git: git, log: log, gitRemote: { _ in ("https://forge.invalid/app.git", ["GIT_ASKPASS": "/askpass"]) })
     }
 
     func slot(hot: Bool) -> SlotSpec {
@@ -94,10 +97,10 @@ private struct Fixture {
         let f = try Fixture()
         let slot = f.slot(hot: false)
         let commit = try await f.lifecycle.acquire(slot, contract: f.contract, base: "main", branch: "loopworker-12-fix")
-        #expect(commit == "abc1234")
-        #expect(await f.git.calls == ["ensureWorktree 0", "resetWorktree main loopworker-12-fix /askpass"])
+        #expect(commit == "abc1234def5678901234567890abcdef12345678")
+        #expect(await f.git.calls == ["ensureWorktree 0", "resetWorktree https://forge.invalid/app.git main loopworker-12-fix /askpass"])
         #expect(f.scriptsRun() == ["provision.sh"])
-        #expect(f.log.lines.contains { $0.contains("origin/main @ abc1234") && $0.contains("loopworker-12-fix") })
+        #expect(f.log.lines.contains { Redactor.redact($0).contains("origin/main @ abc1234def56, branch loopworker-12-fix") })
 
         await f.lifecycle.recycle(slot, contract: f.contract)
         #expect(f.scriptsRun() == ["provision.sh", "teardown.sh"])
@@ -216,12 +219,16 @@ private struct Fixture {
     @Test("B32: a long script logs that it is still running, repeatedly")
     func stillRunning() async throws {
         let f = try Fixture { $0.provisionTimeout = .milliseconds(200) }
+        let marker = "[group--app/0 provision] still running after"
+        // The script "runs" until the watchdog has spoken twice, so a slow machine can't race it.
         f.runner.on("bash") { _ in
-            try await Task.sleep(for: .milliseconds(500))
+            for _ in 0..<500 where f.log.lines.filter({ $0.contains(marker) }).count < 2 {
+                try await Task.sleep(for: .milliseconds(20))
+            }
             return ProcessResult(status: 0, output: "")
         }
         try await f.lifecycle.prepare(f.slot(hot: true), contract: f.contract)
-        let lines = f.log.lines.filter { $0.contains("[group--app/0 provision] still running after") }
+        let lines = f.log.lines.filter { $0.contains(marker) }
         #expect(lines.count >= 2)
         let after = f.log.lines.count
         try await Task.sleep(for: .milliseconds(250))

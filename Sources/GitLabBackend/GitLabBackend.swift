@@ -24,6 +24,13 @@ public enum GitLabBackend {
         }
     }
 
+    /// The environment variables that `make` reads credentials from for this config, so the
+    /// caller can treat them as secrets before building anything.
+    /// - Throws: `ConfigError` when the config file doesn't decode.
+    public static func credentialVariables(config: HostConfig) throws -> [String] {
+        try GitLabConfig.tokenVariables(toml: config.toml, backlog: config.backlogKind == "gitlab", forge: config.forgeKind == "gitlab")
+    }
+
     static func make(
         config: HostConfig, log: LogSink, environment: [String: String],
         transport: any HTTPTransport, sleep: @escaping GitLabClient.Sleep

@@ -84,6 +84,15 @@ enum GitLabConfig {
             connection: connection, allowed: allowed, labelPrefix: prefix, statusMode: mode, statusNames: names)
     }
 
+    /// The `token_env` names that the backlog and forge sections read, without needing them set.
+    static func tokenVariables(toml: String, backlog: Bool, forge: Bool) throws -> [String] {
+        let raw = try decode(toml)
+        var names: [String] = []
+        if backlog { names.append(raw.backlog?.gitlab?.token_env ?? defaultTokenEnv) }
+        if forge { names.append(raw.forge?.gitlab?.token_env ?? raw.backlog?.gitlab?.token_env ?? defaultTokenEnv) }
+        return names
+    }
+
     /// Decodes `[forge.gitlab]`, falling back to `[backlog.gitlab]` for each key it doesn't set.
     static func forge(toml: String, environment: [String: String]) throws -> GitLabConnection {
         let raw = try decode(toml)

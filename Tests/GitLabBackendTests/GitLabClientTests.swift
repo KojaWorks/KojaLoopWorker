@@ -17,7 +17,7 @@ import Testing
         gitlab.on("GET", "/api/v4/user", json: Fixture.me)
         let me = try await client.me()
         #expect(me == GLUser(id: 1, username: "me"))
-        #expect(gitlab.requests[0].headers["PRIVATE-TOKEN"] == Fixture.token)
+        #expect(gitlab.requests[0].headers["Authorization"] == "Bearer \(Fixture.token)")
         #expect(GitLabClient.requestTimeout == 30)
     }
 

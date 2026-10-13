@@ -149,12 +149,8 @@ actor GitLabClient {
         request.httpMethod = method
         request.httpBody = body
         if let contentType { request.setValue(contentType, forHTTPHeaderField: "Content-Type") }
-        // GraphQL documents bearer auth; REST documents PRIVATE-TOKEN.
-        if bearer {
-            request.setValue("Bearer \(connection.token)", forHTTPHeaderField: "Authorization")
-        } else {
-            request.setValue(connection.token, forHTTPHeaderField: "PRIVATE-TOKEN")
-        }
+        // Bearer, not PRIVATE-TOKEN: GitLab accepts personal access tokens and OAuth tokens there.
+        request.setValue("Bearer \(connection.token)", forHTTPHeaderField: "Authorization")
         let where_ = "\(method) \(label)"
 
         var attempt = 0

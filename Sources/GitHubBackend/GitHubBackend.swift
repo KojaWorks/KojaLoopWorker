@@ -28,22 +28,32 @@ public enum GitHubBackend {
         try makeForge(config: config, log: log, environment: environment, transport: urlSessionTransport)
     }
 
+    /// The environment variables that `makeForge` reads credentials from for this config.
+    /// - Throws: `ConfigError` when `[forge.github]` doesn't decode.
+    public static func credentialVariables(config: HostConfig) throws -> [String] {
+        [try section(config)?.token_env ?? "GITHUB_TOKEN"]
+    }
+
+    private struct Raw: Decodable {
+        var forge: Forge?
+        struct Forge: Decodable { var github: Section? }
+        struct Section: Decodable {
+            var api_base: String?
+            var token_env: String?
+        }
+    }
+
+    private static func section(_ config: HostConfig) throws -> Raw.Section? {
+        do { return try TOMLDecoder().decode(Raw.self, from: config.toml).forge?.github }
+        catch { throw ConfigError("config.toml: [forge.github]: \(error)") }
+    }
+
     static func makeForge(
         config: HostConfig, log: LogSink, environment: [String: String], transport: @escaping HTTPTransport,
         sleep: @escaping @Sendable (Double) async throws -> Void = { try await Task.sleep(nanoseconds: UInt64($0 * 1e9)) },
         now: @escaping @Sendable () -> Date = Date.init
     ) throws -> GitHubForge {
-        struct Raw: Decodable {
-            var forge: Forge?
-            struct Forge: Decodable { var github: Section? }
-            struct Section: Decodable {
-                var api_base: String?
-                var token_env: String?
-            }
-        }
-        let section: Raw.Section?
-        do { section = try TOMLDecoder().decode(Raw.self, from: config.toml).forge?.github }
-        catch { throw ConfigError("config.toml: [forge.github]: \(error)") }
+        let section = try section(config)
 
         let base = section?.api_base ?? "https://api.github.com"
         guard let apiBase = URL(string: base), let host = apiBase.host, let scheme = apiBase.scheme else {

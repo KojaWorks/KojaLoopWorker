@@ -11,22 +11,22 @@ public struct ScriptedSlotLifecycle: SlotLifecycle {
     let runner: ProcessRunning
     let git: GitDriving
     let log: LogSink
-    let gitEnvironment: @Sendable (ProjectSpec) -> [String: String]
+    let gitRemote: @Sendable (ProjectSpec) -> (url: String, environment: [String: String])
 
     /// - Parameters:
     ///   - runner: Runs the lifecycle scripts.
     ///   - git: Creates, resets, detaches and removes slot worktrees.
     ///   - log: Receives script output, progress and best-effort failures.
-    ///   - gitEnvironment: The forge's git environment (askpass credentials) for a project,
-    ///     passed to the git calls that fetch.
+    ///   - gitRemote: A project's forge clone URL and git environment (askpass credentials),
+    ///     passed to the fetch in `acquire`.
     public init(
         runner: ProcessRunning, git: GitDriving, log: LogSink,
-        gitEnvironment: @escaping @Sendable (ProjectSpec) -> [String: String]
+        gitRemote: @escaping @Sendable (ProjectSpec) -> (url: String, environment: [String: String])
     ) {
         self.runner = runner
         self.git = git
         self.log = log
-        self.gitEnvironment = gitEnvironment
+        self.gitRemote = gitRemote
     }
 
     public func prepare(_ slot: SlotSpec, contract: ProjectContract) async throws(SlotFailure) {
@@ -39,11 +39,12 @@ public struct ScriptedSlotLifecycle: SlotLifecycle {
         try await ensureWorktree(slot)
         let commit: String
         do {
-            commit = try await git.resetWorktree(slot.worktree, base: base, branch: branch, environment: gitEnvironment(slot.project))
+            let remote = gitRemote(slot.project)
+            commit = try await git.resetWorktree(slot.worktree, url: remote.url, base: base, branch: branch, environment: remote.environment)
         } catch {
             throw SlotFailure("\(Self.name(slot)): resetting \(slot.worktree.path) to origin/\(base) on branch \(branch) failed: \(error)")
         }
-        log.info("\(Self.name(slot)): worktree at origin/\(base) @ \(commit), branch \(branch)")
+        log.info("\(Self.name(slot)): worktree at origin/\(base) @ \(commit.prefix(12)), branch \(branch)")  // a full SHA trips the redactor's hex rule
         try await runScript(slot.project.hot ? .reset : .provision, slot, contract)
         return commit
     }

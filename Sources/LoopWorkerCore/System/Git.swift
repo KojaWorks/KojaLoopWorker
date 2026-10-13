@@ -13,10 +13,27 @@ public struct GitError: Error, CustomStringConvertible {
     }
 }
 
-/// The git operations the Manager needs. Every call takes the forge's environment, so
-/// credentials come from the forge's askpass helper, and runs under a timeout.
+/// The forge refused a push because `branch` there isn't at the commit the Manager expected:
+/// someone else made or moved a branch of that name. Retrying can't fix it.
+public struct PushRejected: Error, CustomStringConvertible, Equatable {
+    public var branch: String
+    public var url: String
+    public init(branch: String, url: String) {
+        self.branch = branch
+        self.url = url
+    }
+    public var description: String { "\(url) refused the push of \(branch): the branch there is not the one LoopWorker last pushed" }
+}
+
+/// The git operations the Manager needs. Every call runs under a timeout.
+///
+/// Calls that talk to the forge take its URL and environment (askpass credentials). They
+/// never use `origin`, hooks, fsmonitor or credential helpers: a worktree shares `.git/config`
+/// and hooks with its clone, and the worker controls both, so a rewritten
+/// `remote.origin.url`, a `pre-push` hook or a credential helper would otherwise see the token.
 public protocol GitDriving: Sendable {
-    /// Clones `url` to `directory` if it doesn't exist, otherwise fetches `origin`.
+    /// Clones `url` to `directory` if it doesn't exist, otherwise fetches `url`'s branches into
+    /// the `origin/*` tracking refs, pruning deleted ones.
     func cloneOrFetch(url: String, into directory: URL, environment: [String: String]) async throws
 
     /// Hard-resets the clone's own working tree to `origin/<base>`, after a fetch. The repo's
@@ -30,17 +47,22 @@ public protocol GitDriving: Sendable {
     /// `loopworker-slot-<slot>`, without nesting it inside the clone.
     func ensureWorktree(clone: URL, worktree: URL, slot: Int) async throws
 
-    /// Fetches, hard-resets the worktree to `origin/<base>`, removes untracked files (and
-    /// ignored agent files such as `CLAUDE.local.md` and `.claude/`, so one card's worker can't
-    /// leave instructions for the next), and checks out a fresh `branch` there. Returns the
-    /// resolved base commit.
-    func resetWorktree(_ worktree: URL, base: String, branch: String, environment: [String: String]) async throws -> String
+    /// Fetches `url`'s branches into the `origin/*` tracking refs, hard-resets the worktree to
+    /// `origin/<base>`, removes untracked files (and ignored agent files such as
+    /// `CLAUDE.local.md` and `.claude/`, so one card's worker can't leave instructions for the
+    /// next), and checks out a fresh `branch` there. Returns the resolved base commit.
+    func resetWorktree(_ worktree: URL, url: String, base: String, branch: String, environment: [String: String]) async throws -> String
 
     /// Number of commits on HEAD that `origin/<base>` doesn't have.
     func commitsAhead(_ worktree: URL, base: String) async throws -> Int
 
-    /// Pushes HEAD to `branch` on origin, creating or force-updating it.
-    func push(_ worktree: URL, branch: String, environment: [String: String]) async throws
+    /// Pushes HEAD to `branch` at `url` without running hooks, and returns the pushed commit.
+    /// - Parameter expected: the commit that `branch` must be at on the forge, the one the
+    ///   Manager last pushed for this card; nil means the branch must not exist yet. A branch
+    ///   at that commit is force-updated.
+    /// - Throws: `PushRejected` when the branch on the forge doesn't match `expected`;
+    ///   `GitError` for any other failure.
+    func push(_ worktree: URL, to url: String, branch: String, expected: String?, environment: [String: String]) async throws -> String
 
     /// Removes the worktree directory (`git worktree remove --force`) and prunes. Best effort:
     /// logs failures, never throws.
@@ -66,17 +88,23 @@ public struct Git: GitDriving {
     private static let networkTimeout: Duration = .seconds(10 * 60)
     private static let localTimeout: Duration = .seconds(2 * 60)
 
+    /// Prefix for every call that carries forge credentials. The empty `credential.helper`
+    /// resets the helper list, so no configured helper is asked to store the password.
+    static let credentialed = ["-c", "core.hooksPath=/dev/null", "-c", "credential.helper=", "-c", "core.fsmonitor=false"]
+    static let trackingRefspec = "+refs/heads/*:refs/remotes/origin/*"
+
     /// Clones into a temporary sibling and renames it into place, so a clone killed at its
     /// timeout leaves no half-clone at `directory` for later fetches to fail on.
     public func cloneOrFetch(url: String, into directory: URL, environment: [String: String]) async throws {
         if FileManager.default.fileExists(atPath: directory.path) {
-            try await git(["-C", directory.path, "fetch", "--prune", "origin"], Self.networkTimeout, environment)
+            try await git(Self.credentialed + ["-C", directory.path, "fetch", "--prune", url, Self.trackingRefspec],
+                          Self.networkTimeout, environment)
             return
         }
         let partial = directory.deletingLastPathComponent()
             .appending(path: ".\(directory.lastPathComponent).cloning-\(UUID().uuidString.prefix(8))")
         do {
-            try await git(["clone", url, partial.path], Self.cloneTimeout, environment)
+            try await git(Self.credentialed + ["clone", url, partial.path], Self.cloneTimeout, environment)
             try FileManager.default.moveItem(at: partial, to: directory)
         } catch {
             try? FileManager.default.removeItem(at: partial)
@@ -100,9 +128,9 @@ public struct Git: GitDriving {
         try await git(["-C", clone.path, "worktree", "add", "-B", "loopworker-slot-\(slot)", worktree.path, "HEAD"])
     }
 
-    public func resetWorktree(_ worktree: URL, base: String, branch: String, environment: [String: String]) async throws -> String {
+    public func resetWorktree(_ worktree: URL, url: String, base: String, branch: String, environment: [String: String]) async throws -> String {
         let path = worktree.path
-        try await git(["-C", path, "fetch", "origin"], Self.networkTimeout, environment)
+        try await git(Self.credentialed + ["-C", path, "fetch", url, Self.trackingRefspec], Self.networkTimeout, environment)
         try await git(["-C", path, "reset", "--hard", "origin/\(base)"])
         // Plain -fd keeps ignored build caches, which keeps hot slots fast.
         try await git(["-C", path, "clean", "-fd"])
@@ -120,11 +148,16 @@ public struct Git: GitDriving {
         return count
     }
 
-    /// Uses `--force-with-lease`, because a finish retried after a restart pushes the same
-    /// branch again.
-    public func push(_ worktree: URL, branch: String, environment: [String: String]) async throws {
-        try await git(["-C", worktree.path, "push", "--force-with-lease", "origin", "HEAD:refs/heads/\(branch)"],
-                      Self.networkTimeout, environment)
+    /// The lease names its expected value, because a push to a URL has no tracking ref to
+    /// lease against.
+    public func push(_ worktree: URL, to url: String, branch: String, expected: String?, environment: [String: String]) async throws -> String {
+        let head = try await git(["-C", worktree.path, "rev-parse", "HEAD"]).output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let arguments = Self.credentialed + ["-C", worktree.path, "push", "--no-verify",
+                                             "--force-with-lease=refs/heads/\(branch):\(expected ?? "")", url, "\(head):refs/heads/\(branch)"]
+        let result = try await runner.run(ProcessSpec("git", arguments, environment: environment.mapValues { $0 }, timeout: Self.networkTimeout))
+        if result.succeeded { return head }
+        if result.output.contains("stale info") { throw PushRejected(branch: branch, url: url) }
+        throw GitError(command: arguments.joined(separator: " "), result: result)
     }
 
     public func removeWorktree(clone: URL, worktree: URL) async {

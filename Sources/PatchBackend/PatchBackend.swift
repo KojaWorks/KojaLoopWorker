@@ -36,6 +36,12 @@ public enum PatchBackend {
         try makeBacklog(config: config, log: log, environment: environment, transport: urlSessionTransport)
     }
 
+    /// The environment variables that `makeBacklog` reads credentials from for this config.
+    /// - Throws: `ConfigError` for an invalid `[backlog.patch]` section.
+    public static func credentialVariables(config: HostConfig) throws -> [String] {
+        [try PatchConfig.from(config).tokenEnv]
+    }
+
     static func makeBacklog(
         config: HostConfig, log: LogSink, environment: [String: String], transport: @escaping HTTPTransport,
         sleep: @escaping @Sendable (Double) async throws -> Void = { try await Task.sleep(nanoseconds: UInt64($0 * 1e9)) },
