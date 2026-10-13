@@ -10,16 +10,16 @@ public enum Budget {
 
     /// The number of slots each project gets in its pool, in the order of `projects`.
     ///
-    /// Hot projects reserve their slots in config order, each capped by what the budget still
-    /// affords. Cold projects provision per card, so their pools only bound concurrency: each is
-    /// capped at `band` (default `ceil(maxSlots)`) so its slots stay inside its port band, and
-    /// fill checks the budget before each start.
+    /// Every pool is capped at `band` (default `ceil(maxSlots)`) so its slots stay inside its
+    /// port band. Hot projects reserve their slots in config order, each also capped by what the
+    /// budget still affords. Cold projects provision per card, so their pools only bound
+    /// concurrency, and fill checks the budget before each start.
     public static func slotTargets(for projects: [ProjectSpec], maxSlots: Double, band: Int? = nil) -> [Int] {
         var remaining = maxSlots
         let band = band ?? bandSize(maxSlots: maxSlots)
         return projects.map { p in
             guard p.hot else { return min(p.slots, band) }
-            let n = min(p.slots, affordable(remaining: remaining, weight: p.weight))
+            let n = min(p.slots, band, affordable(remaining: remaining, weight: p.weight))
             remaining -= Double(n) * p.weight
             return n
         }

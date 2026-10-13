@@ -399,7 +399,7 @@ extension Manager {
     func apply(_ new: HostConfig) {
         var next = new
         if Budget.bandSize(maxSlots: new.maxSlots) > bandSize {
-            log.warning("config.toml: max_slots \(new.maxSlots) needs wider port bands; cold projects stay capped at \(bandSize) slots until a restart")
+            log.warning("config.toml: max_slots \(new.maxSlots) needs wider port bands; every project stays capped at \(bandSize) slots until a restart")
         }
         if new.backlogKind != config.backlogKind || new.forgeKind != config.forgeKind || new.clonesDir != config.clonesDir
             || new.notifyCommand != config.notifyCommand || new.engine != config.engine {

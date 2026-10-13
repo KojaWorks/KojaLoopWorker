@@ -25,6 +25,11 @@ func temporaryDirectory() throws -> URL {
         #expect(Budget.slotTargets(for: projects, maxSlots: 4) == [2, 1, 4])
     }
 
+    @Test func lightHotProjectsStayInsideTheirBand() {  // B50
+        // 0.5 weight affords 8 slots of a 4-unit budget, but the band holds 4.
+        #expect(Budget.slotTargets(for: [ProjectSpec(path: "a", slots: 6, hot: true, weight: 0.5)], maxSlots: 4) == [4])
+    }
+
     @Test func portBandsDoNotOverlap() {  // B50
         #expect(Budget.port(basePort: 54400, portStep: 100, bandSize: Budget.bandSize(maxSlots: 2.5), band: 0, index: 2) == 54600)
         #expect(Budget.port(basePort: 54400, portStep: 100, bandSize: Budget.bandSize(maxSlots: 2.5), band: 1, index: 0) == 54700)
