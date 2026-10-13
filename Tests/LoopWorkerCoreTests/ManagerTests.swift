@@ -92,7 +92,7 @@ func fileMode(_ url: URL) throws -> Int {
         h.lifecycle.state { $0.acquireFailure = SlotFailure("provision.sh exited 1: no disk") }
         try await h.boot()
         await h.cycle()
-        #expect(h.backlog.writes.last == .release("id-1", reason: "LoopWorker couldn't start a worker for this card: preparing the slot failed: provision.sh exited 1: no disk", countsAsAttempt: false))
+        #expect(h.backlog.writes.last == .release("id-1", reason: "Couldn't start a worker: preparing the slot failed: provision.sh exited 1: no disk", countsAsAttempt: false))
         #expect(h.lifecycle.calls.contains("recycle g--app/0"))
         #expect(try h.status().projects[0].slots[0].state == "broken")
         #expect(h.tmux.spawned.isEmpty)
@@ -352,7 +352,7 @@ func fileMode(_ url: URL) throws -> Int {
         try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
         h.tmux.set("lw_g--app_0", alive: false)
         await h.cycle()
-        #expect(h.backlog.writes.last == .markStuck("id-12", blocker: "LoopWorker couldn't finish this card; the forge or backlog refused: PUT /issues/12: 422 bad label"))
+        #expect(h.backlog.writes.last == .markStuck("id-12", blocker: "Couldn't finish: the forge or backlog refused: PUT /issues/12: 422 bad label"))
         #expect(try h.status().projects[0].slots[0].state == "idle")
     }
 
@@ -366,7 +366,7 @@ func fileMode(_ url: URL) throws -> Int {
             Issue.record("expected a counted release, got \(h.backlog.writes)")
             return
         }
-        #expect(reason.contains("the worker's session ended without writing an outcome"))
+        #expect(reason.hasPrefix("The worker's session ended without writing an outcome."))
         #expect(reason.contains("working on it\n[REDACTED]=abc leaked"))
         #expect(h.lifecycle.calls.last == "recycle g--app/0")
     }
@@ -379,7 +379,7 @@ func fileMode(_ url: URL) throws -> Int {
             Issue.record("expected markStuck, got \(h.backlog.writes)")
             return
         }
-        #expect(blocker.contains("gave up after 3 failed attempts"))
+        #expect(blocker.hasPrefix("Gave up after 3 failed attempts"))
         #expect(h.runner.specs.get.contains { $0.environment["LOOPWORKER_ALERT"]??.contains("g/app#12 is stuck after 3 failed attempts") == true })
     }
 
@@ -470,8 +470,8 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(!h.tmux.exists("lw_g--apple_0"))  // a project removed while the Manager was down
         #expect(!FileManager.default.fileExists(atPath: h.stateDir("g--app", 1).appending(path: "card.json").path))
         let writes = h.backlog.writes
-        #expect(writes.contains(.release("id-3", reason: "LoopWorker released this card: the Manager restarted and the worker was gone without an outcome.", countsAsAttempt: false)))
-        #expect(writes.contains(.release("id-4", reason: "LoopWorker released this card: the Manager lost track of this card's worker.", countsAsAttempt: false)))
+        #expect(writes.contains(.release("id-3", reason: "The Manager restarted and the worker was gone without an outcome.", countsAsAttempt: false)))
+        #expect(writes.contains(.release("id-4", reason: "The Manager lost track of this card's worker.", countsAsAttempt: false)))
         #expect(!writes.contains { if case .release("id-1", _, _) = $0 { true } else { false } })
         let slots = try h.status().projects[0].slots
         #expect(slots[0].state == "busy" && slots[0].card == "g/app#1")
@@ -645,7 +645,7 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(await h.manager.handle(.interrupt) == .forcing)
         #expect(h.log.contains("second SIGINT: force-stopping; reaping 2 worker(s)", level: .warning))
         await h.manager.forceStop()
-        #expect(h.backlog.writes.contains(.release("id-1", reason: "LoopWorker released this card: the Manager stopped before the worker finished.", countsAsAttempt: false)))
+        #expect(h.backlog.writes.contains(.release("id-1", reason: "The Manager stopped before the worker finished.", countsAsAttempt: false)))
         #expect(h.backlog.card(id: "id-2")?.state == .working)
         #expect(FileManager.default.fileExists(atPath: h.stateDir("g--app", 1).appending(path: "card.json").path))
         #expect(h.tmux.state.get.sessions.isEmpty)

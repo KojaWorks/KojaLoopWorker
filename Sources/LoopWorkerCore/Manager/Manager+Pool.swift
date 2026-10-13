@@ -198,7 +198,7 @@ extension Manager {
 
     func releaseAfterRestart(_ ref: SlotRef, card: Card) async {
         do {
-            try await deps.backlog.release(card, reason: "LoopWorker released this card: the Manager restarted and the worker was gone without an outcome.", countsAsAttempt: false)
+            try await deps.backlog.release(card, reason: "The Manager restarted and the worker was gone without an outcome.", countsAsAttempt: false)
         } catch {
             log.error("can't release \(card.ref): \(error); the stranded-card sweep retries")
         }
@@ -385,7 +385,7 @@ extension Manager {
                       let fresh = try? await backlog.card(card.ref), fresh.state == .working,
                       await !self.holds(card.ref) else { continue }
                 do {
-                    try await backlog.release(fresh, reason: "LoopWorker released this card: the Manager lost track of this card's worker.", countsAsAttempt: false)
+                    try await backlog.release(fresh, reason: "The Manager lost track of this card's worker.", countsAsAttempt: false)
                     log.warning("released \(card.ref): no slot of this Manager held it")
                 } catch {
                     log.error("can't release stranded \(card.ref): \(error); retrying at the next sweep")

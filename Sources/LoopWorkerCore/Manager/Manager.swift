@@ -308,7 +308,7 @@ public actor Manager {
                     continue
                 }
                 do {
-                    try await deps.backlog.release(card, reason: "LoopWorker released this card: the Manager stopped before the worker finished.", countsAsAttempt: false)
+                    try await deps.backlog.release(card, reason: "The Manager stopped before the worker finished.", countsAsAttempt: false)
                     log.info("\(label(slot.spec)): released \(card.ref) (Manager stopped)")
                 } catch {
                     log.error("\(label(slot.spec)): can't release \(card.ref): \(error); the next start's stranded-card sweep releases it")

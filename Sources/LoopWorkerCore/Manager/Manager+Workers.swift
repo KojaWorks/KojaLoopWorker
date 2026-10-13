@@ -217,7 +217,7 @@ extension Manager {
         guard let spec = slot(ref)?.spec else { return }
         log.error("\(label(spec)): couldn't start a worker for \(card.ref): \(why)")
         do {
-            try await deps.backlog.release(card, reason: "LoopWorker couldn't start a worker for this card: \(why)", countsAsAttempt: false)
+            try await deps.backlog.release(card, reason: "Couldn't start a worker: \(why)", countsAsAttempt: false)
         } catch {
             log.error("\(label(spec)): can't release \(card.ref): \(error); the stranded-card sweep retries")
         }
@@ -370,11 +370,11 @@ extension Manager {
         let attempt = card.attempts + 1
         do {
             if reason.countsAsAttempt && attempt >= config.maxAttempts {
-                try await deps.backlog.markStuck(card, blocker: "LoopWorker gave up after \(attempt) failed attempts (max_attempts is \(config.maxAttempts)). The last one: \(why). The earlier attempts' reasons are in the release notes on this card.\(terminal)")
+                try await deps.backlog.markStuck(card, blocker: "Gave up after \(attempt) failed attempts (max_attempts is \(config.maxAttempts)). The last one: \(why). The earlier attempts' reasons are in the release notes on this card.\(terminal)")
                 log.warning("\(label(spec)): marked \(card.ref) stuck after \(attempt) failed attempts; last: \(why)")
                 notify(key: "stuck-\(card.ref.id)", "LoopWorker: \(card.ref) is stuck after \(attempt) failed attempts; last: \(why)")
             } else {
-                try await deps.backlog.release(card, reason: "LoopWorker released this card: \(why).\(terminal)", countsAsAttempt: reason.countsAsAttempt)
+                try await deps.backlog.release(card, reason: "\(why.prefix(1).uppercased() + why.dropFirst()).\(terminal)", countsAsAttempt: reason.countsAsAttempt)
                 log.warning("\(label(spec)): released \(card.ref): \(why)")
             }
         } catch {
@@ -417,7 +417,7 @@ extension Manager {
                 do {
                     try await finishDone(spec, card: card, branch: branch, base: base, title: title, body: body, guide: guide)
                 } catch let rejection as BackendRejection {
-                    try await stuck(spec, card: card, blocker: "LoopWorker couldn't finish this card; the forge or backlog refused: \(rejection)")
+                    try await stuck(spec, card: card, blocker: "Couldn't finish: the forge or backlog refused: \(rejection)")
                 }
             case .stuck(let blocker):
                 try await finishStuck(spec, card: card, branch: branch, base: base, blocker: blocker)

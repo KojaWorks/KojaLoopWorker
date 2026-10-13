@@ -30,12 +30,13 @@ public protocol Backlog: Sendable {
     /// Moves a `working` card to `review` and links the review request from the card.
     func markReview(_ card: Card, review: ReviewRequest) async throws
 
-    /// Moves a `working` card to `stuck` and posts `blocker` (markdown) on the card. The card
-    /// stays assigned to its human so it shows up in their queue.
+    /// Moves a `working` card to `stuck` and posts `blocker` (markdown) on the card under the
+    /// backend's own header, so `blocker` doesn't repeat one. The card stays assigned to its
+    /// human so it shows up in their queue.
     func markStuck(_ card: Card, blocker: String) async throws
 
-    /// Returns a `working` card to `ready` and posts `reason` on the card so the history shows
-    /// why it bounced. When `countsAsAttempt` is true (the worker crashed or hung), the release
+    /// Returns a `working` card to `ready` and posts `reason` on the card, under the backend's
+    /// own "released" header, so the history shows why it bounced. When `countsAsAttempt` is true (the worker crashed or hung), the release
     /// is recorded so that later reads report `Card.attempts` one higher; releases caused by
     /// the host (auth failures, Manager restarts) pass false and don't count.
     func release(_ card: Card, reason: String, countsAsAttempt: Bool) async throws
