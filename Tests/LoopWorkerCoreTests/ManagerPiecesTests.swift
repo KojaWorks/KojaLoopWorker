@@ -209,6 +209,13 @@ func temporaryDirectory() throws -> URL {
         #expect(spec.timeout == .seconds(60))
     }
 
+    @Test func preflightLoginPromptIsAFailureDespiteExitZero() async {  // B95
+        let runner = ScriptedRunner { _ in ProcessResult(status: 0, output: "Not logged in \u{00B7} Please run /login\n") }
+        let r = await AuthGate.preflight(runner: runner, environment: [:])
+        #expect(!r.ok)
+        #expect(r.detail.contains("Not logged in"))
+    }
+
     @Test func preflightTimeoutIsAFailure() async {
         let runner = ScriptedRunner { _ in ProcessResult(status: -9, output: "", timedOut: true) }
         let r = await AuthGate.preflight(runner: runner, environment: [:])

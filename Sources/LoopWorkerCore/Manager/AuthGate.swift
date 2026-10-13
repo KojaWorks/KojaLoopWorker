@@ -67,16 +67,19 @@ public struct AuthGate: Sendable {
 
     /// Runs `claude -p ok --model haiku` with `USER` removed (the same claude-code 401
     /// workaround as the launch script) and `CLAUDE_CODE_OAUTH_TOKEN` passed from
-    /// `environment` when present. Never throws: a start failure or timeout is a failure.
+    /// `environment` when present. Never throws: a start failure or timeout is a failure, and
+    /// so is claude's login prompt in the output, which comes with exit status 0 when the CLI
+    /// has no login of its own.
     public static func preflight(runner: any ProcessRunning, environment: [String: String]) async -> (ok: Bool, detail: String) {
         var env: [String: String?] = ["USER": nil]
         if let token = environment["CLAUDE_CODE_OAUTH_TOKEN"] { env["CLAUDE_CODE_OAUTH_TOKEN"] = token }
         let spec = ProcessSpec("claude", ["-p", "ok", "--model", "haiku"], environment: env, timeout: .seconds(60))
         do {
             let r = try await runner.run(spec)
-            if r.succeeded { return (true, "") }
-            if r.timedOut { return (false, "claude -p timed out after 60 s") }
             let last = r.output.split(whereSeparator: \.isNewline).last.map(String.init)
+            if r.timedOut { return (false, "claude -p timed out after 60 s") }
+            if Pane.showsAuthFailure(r.output) { return (false, last ?? "claude -p is not logged in") }
+            if r.succeeded { return (true, "") }
             return (false, last ?? "claude -p exited \(r.status)")
         } catch {
             return (false, "can't run claude: \(error)")
