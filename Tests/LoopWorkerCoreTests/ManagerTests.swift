@@ -666,6 +666,29 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.lifecycle.calls.contains("retire g--app/0"))
     }
 
+    @Test func removedHotProjectPreparingIsDroppedWhenThePrepareEnds() async throws {
+        let h = try ManagerHarness(projects: "[[project]]\npath = \"g/hot\"\nhot = true\nslots = 2\n[[project]]\npath = \"g/cold\"",
+                                   top: "max_slots = 2")
+        let gate = Gate()
+        h.lifecycle.state { $0.prepareGate = gate }
+        h.addCard(1, project: "g/cold")
+        try await h.manager.start()
+        try await until { gate.waiting == 2 }
+
+        try h.writeConfig(projects: "[[project]]\npath = \"g/cold\"", top: "max_slots = 2")
+        h.clock.advance(61)
+        await h.manager.tick()
+        #expect(h.tmux.spawned.isEmpty)
+        gate.open()
+        await h.manager.settle()
+        #expect(h.lifecycle.calls.filter { $0.hasPrefix("retire g--hot") }.count == 2)
+
+        await h.cycle()
+        await h.cycle()
+        #expect(try h.status().projects.map(\.path) == ["g/cold"])
+        #expect(h.tmux.spawned.map(\.session) == ["lw_g--cold_0"])
+    }
+
     @Test func busySlotRetiresAfterItsCard() async throws {  // B52
         let h = try ManagerHarness(projects: oneColdProject)
         h.addCard(1)

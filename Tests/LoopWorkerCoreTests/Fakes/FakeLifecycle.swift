@@ -8,6 +8,8 @@ final class FakeLifecycle: SlotLifecycle, @unchecked Sendable {
         var acquireFailure: SlotFailure?
         var prepareFailure: SlotFailure?
         var acquiredBranches: [String] = []
+        /// When set, `prepare` waits on it after recording the call.
+        var prepareGate: Gate?
     }
 
     let state = Guarded(State())
@@ -16,10 +18,11 @@ final class FakeLifecycle: SlotLifecycle, @unchecked Sendable {
     private func id(_ slot: SlotSpec) -> String { "\(slot.project.key)/\(slot.index)" }
 
     func prepare(_ slot: SlotSpec, contract: ProjectContract) async throws(SlotFailure) {
-        let failure: SlotFailure? = state {
+        let (failure, gate): (SlotFailure?, Gate?) = state {
             $0.calls.append("prepare \(id(slot))")
-            return slot.project.hot ? $0.prepareFailure : nil
+            return (slot.project.hot ? $0.prepareFailure : nil, $0.prepareGate)
         }
+        await gate?.wait()
         if let failure { throw failure }
     }
 

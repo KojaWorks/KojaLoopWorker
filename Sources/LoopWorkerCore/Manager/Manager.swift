@@ -264,6 +264,7 @@ public actor Manager {
             startRefresh(key)
         }
         await reconcileBusySlots(now)
+        retireAllDue()
         reviveBrokenSlots(now)
         if let last = lastSweep, now.timeIntervalSince(last) >= Self.sweepInterval {
             lastSweep = now

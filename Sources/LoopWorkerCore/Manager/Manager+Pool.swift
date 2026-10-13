@@ -260,7 +260,21 @@ extension Manager {
         } catch {
             markBroken(ref, error)
         }
-        if slot(ref)?.retiring == true { retire(ref) }
+        retireIfDue(ref)
+    }
+
+    /// Retires the slot when a shrink or a project removal waits for it and nothing runs on it.
+    /// Called wherever a slot's task ends, and for every slot each tick as a backstop.
+    func retireIfDue(_ ref: SlotRef) {
+        guard let s = slot(ref), s.task == nil, s.phase != .busy,
+              s.retiring || projects[ref.key]?.removing == true else { return }
+        retire(ref)
+    }
+
+    func retireAllDue() {
+        for key in order {
+            for s in projects[key]?.slots ?? [] { retireIfDue(SlotRef(key: key, id: s.id)) }
+        }
     }
 
     /// Returns broken slots to service 180 s after their last attempt: cold slots go back to
@@ -289,6 +303,7 @@ extension Manager {
 
     func revive(_ due: [SlotRef], engineOK: Bool) async {
         for ref in due {
+            defer { retireIfDue(ref) }
             guard let s = slot(ref), let p = projects[ref.key] else { continue }
             if s.engineDown && !engineOK {
                 update(ref) {
@@ -415,7 +430,8 @@ extension Manager {
         for key in order where !newKeys.contains(key) && projects[key]?.removing == false {
             projects[key]!.removing = true
             log.info("\(projects[key]!.spec.path) was removed from the config; it claims nothing and retires its slots as they go idle")
-            for s in projects[key]!.slots where s.task == nil && s.phase != .busy { retire(SlotRef(key: key, id: s.id)) }
+            for i in projects[key]!.slots.indices { projects[key]!.slots[i].retiring = true }
+            for s in projects[key]!.slots { retireIfDue(SlotRef(key: key, id: s.id)) }
             removeProjectIfDone(key)
         }
         for var spec in new.projects {

@@ -260,7 +260,7 @@ extension Manager {
             $0.finishError = nil
         }
         fillSoon = true
-        if slot(ref)?.retiring == true || projects[ref.key]?.removing == true { retire(ref) }
+        retireIfDue(ref)
     }
 
     func markBroken(_ ref: SlotRef, _ failure: SlotFailure) {
