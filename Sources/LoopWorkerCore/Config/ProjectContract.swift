@@ -8,8 +8,6 @@ import TOMLDecoder
 public struct ProjectContract: Sendable, Equatable {
     public var directory: URL
     public var scripts: Scripts
-    /// Environment variable names forwarded from the Manager to the worker.
-    public var workerEnv: [String]
     public var wallclockCapMinutes: Double
     /// MCP config file (relative to `directory`) passed with `--strict-mcp-config`; nil means
     /// the worker gets no MCP servers.
@@ -18,9 +16,10 @@ public struct ProjectContract: Sendable, Equatable {
     public var reviewGuide: Bool
     /// `BRIEF.md` content, appended to the built-in worker brief; nil when absent.
     public var brief: String?
-    /// Card branch name template. `{number}` is the card's number in its backlog (or a short
-    /// hash of its id when it has none) and `{slug}` the title as lowercase ASCII words joined
-    /// by `-`, at most 40 characters. Projects whose hooks parse branch names override it.
+    /// Card branch name template; must contain `{number}`. `{number}` is `Card.number` (or the
+    /// first 8 hex characters of a SHA-256 of the card id when nil) and `{slug}` the title as
+    /// lowercase ASCII words joined by `-`, at most 40 characters. Projects whose hooks parse
+    /// branch names override it.
     public var branchTemplate: String
 
     public static let defaultBranchTemplate = "loopworker-{number}-{slug}"
@@ -37,13 +36,12 @@ public struct ProjectContract: Sendable, Equatable {
     }
 
     public init(
-        directory: URL, scripts: Scripts = Scripts(), workerEnv: [String] = [],
+        directory: URL, scripts: Scripts = Scripts(),
         wallclockCapMinutes: Double = 90, mcpConfig: String? = nil, reviewGuide: Bool = false,
         brief: String? = nil, branchTemplate: String = ProjectContract.defaultBranchTemplate
     ) {
         self.directory = directory
         self.scripts = scripts
-        self.workerEnv = workerEnv
         self.wallclockCapMinutes = wallclockCapMinutes
         self.mcpConfig = mcpConfig
         self.reviewGuide = reviewGuide
@@ -87,14 +85,15 @@ public struct ProjectContract: Sendable, Equatable {
         }
         let brief = try? String(contentsOf: directory.appending(path: "BRIEF.md"), encoding: .utf8)
         let branch = raw.worker?.branch ?? defaultBranchTemplate
-        guard branch.contains("{number}") || branch.contains("{slug}") else {
-            throw ConfigError("\(file.path): [worker] branch must contain {number} or {slug}, or every card would share one branch")
+        guard branch.contains("{number}") else {
+            throw ConfigError("\(file.path): [worker] branch must contain {number}; without it two cards with the same title share a branch")
         }
+        let cap = raw.worker?.wallclock_cap_minutes ?? 90
+        guard cap > 0 else { throw ConfigError("\(file.path): wallclock_cap_minutes must be > 0") }
         return ProjectContract(
             directory: directory,
             scripts: scripts,
-            workerEnv: raw.worker?.env ?? [],
-            wallclockCapMinutes: raw.worker?.wallclock_cap_minutes ?? 90,
+            wallclockCapMinutes: cap,
             mcpConfig: raw.worker?.mcp_config,
             reviewGuide: raw.review?.guide ?? false,
             brief: brief,
@@ -117,7 +116,6 @@ public struct ProjectContract: Sendable, Equatable {
         var teardown_timeout_minutes: Double?
     }
     private struct RawWorker: Decodable {
-        var env: [String]?
         var wallclock_cap_minutes: Double?
         var mcp_config: String?
         var branch: String?

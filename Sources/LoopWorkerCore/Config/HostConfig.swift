@@ -53,7 +53,11 @@ public struct HostConfig: Sendable {
         return try parse(text, home: home)
     }
 
+    /// Parses and validates `text`. Throws `ConfigError` naming the offending key for any value
+    /// the Manager can't run with. `home` must be absolute.
     public static func parse(_ text: String, home: URL) throws -> HostConfig {
+        // URL(filePath:) silently resolves a relative path against the working directory.
+        guard home.baseURL == nil, home.path.hasPrefix("/") else { throw ConfigError("LOOPWORKER_HOME must be an absolute path, got \(home.path)") }
         let raw: RawFile
         do { raw = try TOMLDecoder().decode(RawFile.self, from: text) }
         catch { throw ConfigError("config.toml: \(error)") }
@@ -63,6 +67,9 @@ public struct HostConfig: Sendable {
         guard maxSlots > 0 else { throw ConfigError("config.toml: max_slots must be > 0") }
         let maxAttempts = raw.max_attempts ?? 3
         guard maxAttempts > 0 else { throw ConfigError("config.toml: max_attempts must be > 0") }
+        if let w = raw.max_concurrent_workers, w <= 0 {
+            throw ConfigError("config.toml: max_concurrent_workers must be > 0")
+        }
 
         var projects: [ProjectSpec] = []
         var keys: [String: String] = [:]
@@ -72,7 +79,8 @@ public struct HostConfig: Sendable {
                 path: p.path, slots: p.slots ?? 1, hot: p.hot ?? false,
                 weight: (p.weight ?? 1) > 0 ? p.weight ?? 1 : 1,
                 model: p.model, contract: p.contract.map(expandTilde),
-                baseBranch: p.base_branch, draftReviewRequests: p.draft ?? true)
+                baseBranch: p.base_branch, draftReviewRequests: p.draft ?? true,
+                workerEnv: p.worker_env ?? [])
             guard spec.slots >= 0 else { throw ConfigError("config.toml: \(p.path): slots must be >= 0") }
             if let other = keys[spec.key] {
                 throw ConfigError("config.toml: projects \(other) and \(p.path) map to the same key \(spec.key)")
@@ -82,6 +90,10 @@ public struct HostConfig: Sendable {
         }
 
         let clones = raw.clones_dir.map(expandTilde) ?? home.appending(path: "clones").path
+        guard clones.hasPrefix("/") else { throw ConfigError("config.toml: clones_dir must be absolute or start with ~/, got \(clones)") }
+        if let contract = projects.compactMap(\.contract).first(where: { !$0.hasPrefix("/") }) {
+            throw ConfigError("config.toml: a project's contract must be absolute or start with ~/, got \(contract)")
+        }
         return HostConfig(
             home: home,
             clonesDir: URL(filePath: clones),
@@ -130,11 +142,15 @@ public struct HostConfig: Sendable {
         var contract: String?
         var base_branch: String?
         var draft: Bool?
+        var worker_env: [String]?
     }
 }
 
-/// Expands a leading `~` to the current user's home directory.
+/// Expands a leading `~` or `~/` to the current user's home directory. `~user` forms are
+/// left unchanged (and then fail the absolute-path checks).
 public func expandTilde(_ path: String) -> String {
-    guard path.hasPrefix("~") else { return path }
-    return FileManager.default.homeDirectoryForCurrentUser.path + path.dropFirst()
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+    if path == "~" { return home }
+    guard path.hasPrefix("~/") else { return path }
+    return home + path.dropFirst()
 }

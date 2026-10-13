@@ -20,7 +20,8 @@ import Testing
 
     @Test func namesTheCardWorktreeAndOutcome() {
         let b = brief(guide: false)
-        #expect(b.contains(#"g/app#7 "Fix it" in g/app"#))
+        #expect(b.contains("g/app#7 in g/app"))
+        #expect(!b.contains("Fix it"))
         #expect(b.contains("/c/g--app.slots/0"))
         #expect(b.contains("$LOOPWORKER_OUTCOME"))
         #expect(!b.contains("storygrafter"))

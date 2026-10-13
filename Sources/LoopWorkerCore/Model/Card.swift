@@ -36,8 +36,13 @@ public enum CardState: String, Sendable, Codable, CaseIterable {
 /// One unit of work, as last read from its backlog.
 public struct Card: Sendable, Equatable {
     public var ref: CardRef
-    /// The `ProjectSpec.path` of the project this card belongs to.
+    /// The `ProjectSpec.path` of the project this card belongs to, in the backlog's own case.
+    /// Compare it with `ProjectSpec.key` semantics (case-insensitive), not byte for byte.
     public var project: String
+    /// The card's number in its backlog's notation without the sigil (`12` for `group/app#12`,
+    /// `802` for `~802`), used in branch names. Nil when the backlog has no numbers.
+    public var number: String?
+    /// Untrusted when the snapshot withheld it: render it only after the trust check.
     public var title: String
     public var state: CardState
     /// Higher is sooner. Backlogs without priorities report 0.
@@ -51,11 +56,12 @@ public struct Card: Sendable, Equatable {
     public var url: URL?
 
     public init(
-        ref: CardRef, project: String, title: String, state: CardState,
+        ref: CardRef, project: String, number: String? = nil, title: String, state: CardState,
         priority: Double = 0, model: String? = nil, attempts: Int = 0, url: URL? = nil
     ) {
         self.ref = ref
         self.project = project
+        self.number = number
         self.title = title
         self.state = state
         self.priority = priority
@@ -67,7 +73,8 @@ public struct Card: Sendable, Equatable {
 
 /// The trusted content of a card, rendered for the worker.
 public struct CardSnapshot: Sendable, Equatable {
-    /// Title, description and trusted comments as one markdown document.
+    /// Title, description and trusted comments as one markdown document. Withheld parts are
+    /// replaced by a placeholder that says so.
     public var markdown: String
     /// One line per piece of content that the trust check left out, saying what and why,
     /// e.g. "comment 4411 by @someone, posted after the loopworker:next label". Logged by the

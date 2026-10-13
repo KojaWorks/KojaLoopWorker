@@ -80,11 +80,9 @@ teardown_timeout_minutes  = 10
 
 [worker]
 # Card branch name. {number} is the card's number in its backlog, {slug} its title as
-# lowercase words. Set this when the repo's commit hooks read the ticket from the branch.
+# lowercase words. Must contain {number}. Set this when the repo's commit hooks read the
+# ticket from the branch.
 branch = "loopworker-{number}-{slug}"
-# Environment variables forwarded from the Manager to the worker (names only). Never forward
-# backlog or forge tokens: the worker is meant to be unable to act on the forge.
-env = []
 wallclock_cap_minutes = 90
 # MCP config file (relative to this directory) that the worker gets with --strict-mcp-config.
 # Unset means the worker has no MCP servers.
@@ -94,6 +92,9 @@ wallclock_cap_minutes = 90
 # Ask the worker to write a storygrafter review guide, attached to the review request.
 guide = false
 ```
+
+Which environment variables reach a worker is host config (`worker_env` on the project in
+`config.toml`), not contract, so a repo can't widen it.
 
 ## Hot or cold
 

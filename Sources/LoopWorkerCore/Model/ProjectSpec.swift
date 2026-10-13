@@ -18,11 +18,14 @@ public struct ProjectSpec: Sendable, Hashable {
     public var baseBranch: String?
     /// Open review requests as drafts. Defaults to true.
     public var draftReviewRequests: Bool
+    /// Names of Manager environment variables forwarded to this project's workers. Host config
+    /// only: a repo's contract must not be able to widen what reaches a worker.
+    public var workerEnv: [String]
 
     public init(
         path: String, slots: Int = 1, hot: Bool = false, weight: Double = 1,
         model: String? = nil, contract: String? = nil, baseBranch: String? = nil,
-        draftReviewRequests: Bool = true
+        draftReviewRequests: Bool = true, workerEnv: [String] = []
     ) {
         self.path = path
         self.slots = slots
@@ -32,6 +35,7 @@ public struct ProjectSpec: Sendable, Hashable {
         self.contract = contract
         self.baseBranch = baseBranch
         self.draftReviewRequests = draftReviewRequests
+        self.workerEnv = workerEnv
     }
 
     /// A filesystem- and tmux-safe name derived from `path`: lowercase ASCII letters, digits

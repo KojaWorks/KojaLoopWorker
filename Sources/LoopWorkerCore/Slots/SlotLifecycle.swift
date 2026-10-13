@@ -22,7 +22,10 @@ public struct SlotSpec: Sendable, Hashable {
         self.stateDir = stateDir
     }
 
-    public var session: String { "lw-\(project.key)-\(index)" }
+    /// `lw_<key>_<index>`. Keys never contain `_`, so the prefix `lw_<key>_` matches only
+    /// this project's sessions (`lw-app-` would also match project `app-ios`).
+    public var session: String { "\(Self.sessionPrefix(for: project))\(index)" }
+    public static func sessionPrefix(for project: ProjectSpec) -> String { "lw_\(project.key)_" }
     public var outcomeFile: URL { stateDir.appending(path: "outcome.json") }
 }
 
@@ -51,8 +54,8 @@ public protocol SlotLifecycle: Sendable {
     /// `branch`, then runs `reset.sh` (hot) or `provision.sh` (cold). Returns the base commit.
     func acquire(_ slot: SlotSpec, contract: ProjectContract, base: String, branch: String) async throws(SlotFailure) -> String
 
-    /// After a card: cold slots run `teardown.sh`; hot slots do nothing, because `acquire`
-    /// resets them. Best effort: logs failures, never throws.
+    /// After a card: cold slots run `teardown.sh`; hot slots detach HEAD so that no idle slot
+    /// holds a card branch that another slot may need. Best effort: logs failures, never throws.
     func recycle(_ slot: SlotSpec, contract: ProjectContract) async
 
     /// Removes a slot for good: `teardown.sh`, then the worktree. Best effort.

@@ -74,3 +74,42 @@ import Testing
         guard case .stuck = Outcome.parse(Data(#"{"outcome":"done"}"#.utf8)) else { Issue.record("not stuck"); return }
     }
 }
+
+@Suite struct ConfigValidationTests {
+    let home = URL(filePath: "/tmp/lw-home")
+    let base = "[backlog]\nkind = \"gitlab\"\n"
+
+    @Test func rejectsRelativeClonesDirAndHome() {
+        #expect(throws: ConfigError.self) { try HostConfig.parse("clones_dir = \"rel\"\n" + base, home: home) }
+        #expect(throws: ConfigError.self) { try HostConfig.parse(base, home: URL(filePath: "rel")) }
+    }
+
+    @Test func rejectsZeroConcurrency() {
+        #expect(throws: ConfigError.self) { try HostConfig.parse("max_concurrent_workers = 0\n" + base, home: home) }
+    }
+
+    @Test func tildeNeedsASlash() {
+        #expect(expandTilde("~foo") == "~foo")
+        #expect(expandTilde("~/x").hasSuffix("/x"))
+    }
+
+    @Test func workerEnvComesFromHostConfig() throws {
+        let c = try HostConfig.parse(base + "[[project]]\npath = \"a/b\"\nworker_env = [\"FOO\"]\n", home: home)
+        #expect(c.projects[0].workerEnv == ["FOO"])
+    }
+
+    @Test func branchTemplateNeedsNumber() throws {
+        let dir = FileManager.default.temporaryDirectory.appending(path: "contract-\(UUID())")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try "[worker]\nbranch = \"lw-{slug}\"\n".write(to: dir.appending(path: "manifest.toml"), atomically: true, encoding: .utf8)
+        #expect(throws: ConfigError.self) { try ProjectContract.load(from: dir) }
+    }
+
+    @Test func outcomeTitleIsOneBoundedLine() {
+        let long = String(repeating: "x", count: 500)
+        guard case .done(let title, _, _) = Outcome.parse(Data(#"{"outcome":"done","title":"\#(long)\nsecond"}"#.utf8)) else {
+            Issue.record("not done"); return
+        }
+        #expect(title.count == Outcome.maxTitleLength)
+    }
+}

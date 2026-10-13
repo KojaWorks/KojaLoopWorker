@@ -12,7 +12,6 @@ teardown_timeout_minutes  = 10
 
 [worker]
 branch = "loopworker-{number}-{slug}"
-env = []                          # variable names forwarded to the worker; never tokens
 wallclock_cap_minutes = 90
 # mcp_config = "mcp.json"         # MCP servers for the worker; unset means none
 

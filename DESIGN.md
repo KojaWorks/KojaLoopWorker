@@ -14,10 +14,13 @@ learned the hard way, and which the port must keep or fix, is listed in
 
 - **The Manager is deterministic and non-AI.** It talks to backlogs and forges over their HTTP
   APIs. No model runs in the loop.
-- **The Worker is stateless, disposable and powerless.** It gets a worktree, a snapshot of its
-  card and a brief. It holds no backlog or forge credentials, so it cannot change anything
-  outside its worktree: a worker that follows a prompt injection can at worst write bad code
-  into a draft review request.
+- **The Worker is stateless, disposable and credential-free.** It gets a worktree, a snapshot
+  of its trusted card content and a brief, and no backlog or forge credentials: its only
+  output is the outcome file, and the Manager does every backlog and forge write. This stops
+  accidents and a worker that naively follows injected instructions. It is not a security
+  boundary yet: the worker runs as the Manager's user, so a worker that is deliberately
+  turned against the host can read anything that user can, including `secrets.env`. Running
+  workers under their own user or in an OS sandbox is planned hardening.
 - **The card state is the source of truth.** The Manager reconciles live sessions, outcome files
   and card states every tick. A card in `working` with no live worker and no outcome is a crash;
   a card that a human moved out of `working` means the worker is reaped without finishing.
@@ -76,11 +79,14 @@ Every backlog maps its own fields onto five states:
 
 | State | Meaning | GitLab (labels mode) | Patch |
 | --- | --- | --- | --- |
-| `ready` | Trusted and waiting to be claimed. | open, assigned to me, `loopworker:next`, status To Do | Backlog, unassigned |
+| `ready` | Trusted and waiting to be claimed. | open, assigned to me, `loopworker:next`, status To do | Backlog, unassigned |
 | `working` | Claimed; a worker should be running. | `loopworker:working`, status In progress | In progress |
 | `review` | Finished; a review request exists. | `loopworker:review`, status In review | (round 2) |
-| `stuck` | The worker needs a human. | `loopworker:stuck`, status To Do, still assigned to me | Needs refinement |
-| `other` | Anything else. Never claimed, never reaped on its own. | | |
+| `stuck` | The worker needs a human. | `loopworker:stuck`, status To do, still assigned to me | Needs refinement |
+| `other` | Anything else. Never claimed, never reaped on its own. | closed, or no single `loopworker:*` label | |
+
+A card that a human closes, or moves to `other` in any way, while a worker runs is abandoned:
+the worker is reaped and nothing is written back.
 
 GitLab can express status either as the native work-item status field or as labels; the
 adapter supports both (`status_mode` in the host config). The `loopworker:*` labels always
@@ -91,14 +97,25 @@ carry the Manager's own state, so the Manager never depends on how a team uses i
 A backlog only reports a card as `ready` if its own identity (the token's user) vouched for it.
 For GitLab that means all of these hold:
 
-- the issue is assigned to me, and the assignment event's author is me;
+- the issue is assigned to me, and the system note that assigned me was written by me;
 - the most recent `loopworker:next` label event was added by me;
 - the issue's project is inside the configured allowlist.
 
-The snapshot only contains content that I vouched for: the description if I edited it last or
-it was last edited before my label event, and comments that I wrote or that were posted before
-my label event. Everything left out is named in the snapshot's `excluded` list and logged, so a
-human can see why a worker didn't see something.
+The time of that label event is the card's trust cutoff. When the Manager itself re-adds
+`loopworker:next` to release a card, the cutoff stays at the human's original label event (the
+release note records it), so a retry never trusts content that arrived while the card was
+`working`.
+
+The snapshot only contains content that I vouched for: the title and description if I edited
+them last or they were last edited before the cutoff, and comments that I wrote or that were
+last edited before the cutoff. Notes that the Manager posted (releases, blockers, review links)
+are left out, because they carry worker-written text under my name. Everything left out is
+named in the snapshot's `excluded` list and logged, so a human can see why a worker didn't see
+something.
+
+Every piece of worker-written text that the Manager posts (blockers, review request titles and
+bodies) is posted under my name, so the GitLab backend neutralizes quick actions in it: a line
+that starts with `/` is escaped, so `/merge` or `/label` from a worker is shown, never executed.
 
 ## The worker lifecycle
 
@@ -119,18 +136,23 @@ human can see why a worker didn't see something.
    subagents, optionally writes a review guide, commits, and writes the outcome:
 
    ```json
-   {"outcome": "done", "title": "...", "body": "markdown", "guide": "relative/path.html"}
+   {"outcome": "done", "title": "...", "body": "markdown", "guide": "guide.html"}
    {"outcome": "stuck", "blocker": "markdown: what is missing and who can provide it"}
    ```
 
 5. **Finish.** When the outcome file exists, the Manager reaps the session after a short grace
    period and runs the finish task:
    - `done`: check that the branch has commits ahead of the base (otherwise treat the outcome
-     as `stuck`), push, attach the guide, open a draft review request, `markReview`.
-   - `stuck`: `markStuck` with the blocker. Commits stay on the local branch.
+     as `stuck`), push, attach the guide (a file in the slot's state directory, resolved and
+     checked to stay inside it), open a draft review request, `markReview`.
+   - `stuck`: push the branch if it has commits, so the human can see the work in progress,
+     then `markStuck` with the blocker and the branch name.
    - The slot is recycled only after the finish task succeeds. A failed finish is retried on
-     the next tick from the same outcome file.
-6. **Recycle.** Hot slots reset; cold slots tear down.
+     later ticks from the same outcome file. A `BackendRejection` (the forge or backlog refused
+     the request outright) turns the card `stuck` instead, so a finish that can never succeed
+     doesn't hold the card forever.
+6. **Recycle.** Hot slots detach HEAD and wait; the next acquire resets them. Cold slots tear
+   down.
 
 ## Reconcile
 
@@ -164,10 +186,12 @@ The Manager re-reads it when it changes: new projects start, removed ones drain,
 resize (busy slots retire after their card). All state paths are absolute and derive from
 `LOOPWORKER_HOME`, never from the working directory.
 
-Secrets come from environment variables named in the config, never from `config.toml`. At
-startup the Manager loads `$LOOPWORKER_HOME/secrets.env` (`NAME=value` lines) into its own
-environment, without overriding variables that are already set, and refuses to start if
-that file is readable by group or others. That is how a launchd service gets its tokens.
+Backend tokens are named in the config (`token_env`) and looked up in
+`$LOOPWORKER_HOME/secrets.env` (`NAME=value` lines), falling back to the Manager's environment.
+The Manager refuses to start if `secrets.env` is readable by group or others. Values from
+`secrets.env` stay in the Manager's memory and go only to the backends; they are never put into
+the process environment, so lifecycle scripts, git hooks and the notify command never inherit
+them. That is also how a launchd service gets its tokens.
 
 ```toml
 clones_dir             = "~/Dev/loopworker"   # clones and slot worktrees
@@ -176,14 +200,16 @@ max_concurrent_workers = 2
 max_attempts           = 3
 
 [backlog]
-kind      = "gitlab"
-base_url  = "https://gitlab.com"
-token_env = "LOOPWORKER_GITLAB_TOKEN"
-allowed   = ["mygroup/"]                      # path prefixes; anything else is ignored
-status_mode = "labels"                        # or "work_item_status"
+kind = "gitlab"
+
+[backlog.gitlab]                              # each backend decodes its own section
+base_url    = "https://gitlab.com"
+token_env   = "LOOPWORKER_GITLAB_TOKEN"
+allowed     = ["mygroup/"]                    # path prefixes; anything else is ignored
+status_mode = "work_item_status"              # or "labels", or "none"
 
 [forge]
-kind      = "gitlab"                          # shares the backlog's base_url and token by default
+kind = "gitlab"                               # [forge.gitlab] may override; else uses [backlog.gitlab]
 
 [[project]]
 path     = "mygroup/myapp"                    # forge path; also the backlog's project key
@@ -192,7 +218,11 @@ hot      = false
 weight   = 1
 model    = "opus"
 contract = "~/.loopworker/contracts/myapp"    # optional host-local overlay of .loopworker/
+worker_env = []                               # Manager variables forwarded to workers
 ```
+
+The repo's own `.loopworker/` is read from the clone's working tree, which the Manager resets to
+`origin/<base>` after every fetch, so scripts and the brief always match the base branch.
 
 ## State on disk
 
@@ -206,7 +236,7 @@ $LOOPWORKER_HOME/
   state/PAUSED                host killswitch; state/projects/<key>/PAUSED per project
   state/tmux                  the Manager's own tmux server socket
   slots/<key>/<n>/            brief, snapshot, launch script, outcome, MCP config
-<clones_dir>/<key>/           the clone
+<clones_dir>/<key>/           the clone; its working tree tracks origin/<base>
 <clones_dir>/<key>.slots/<n>/ slot worktrees
 ```
 
@@ -222,7 +252,8 @@ Every subprocess, including git and tmux, runs through one `ProcessRunner`: its 
 group, stdin from `/dev/null`, `GIT_TERMINAL_PROMPT=0`, a hard timeout that kills the group, and
 output read without waiting on grandchildren that keep the pipe open.
 
-Workers run on the Manager's own tmux server (`tmux -S $LOOPWORKER_HOME/state/tmux`), so a
+Workers run on the Manager's own tmux server (`tmux -S $LOOPWORKER_HOME/state/tmux`), in
+sessions named `lw_<key>_<slot>`, so a
 human's tmux sessions on a shared host are never listed or reaped, and workers survive a
 Manager restart: the next Manager adopts each live worker whose slot's `card.json` names a
 card that is still `working`.

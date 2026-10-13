@@ -1,6 +1,6 @@
 import Foundation
 
-/// Worker sessions in tmux. Session names are `lw-<project key>-<slot index>`.
+/// Worker sessions on the Manager's own tmux server. Session names are `SlotSpec.session`.
 public protocol TmuxDriving: Sendable {
     /// Names of live sessions that start with `prefix`.
     func sessions(prefix: String) async throws -> [String]
