@@ -12,7 +12,7 @@ struct CompositionError: Error, CustomStringConvertible {
 /// - Parameter environment: the process environment with `secrets.env` overlaid; the backends
 ///   read their tokens from it, and it becomes `ManagerDependencies.environment`.
 func makeDependencies(config: HostConfig, environment: [String: String]) throws -> ManagerDependencies {
-    let secretNames = environment.keys.filter(looksSecret).sorted()
+    let secretNames = try secretVariables(config: config, environment: environment)
     let secrets = secretNames.compactMap { environment[$0] }.filter { $0.count >= 12 }
     try FileManager.default.createDirectory(at: config.stateDir, withIntermediateDirectories: true)
     let fileLog = FileLogSink(file: config.stateDir.appending(path: "manager.log"), echo: true, secrets: secrets)
@@ -40,6 +40,17 @@ func makeDependencies(config: HostConfig, environment: [String: String]) throws 
         redact: { Redactor.redact($0, literals: secrets) },
         pane: PaneReading(showsAuthFailure: Pane.showsAuthFailure, showsTrustPrompt: Pane.showsTrustPrompt),
         environment: environment)
+}
+
+/// Variable names whose values are redacted, kept out of tmux and refused in `worker_env`:
+/// the ones the configured backends read credentials from, whatever they are called, plus
+/// every name in `environment` that looks like a credential.
+func secretVariables(config: HostConfig, environment: [String: String]) throws -> [String] {
+    var names = environment.keys.filter(looksSecret)
+    if config.backlogKind == "gitlab" || config.forgeKind == "gitlab" { names += try GitLabBackend.credentialVariables(config: config) }
+    if config.backlogKind == "patch" { names += try PatchBackend.credentialVariables(config: config) }
+    if config.forgeKind == "github" { names += try GitHubBackend.credentialVariables(config: config) }
+    return Set(names).sorted()
 }
 
 private func makeBackends(config: HostConfig, log: LogSink, environment: [String: String]) throws -> (any Backlog, any Forge) {

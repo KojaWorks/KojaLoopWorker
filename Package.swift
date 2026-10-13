@@ -42,5 +42,6 @@ let package = Package(
         .testTarget(name: "GitLabBackendTests", dependencies: ["GitLabBackend"]),
         .testTarget(name: "PatchBackendTests", dependencies: ["PatchBackend"]),
         .testTarget(name: "GitHubBackendTests", dependencies: ["GitHubBackend"]),
+        .testTarget(name: "LoopWorkerCLITests", dependencies: ["loopworker"]),
     ]
 )
