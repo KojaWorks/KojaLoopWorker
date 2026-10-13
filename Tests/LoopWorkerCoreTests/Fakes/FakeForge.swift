@@ -7,7 +7,8 @@ final class FakeForge: Forge, @unchecked Sendable {
     struct State {
         var opened: [ReviewRequestDraft] = []
         var byBranch: [String: ReviewRequest] = [:]
-        var openCalls = 0
+        /// Every `openReviewRequest` call, including failed and deduplicated ones.
+        var openCalls: [ReviewRequestDraft] = []
         var failNextOpen: (any Error)?
         var attached: [URL] = []
         var supportsAttachments = true
@@ -23,7 +24,7 @@ final class FakeForge: Forge, @unchecked Sendable {
 
     func openReviewRequest(_ draft: ReviewRequestDraft) async throws -> ReviewRequest {
         try state {
-            $0.openCalls += 1
+            $0.openCalls.append(draft)
             if let e = $0.failNextOpen { $0.failNextOpen = nil; throw e }
             if let existing = $0.byBranch[draft.sourceBranch] { return existing }
             let n = $0.opened.count + 1

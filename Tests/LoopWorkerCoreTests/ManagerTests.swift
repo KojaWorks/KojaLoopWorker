@@ -329,7 +329,7 @@ func fileMode(_ url: URL) throws -> Int {
         try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
         h.tmux.set("lw_g--app_0", alive: false)
         await h.cycle()
-        #expect(h.forge.state.get.openCalls == 1)
+        #expect(h.forge.state.get.openCalls.count == 1)
         #expect(h.log.contains("moving g/app#12 to review: 502 Bad Gateway; retrying in 30 s", level: .error))
         let slot = try h.status().projects[0].slots[0]
         #expect(slot.state == "busy")
@@ -337,10 +337,13 @@ func fileMode(_ url: URL) throws -> Int {
 
         h.backlog.state { $0.failMarkReview = nil }
         await h.cycle()
-        #expect(h.forge.state.get.openCalls == 1)  // still backing off
+        #expect(h.forge.state.get.openCalls.count == 1)  // still backing off
         h.clock.advance(31)
         await h.cycle()
-        #expect(h.forge.state.get.openCalls == 2)
+        let calls = h.forge.state.get.openCalls
+        #expect(calls.count == 2)
+        // The forge dedupes per source branch, so the retry must name the same one.
+        #expect(calls.map(\.sourceBranch) == ["loopworker-12-fix-it", "loopworker-12-fix-it"])
         #expect(h.forge.state.get.opened.count == 1)
         #expect(h.backlog.card(id: "id-12")?.state == .review)
         #expect(try h.status().projects[0].slots[0].state == "idle")
@@ -689,6 +692,24 @@ func fileMode(_ url: URL) throws -> Int {
         gate.open()
         await tick.value
         #expect(h.backlog.state.get.cardCalls.count == 1)
+    }
+
+    @Test func runForceStopsAndReleasesTheLock() async throws {  // B106
+        let h = try ManagerHarness(projects: oneColdProject)
+        h.addCard(1)
+        try await h.boot()
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 1)
+        try h.restart()
+        let manager = h.manager!
+        let lock = h.home.appending(path: "state/manager.lock")
+        let run = Task { try await manager.run() }
+        try await until { ManagerLock.holder(at: lock) != nil }
+        _ = await manager.handle(.terminate)
+        try await run.value
+        #expect(await lockReleased(lock))
+        #expect(h.backlog.card(id: "id-1")?.state == .ready)
+        #expect(h.log.messages.last == "stopped: force-stopped after SIGTERM")
     }
 
     @Test func sigtermForcesAtOnce() async throws {  // B106
