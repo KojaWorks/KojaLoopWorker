@@ -223,13 +223,8 @@ extension Manager {
         }
         if broken != nil || !spec.project.hot { await deps.lifecycle.recycle(spec, contract: contract) }
         try? FileManager.default.removeItem(at: cardRecordFile(spec))
-        if let broken {
-            let failure = broken as? SlotFailure ?? SlotFailure("\(broken)")
-            free(ref)
-            markBroken(ref, failure)
-        } else {
-            free(ref)
-        }
+        if let broken { markBroken(ref, broken as? SlotFailure ?? SlotFailure("\(broken)")) }
+        free(ref)
     }
 
     /// Accepts claude's folder-trust dialog, which a fresh worktree shows once and which
@@ -250,7 +245,8 @@ extension Manager {
         }
     }
 
-    /// Returns a slot to idle and lets fill use it again.
+    /// Returns a slot to idle and lets fill use it again, or retires it when a shrink or a
+    /// project removal is waiting for it.
     func free(_ ref: SlotRef) {
         update(ref) {
             $0.phase = $0.phase == .broken ? .broken : .idle
@@ -264,6 +260,7 @@ extension Manager {
             $0.finishError = nil
         }
         fillSoon = true
+        if slot(ref)?.retiring == true || projects[ref.key]?.removing == true { retire(ref) }
     }
 
     func markBroken(_ ref: SlotRef, _ failure: SlotFailure) {
@@ -401,7 +398,6 @@ extension Manager {
         }
         try? fm.removeItem(at: cardRecordFile(s.spec))
         free(ref)
-        if slot(ref)?.retiring == true || projects[ref.key]?.removing == true { retire(ref) }
     }
 
     // MARK: Finish
