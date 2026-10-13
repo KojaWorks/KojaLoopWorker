@@ -10,6 +10,8 @@ final class FakeLifecycle: SlotLifecycle, @unchecked Sendable {
         var acquiredBranches: [String] = []
         /// When set, `prepare` waits on it after recording the call.
         var prepareGate: Gate?
+        /// The teardown script name of the contract each `recycle` got.
+        var recycledWithTeardown: [String] = []
     }
 
     let state = Guarded(State())
@@ -37,7 +39,10 @@ final class FakeLifecycle: SlotLifecycle, @unchecked Sendable {
     }
 
     func recycle(_ slot: SlotSpec, contract: ProjectContract) async {
-        state { $0.calls.append("recycle \(id(slot))") }
+        state {
+            $0.calls.append("recycle \(id(slot))")
+            $0.recycledWithTeardown.append(contract.scripts.teardown)
+        }
     }
 
     func retire(_ slot: SlotSpec, contract: ProjectContract) async {

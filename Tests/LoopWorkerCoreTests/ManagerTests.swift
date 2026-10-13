@@ -489,6 +489,18 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(try h.status().projects[0].slots.map(\.index) == [0])
     }
 
+    @Test func startupRecyclesWithTheClonesContract() async throws {
+        let h = try ManagerHarness(projects: oneColdProject, manifest: "[scripts]\nteardown = \"down.sh\"\n")
+        h.git.state { $0.failCloneOrFetch = true }  // the first refresh can't supply the contract
+        h.addCard(3, state: .working)
+        try FileManager.default.createDirectory(at: h.stateDir(), withIntermediateDirectories: true)
+        try record(3, slot: 0).write(h.stateDir().appending(path: "card.json"))
+        try await h.manager.start()
+        await h.manager.settle()
+        #expect(h.backlog.card(id: "id-3")?.state == .ready)
+        #expect(h.lifecycle.state.get.recycledWithTeardown == ["down.sh"])
+    }
+
     @Test func cardsOfUnconfiguredProjectsAreReported() async throws {
         let h = try ManagerHarness(projects: oneColdProject)
         let gone = h.stateDir("g--gone", 0)

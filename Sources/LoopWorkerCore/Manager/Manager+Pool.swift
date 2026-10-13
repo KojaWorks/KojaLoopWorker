@@ -100,7 +100,12 @@ extension Manager {
     /// Adopts each slot whose `card.json` names a card that is still `working` and clears the
     /// others. Returns the sessions of the adopted workers.
     func adoptPreviousWorkers(_ key: String) async -> Set<String> {
-        guard let p = projects[key] else { return [] }
+        guard var p = projects[key] else { return [] }
+        // Recycling below must run the manifest's own scripts, before the first refresh lands.
+        if p.contract == nil, let contract = try? ProjectContract.load(from: ProjectContract.directory(for: p.spec, clone: p.clone)) {
+            p.contract = contract
+            projects[key]!.contract = contract
+        }
         let fm = FileManager.default
         let dir = config.slotsStateDir.appending(path: key)
         let onDisk = ((try? fm.contentsOfDirectory(atPath: dir.path)) ?? []).compactMap(Int.init)
