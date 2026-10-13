@@ -17,6 +17,14 @@ let package = Package(
             dependencies: [.product(name: "TOMLDecoder", package: "TOMLDecoder")]
         ),
         .target(
+            name: "PatchBackend",
+            dependencies: ["LoopWorkerCore", .product(name: "TOMLDecoder", package: "TOMLDecoder")]
+        ),
+        .target(
+            name: "GitHubBackend",
+            dependencies: ["LoopWorkerCore", .product(name: "TOMLDecoder", package: "TOMLDecoder")]
+        ),
+        .target(
             name: "GitLabBackend",
             dependencies: ["LoopWorkerCore", .product(name: "TOMLDecoder", package: "TOMLDecoder")]
         ),
@@ -30,5 +38,7 @@ let package = Package(
         ),
         .testTarget(name: "LoopWorkerCoreTests", dependencies: ["LoopWorkerCore"]),
         .testTarget(name: "GitLabBackendTests", dependencies: ["GitLabBackend"]),
+        .testTarget(name: "PatchBackendTests", dependencies: ["PatchBackend"]),
+        .testTarget(name: "GitHubBackendTests", dependencies: ["GitHubBackend"]),
     ]
 )
