@@ -14,6 +14,9 @@ public struct ManagerStatus: Codable, Sendable, Equatable {
     public var draining: Bool
     public var auth: Auth
     public var projects: [Project]
+    /// Cards in `verifying` whose CI the Manager watches, oldest push first. Nil from a
+    /// Manager that predates CI watching.
+    public var ci: [CI]?
     /// The most recent log lines, oldest first.
     public var log: [String]
 
@@ -99,9 +102,34 @@ public struct ManagerStatus: Codable, Sendable, Equatable {
         }
     }
 
+    public struct CI: Codable, Sendable, Equatable {
+        public var card: String
+        public var cardURL: URL?
+        /// 0 for the first push, n after the n-th fix round.
+        public var round: Int
+        /// The first 12 characters of the pushed commit.
+        public var commit: String
+        /// `no pipeline yet`, `running`, `passed`, `failed`, `canceled`, `fix queued` or `fix starting`.
+        public var state: String
+        /// When the commit was pushed.
+        public var since: Date
+        /// The pipeline, or the review request while no pipeline is known.
+        public var url: URL
+
+        public init(card: String, cardURL: URL?, round: Int, commit: String, state: String, since: Date, url: URL) {
+            self.card = card
+            self.cardURL = cardURL
+            self.round = round
+            self.commit = commit
+            self.state = state
+            self.since = since
+            self.url = url
+        }
+    }
+
     public init(
         version: String = loopworkerVersion, pid: Int32, host: String, started: Date, updated: Date,
-        paused: Bool, draining: Bool, auth: Auth, projects: [Project], log: [String]
+        paused: Bool, draining: Bool, auth: Auth, projects: [Project], ci: [CI]? = nil, log: [String]
     ) {
         self.version = version
         self.pid = pid
@@ -112,6 +140,7 @@ public struct ManagerStatus: Codable, Sendable, Equatable {
         self.draining = draining
         self.auth = auth
         self.projects = projects
+        self.ci = ci
         self.log = log
     }
 

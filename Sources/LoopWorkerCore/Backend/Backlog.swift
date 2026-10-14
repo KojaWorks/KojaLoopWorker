@@ -45,9 +45,9 @@ public protocol Backlog: Sendable {
     /// it); the Manager then drops the round.
     func resumeFix(_ card: Card) async throws -> Bool
 
-    /// Moves a `working` or `verifying` card to `stuck` and posts `blocker` (markdown) on the card under the
-    /// backend's own header, so `blocker` doesn't repeat one. The card stays assigned to its
-    /// human so it shows up in their queue.
+    /// Moves a `working` or `verifying` card to `stuck` and posts `blocker` (markdown) on the
+    /// card under the backend's own header, so `blocker` doesn't repeat one. The card stays
+    /// assigned to its human so it shows up in their queue.
     func markStuck(_ card: Card, blocker: String) async throws
 
     /// Returns a `working` card to `ready` and posts `reason` on the card, under the backend's

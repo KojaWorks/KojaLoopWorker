@@ -49,7 +49,10 @@ final class FakeGit: GitDriving, @unchecked Sendable {
     }
 
     func commitsAhead(_ worktree: URL, base: String) async throws -> Int {
-        state { $0.commitsAhead[worktree.path] ?? $0.defaultCommitsAhead }
+        state {
+            $0.calls.append("commitsAhead \(base)")
+            return $0.commitsAhead[worktree.path] ?? $0.defaultCommitsAhead
+        }
     }
 
     /// Returns `commit-<n>` for the n-th successful push.
