@@ -120,8 +120,16 @@ extension Manager {
 
     /// Claims the card (or, for a fix round, moves it back to working), acquires the slot and
     /// spawns the worker.
-    func startTask(_ ref: SlotRef, card: Card, contract: ProjectContract, base: String, branch: String, fix: FixRound? = nil) async {
+    func startTask(_ ref: SlotRef, card: Card, contract: ProjectContract, base: String, branch: String, fix queued: FixRound? = nil) async {
         guard let spec = slot(ref)?.spec else { return }
+        var fix = queued
+        if let queued {
+            guard let current = await recheckPipeline(queued, card: card) else {
+                free(ref)
+                return
+            }
+            fix = current
+        }
         let fm = FileManager.default
         let dir = spec.stateDir
         do {

@@ -162,14 +162,7 @@ extension Manager {
         case .wait:
             return
         case .passed:
-            let link = (pipeline?.url ?? r.review.url).absoluteString
-            do { try await deps.backlog.markReview(fresh, review: r.review, note: "CI passed on `\(r.sha.prefix(12))`: \(link)") }
-            catch {
-                ciExitFailed(id, "CI passed, but moving it to review failed: \(error)")
-                return
-            }
-            log.info("\(r.card): CI passed on \(r.sha.prefix(12)); moved to review: \(r.review.display) \(r.review.url.absoluteString)")
-            unwatch(id)
+            await ciPassed(id, fresh, r, pipeline)
         case .fix:
             ciWatches[id]!.fix = pipeline
             ciWatches[id]!.fixQueuedAt = clock.now()
@@ -181,6 +174,49 @@ extension Manager {
             log.warning("\(r.card): CI failed on \(r.sha.prefix(12)); queued fix round \(r.round + 1) of \(ci.fixAttempts)")
         case .stuck(let reason):
             await ciStuck(id, fresh, r, ciBlocker(reason, r, pipeline: pipeline, ci: ci))
+        }
+    }
+
+    func ciPassed(_ id: String, _ card: Card, _ r: CIWatchRecord, _ pipeline: PipelineStatus?) async {
+        let link = (pipeline?.url ?? r.review.url).absoluteString
+        do { try await deps.backlog.markReview(card, review: r.review, note: "CI passed on `\(r.sha.prefix(12))`: \(link)") }
+        catch {
+            ciExitFailed(id, "CI passed, but moving it to review failed: \(error)")
+            return
+        }
+        log.info("\(r.card): CI passed on \(r.sha.prefix(12)); moved to review: \(r.review.display) \(r.review.url.absoluteString)")
+        unwatch(id)
+    }
+
+    /// Reads the pipeline again right before a fix round, since a human may have re-run it.
+    /// Returns the round to run, with the newest failure, or nil when no round should run: the
+    /// pipeline passed (the card moves to review) or runs again (the watch waits for it).
+    func recheckPipeline(_ fix: FixRound, card: Card) async -> FixRound? {
+        let r = fix.record, id = r.card.id
+        let spec = projects[ProjectSpec(path: r.project).key]?.spec ?? ProjectSpec(path: r.project)
+        let current: PipelineStatus?
+        do { current = try await deps.forge.pipeline(for: spec, commit: r.sha) }
+        catch {
+            log.warning("\(r.card): can't re-read the pipeline for \(r.sha.prefix(12)) before its fix round: \(error); fixing the failure read earlier")
+            return fix
+        }
+        switch current?.state {
+        case .failed?:
+            return FixRound(record: r, pipeline: current!)
+        case .passed?, .running?:
+            ciWatches[id]?.fix = nil
+            ciWatches[id]?.fixQueuedAt = nil
+            ciWatches[id]?.fixStarting = false
+            ciWatches[id]?.pipeline = current
+            ciWatches[id]?.lastPoll = clock.now()
+            if current?.state == .passed {
+                await ciPassed(id, card, r, current)
+            } else {
+                log.info("\(r.card): the pipeline for \(r.sha.prefix(12)) runs again; waiting for it instead of starting a fix round")
+            }
+            return nil
+        case .canceled?, nil:
+            return fix
         }
     }
 

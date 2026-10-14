@@ -346,6 +346,33 @@ let reviewURL = URL(string: "https://forge.example/g/app/-/merge_requests/1")!
         #expect(h.log.contains("CI fix round 1 failed to start (1 in a row): preparing the slot failed: reset.sh exited 1", level: .error))
     }
 
+    @Test("B168: a pipeline re-run that passed before the fix round started moves the card to review instead")
+    func rerunPassedBeforeTheFix() async throws {
+        let h = try await queuedFix()
+        h.forge.state { $0.pipelines["commit-1"] = PipelineStatus(state: .passed, url: pipelineURL) }
+        try FileManager.default.removeItem(at: h.home.appending(path: "state/PAUSED"))
+        await h.cycle()
+        #expect(h.backlog.card(id: "id-12")?.state == .review)
+        #expect(!h.backlog.writes.contains(.resumeFix("id-12")))
+        #expect(h.tmux.spawned.count == 1)
+        #expect(try record(h) == nil)
+        #expect(try h.status().projects[0].slots[0].state == "idle")
+    }
+
+    @Test("B168: a pipeline that runs again before the fix round started is waited for instead")
+    func rerunRunningBeforeTheFix() async throws {
+        let h = try await queuedFix()
+        h.forge.state { $0.pipelines["commit-1"] = PipelineStatus(state: .running, url: pipelineURL) }
+        try FileManager.default.removeItem(at: h.home.appending(path: "state/PAUSED"))
+        await h.cycle()
+        #expect(!h.backlog.writes.contains(.resumeFix("id-12")))
+        #expect(try h.status().ci?.first?.state == "running")
+        h.forge.state { $0.pipelines["commit-1"] = PipelineStatus(state: .passed, url: pipelineURL) }
+        h.clock.advance(121)
+        await h.cycle()
+        #expect(h.backlog.card(id: "id-12")?.state == .review)
+    }
+
     @Test("B168: a fix round for a card a human moved out of verifying is dropped")
     func resumeFixFalseDropsTheRound() async throws {
         let h = try await verifying()
