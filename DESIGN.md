@@ -163,7 +163,8 @@ that starts with `/` is escaped, so `/merge` or `/label` from a worker is shown,
      open a draft review request assigned to the forge token's user (the card's owner), `markReview` (or, for a project
      that waits for CI, `markVerifying`; see "Waiting for CI").
    - An attached file must resolve (symlinks resolved) inside the slot's state directory, be
-     a regular non-empty file under 20 MB, not have a credential-like name, and not contain a
+     not be one of the files that the Manager writes there (such as `worker.env`), be a
+     regular non-empty file under 20 MB, not have a credential-like name, and not contain a
      credential shape or a PEM private key. The Manager uploads it with `forge.attach` and puts
      the URL in place of the reference. A refused file, or any file on a forge without
      attachments, keeps its reference, is logged, and gets a line under the body that says

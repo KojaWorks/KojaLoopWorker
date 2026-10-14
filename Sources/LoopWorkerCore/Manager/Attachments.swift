@@ -16,6 +16,12 @@ enum Attachments {
         var reason: String
     }
 
+    /// Files that the Manager writes at the top of a slot state directory; `worker.env` holds
+    /// the worker's secrets.
+    static let slotFiles: Set<String> = [
+        "outcome.json", "card.json", "card.md", "brief.md", "ci.md", "launch.sh", "mcp.json", "worker.env", LastOutcome.fileName,
+    ]
+
     nonisolated(unsafe) private static let reference = #/\]\(attachment:([^)\s]+)/#
     nonisolated(unsafe) private static let pemPrivateKey = #/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/#
 
@@ -54,17 +60,22 @@ enum Attachments {
     }
 
     /// The file `path` names when it is safe to publish: inside `root` after resolving
-    /// symlinks, a regular non-empty file under `maxBytes`, not named like a credential, and
+    /// symlinks, not one of the Manager's `slotFiles`, a regular non-empty file under
+    /// `maxBytes`, not named like a credential, and
     /// without a credential shape or a PEM private key in its content. Takes about a second
     /// per MB scanned, so callers stay off the Manager actor, as the async functions here do.
     static func check(_ path: String, in root: URL) -> Result<URL, Refusal> {
         func refuse(_ reason: String) -> Result<URL, Refusal> { .failure(Refusal(path: path, reason: reason)) }
-        if credentialShaped(path.split(separator: "/").map(String.init)) { return refuse("its name looks like a credential file") }
         let base = root.standardizedFileURL.resolvingSymlinksInPath()
         let raw = path.hasPrefix("/") ? URL(filePath: path) : root.appending(path: path)
         let file = raw.standardizedFileURL.resolvingSymlinksInPath()
         guard file.path.hasPrefix(base.path + "/") else { return refuse("it resolves to \(file.path), outside \(base.path)") }
-        if credentialShaped(file.path.dropFirst(base.path.count + 1).split(separator: "/").map(String.init)) {
+        let components = file.path.dropFirst(base.path.count + 1).split(separator: "/").map(String.init)
+        if components.count == 1, slotFiles.contains(components[0]) {
+            return refuse("it resolves to \(file.path), LoopWorker's own slot file")
+        }
+        if credentialShaped(path.split(separator: "/").map(String.init)) { return refuse("its name looks like a credential file") }
+        if credentialShaped(components) {
             return refuse("it resolves to \(file.path), whose name looks like a credential file")
         }
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: file.path) else { return refuse("\(file.path) doesn't exist") }
@@ -81,12 +92,12 @@ enum Attachments {
         return .success(file)
     }
 
-    /// `.env*`, `*.pem`, `*.key`, `*.p12`, `id_rsa*` and `id_ed25519*`, or anything under a
+    /// `.env*`, `*.env`, `*.pem`, `*.key`, `*.p12`, `id_rsa*` and `id_ed25519*`, or anything under a
     /// `.git`, `.ssh` or `.claude` directory.
     static func credentialShaped(_ components: [String]) -> Bool {
         if components.contains(where: { [".git", ".ssh", ".claude"].contains($0.lowercased()) }) { return true }
         guard let name = components.last?.lowercased() else { return false }
-        return name.hasPrefix(".env") || name.hasPrefix("id_rsa") || name.hasPrefix("id_ed25519")
+        return name.hasPrefix(".env") || name.hasSuffix(".env") || name.hasPrefix("id_rsa") || name.hasPrefix("id_ed25519")
             || [".pem", ".key", ".p12"].contains { name.hasSuffix($0) }
     }
 }

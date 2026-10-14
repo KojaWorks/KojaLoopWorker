@@ -238,7 +238,8 @@ public struct WorkerBrief: Sendable {
             markdown link or image as `attachment:<path relative to that directory>`, such as \
             `![after](attachment:after.png)` or `[log](attachment:out/log.txt)`. The Manager uploads \
             each file and puts its URL in place of the reference. It refuses empty files, files of \
-            20 MB or more, credential-like names (`.env`, keys, anything under `.git` or `.ssh`) and \
+            20 MB or more, LoopWorker's own files in that directory (such as `worker.env` and \
+            `brief.md`), credential-like names (`.env`, keys, anything under `.git` or `.ssh`) and \
             content that looks like a token or password, and says so under the body.
             - Stuck: `{"outcome": "stuck", "blocker": "..."}`. The blocker is posted on the card \
             for its owner: what is missing, the numbered questions, and what you already \

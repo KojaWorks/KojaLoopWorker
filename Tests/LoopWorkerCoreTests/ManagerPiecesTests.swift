@@ -416,7 +416,7 @@ func temporaryDirectory() throws -> URL {
         #expect(out == "| Before | After |\n| --- | --- |\n| x | ![after](https://forge.example/uploads/after.png) |\n\n[log](https://forge.example/uploads/log.txt) [again](https://forge.example/uploads/after.png) [web](https://x.example)")
     }
 
-    @Test("B185: every refusal names its reason")
+    @Test("B185: every refusal names its reason, including the Manager's own slot files")
     func refusals() throws {
         try write("secret.txt", "x", in: outside)
         try FileManager.default.createSymbolicLink(at: root.appending(path: "link.txt"), withDestinationURL: outside.appending(path: "secret.txt"))
@@ -435,7 +435,14 @@ func temporaryDirectory() throws -> URL {
         #expect(reason("../elsewhere/secret.txt")?.contains("outside") == true)
         #expect(reason(outside.appending(path: "secret.txt").path)?.contains("outside") == true)
         #expect(reason("link.txt")?.contains("outside") == true)
-        for name in [".env", ".env.local", "server.pem", "tls.key", "cert.p12", "id_rsa.pub", "id_ed25519", ".git/config", "sub/.ssh/known_hosts", ".claude/settings.json"] {
+        for name in Attachments.slotFiles {
+            try write(name, "x")
+            #expect(reason(name)?.hasSuffix("LoopWorker's own slot file") == true, "\(name)")
+        }
+        try FileManager.default.createSymbolicLink(at: root.appending(path: "notes.txt"), withDestinationURL: root.appending(path: "worker.env"))
+        #expect(reason("notes.txt")?.hasSuffix("LoopWorker's own slot file") == true)
+        #expect(reason("out/../mcp.json")?.hasSuffix("LoopWorker's own slot file") == true)
+        for name in [".env", ".env.local", "prod.env", "out/app.ENV", "server.pem", "tls.key", "cert.p12", "id_rsa.pub", "id_ed25519", ".git/config", "sub/.ssh/known_hosts", ".claude/settings.json"] {
             #expect(reason(name) == "its name looks like a credential file", "\(name)")
         }
         #expect(reason("innocent.txt")?.contains("whose name looks like a credential file") == true)
