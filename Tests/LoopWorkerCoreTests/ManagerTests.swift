@@ -323,9 +323,11 @@ func fileMode(_ url: URL) throws -> Int {
         h.tmux.set("lw_g--app_0", alive: false)
         await h.cycle()
         #expect(h.forge.state.get.attached.isEmpty)
-        #expect(h.log.contains("didn't attach ../../../config.toml to g/app#12's review request: it resolves to", level: .warning))
+        let outside = h.stateDir().appending(path: "../../../config.toml").standardizedFileURL.resolvingSymlinksInPath().path
+        #expect(h.log.contains("didn't attach ../../../config.toml (\(outside)) to g/app#12's review request: it resolves outside the slot state directory", level: .warning))
         let body = try #require(h.forge.state.get.opened.first?.body)
-        #expect(body.hasPrefix("b\n\nLoopWorker didn't attach ../../../config.toml: it resolves to "))
+        #expect(body.hasPrefix("b\n\nLoopWorker didn't attach ../../../config.toml: it resolves outside the slot state directory\n\n---"))
+        #expect(!body.contains(h.stateDir().deletingLastPathComponent().path))
         #expect(!body.contains("Review guide:"))
         #expect(h.backlog.writes.last == .markReview("id-12", url: URL(string: "https://forge.example/g/app/-/merge_requests/1")!))
     }

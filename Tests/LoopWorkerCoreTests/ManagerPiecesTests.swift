@@ -434,7 +434,7 @@ func temporaryDirectory() throws -> URL {
         #expect(out == "| Before | After |\n| --- | --- |\n| x | ![after](https://forge.example/uploads/after.png) |\n\n[log](https://forge.example/uploads/log.txt) [again](https://forge.example/uploads/after.png) [web](https://x.example)")
     }
 
-    @Test("B185: every refusal names its reason, including the Manager's own slot files")
+    @Test("B185: every refusal names its reason, with paths relative to the slot, including the Manager's own slot files")
     func refusals() throws {
         try write("secret.txt", "x", in: outside)
         try FileManager.default.createSymbolicLink(at: root.appending(path: "link.txt"), withDestinationURL: outside.appending(path: "secret.txt"))
@@ -464,9 +464,13 @@ func temporaryDirectory() throws -> URL {
             #expect(reason(name) == "its name looks like a credential file", "\(name)")
         }
         #expect(reason("innocent.txt")?.contains("whose name looks like a credential file") == true)
-        #expect(reason("missing.png")?.hasSuffix("doesn't exist") == true)
-        #expect(reason("out")?.hasSuffix("isn't a regular file") == true)
-        #expect(reason("empty.txt")?.hasSuffix("is empty") == true)
+        #expect(reason("missing.png") == "missing.png doesn't exist")
+        #expect(reason("out/../out") == "out isn't a regular file")
+        #expect(reason("empty.txt") == "empty.txt is empty")
+        #expect(reason("innocent.txt") == "it resolves to .env.local, whose name looks like a credential file")
+        guard case .failure(let refusal) = Attachments.check("link.txt", in: root) else { Issue.record("link.txt was accepted"); return }
+        #expect(refusal.reason == "it resolves outside the slot state directory")
+        #expect(refusal.resolved == outside.appending(path: "secret.txt").standardizedFileURL.resolvingSymlinksInPath())
         #expect(reason("big.bin")?.contains("the limit is 20971520") == true)
         #expect(reason("key.txt") == "it contains a PEM private key")
         #expect(reason("token.txt") == "its content looks like it holds a token or password")

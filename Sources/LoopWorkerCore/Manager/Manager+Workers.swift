@@ -621,7 +621,8 @@ extension Manager {
             }
         }
         for r in refused {
-            log.warning("\(label(spec)): didn't attach \(r.path) to \(card.ref)'s review request: \(r.reason)")
+            let resolved = r.resolved.map { " (\($0.path))" } ?? ""
+            log.warning("\(label(spec)): didn't attach \(r.path)\(resolved) to \(card.ref)'s review request: \(r.reason)")
             text += "\n\nLoopWorker didn't attach \(r.path.replacingOccurrences(of: "\n", with: " ")): \(r.reason)"
         }
         let cardLine = card.url.map { "Card: [\(card.ref.display)](\($0.absoluteString))" } ?? "Card: \(card.ref.display)"
