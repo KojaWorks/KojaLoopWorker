@@ -478,12 +478,15 @@ extension Manager {
 
     /// Pushes the card branch with a lease on the commit the Manager last pushed for this
     /// card (none: the branch must not exist yet), so a branch that someone else made is never
-    /// overwritten, then records the new commit.
+    /// overwritten, then records the new commit. Uploads the branch's LFS objects first.
     func pushBranch(_ spec: SlotSpec, card: Card, branch: String) async throws {
         let ledger = stateDir.appending(path: "pushes.json")
         var pushes = (try? JSONDecoder().decode([String: PushRecord].self, from: Data(contentsOf: ledger))) ?? [:]
         let last = pushes[card.ref.id].flatMap { $0.branch == branch ? $0.commit : nil }
         let url = deps.forge.cloneURL(for: spec.project), env = deps.forge.gitEnvironment(), git = deps.git
+        do {
+            if try await git.usesLFS(spec.worktree) { try await git.lfsPush(spec.worktree, url: url, environment: env) }
+        } catch { throw StepError(step: "pushing Git LFS objects for \(branch)", error: error) }
         let commit: String
         do { commit = try await git.push(spec.worktree, to: url, branch: branch, expected: last, environment: env) }
         catch let rejected as PushRejected { throw rejected }
