@@ -331,6 +331,21 @@ let reviewURL = URL(string: "https://forge.example/g/app/-/merge_requests/1")!
         #expect(stuckBlocker(h)?.contains("Its fix round failed to start 3 times in a row; the last error: moving g/app#12 back to working failed") == true)
     }
 
+    @Test("B168: a fix round that fails after resumeFix returns the card to verifying and breaks the slot")
+    func fixRoundAcquireFailure() async throws {
+        let h = try await queuedFix()
+        h.lifecycle.state { $0.acquireFailure = SlotFailure("reset.sh exited 1") }
+        try FileManager.default.removeItem(at: h.home.appending(path: "state/PAUSED"))
+        await h.cycle()
+        #expect(h.backlog.writes.filter { $0 == .markVerifying("id-12", url: reviewURL) }.count == 2)
+        #expect(!h.backlog.writes.contains { if case .release = $0 { true } else { false } })
+        #expect(h.backlog.card(id: "id-12")?.state == .verifying)
+        #expect(try record(h)?.sha == "commit-1")
+        #expect(try h.status().projects[0].slots[0].state == "broken")
+        #expect(try h.status().ci?.first?.state == "fix queued")
+        #expect(h.log.contains("CI fix round 1 failed to start (1 in a row): preparing the slot failed: reset.sh exited 1", level: .error))
+    }
+
     @Test("B168: a fix round for a card a human moved out of verifying is dropped")
     func resumeFixFalseDropsTheRound() async throws {
         let h = try await verifying()

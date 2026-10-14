@@ -352,8 +352,19 @@ extension Manager {
             unwatch(id)
             return false
         }
-        unwatch(id)
-        return true
+        return true  // the watch goes once the worker is spawned
+    }
+
+    /// A fix round failed to start after `resumeFix`: keeps the CI context by moving the card
+    /// back to `verifying` under the same record, and counts the failure.
+    func returnToVerifying(_ card: Card, _ fix: FixRound, why: String) async {
+        do { try fix.record.write(stateDir: stateDir) }
+        catch { log.error("\(card.ref): can't rewrite its CI watch record: \(error)") }
+        do { try await deps.backlog.markVerifying(card, review: fix.record.review) }
+        catch {
+            log.error("\(card.ref): can't move it back to verifying after its fix round failed to start: \(error); the stranded-card sweep releases it")
+        }
+        fixStartFailed(card.ref.id, why)
     }
 
     /// Backs off a fix round that failed to start: 30 s doubling to 10 min. The third failure

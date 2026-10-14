@@ -179,20 +179,20 @@ extension Manager {
         let baseCommit: String
         do { baseCommit = try await deps.lifecycle.acquire(spec, contract: contract, base: fix == nil ? base : branch, branch: branch) }
         catch {
-            await abortStart(ref, card: card, contract: contract, why: "preparing the slot failed: \(error)", broken: error)
+            await abortStart(ref, card: card, contract: contract, why: "preparing the slot failed: \(error)", broken: error, fix: fix)
             return
         }
 
         do {
             try await writeWorkerFiles(spec, card: card, contract: contract, base: base, branch: branch, fix: fix)
         } catch {
-            await abortStart(ref, card: card, contract: contract, why: "\(error)", broken: nil)
+            await abortStart(ref, card: card, contract: contract, why: "\(error)", broken: nil, fix: fix)
             return
         }
         do { try await deps.tmux.spawn(session: spec.session, directory: spec.worktree, script: dir.appending(path: "launch.sh")) }
         catch {
             await abortStart(ref, card: card, contract: contract, why: "starting the tmux session failed: \(error)",
-                             broken: SlotFailure("tmux spawn failed: \(error)"))
+                             broken: SlotFailure("tmux spawn failed: \(error)"), fix: fix)
             return
         }
 
@@ -201,6 +201,7 @@ extension Manager {
             $0.task = nil
             $0.spawnedAt = clock.now()
         }
+        if fix != nil { unwatch(card.ref.id) }
         let round = fix.map { " for CI fix round \($0.record.round + 1)" } ?? ""
         log.info("\(label(spec)): spawned worker\(round) for \(card.ref) on \(branch) at \(baseCommit.prefix(12)), base \(base), model \(model ?? "default")")
         watchFolderTrust(spec.session)
@@ -265,14 +266,19 @@ extension Manager {
     }
 
     /// A start failed after the claim: release the card (not counted against it: the host
-    /// failed), mark the slot broken when `broken` is set, and recycle it.
-    func abortStart(_ ref: SlotRef, card: Card, contract: ProjectContract, why: String, broken: (any Error)?) async {
+    /// failed), or for a fix round return it to `verifying`, mark the slot broken when
+    /// `broken` is set, and recycle it.
+    func abortStart(_ ref: SlotRef, card: Card, contract: ProjectContract, why: String, broken: (any Error)?, fix: FixRound? = nil) async {
         guard let spec = slot(ref)?.spec else { return }
         log.error("\(label(spec)): couldn't start a worker for \(card.ref): \(why)")
-        do {
-            try await deps.backlog.release(card, reason: "Couldn't start a worker: \(why)", countsAsAttempt: false)
-        } catch {
-            log.error("\(label(spec)): can't release \(card.ref): \(error); the stranded-card sweep retries")
+        if let fix {
+            await returnToVerifying(card, fix, why: why)
+        } else {
+            do {
+                try await deps.backlog.release(card, reason: "Couldn't start a worker: \(why)", countsAsAttempt: false)
+            } catch {
+                log.error("\(label(spec)): can't release \(card.ref): \(error); the stranded-card sweep retries")
+            }
         }
         if broken != nil || !spec.project.hot { await deps.lifecycle.recycle(spec, contract: contract) }
         try? FileManager.default.removeItem(at: cardRecordFile(spec))
