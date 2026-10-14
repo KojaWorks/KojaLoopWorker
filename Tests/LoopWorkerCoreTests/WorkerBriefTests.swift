@@ -62,6 +62,15 @@ import Testing
         #expect(!done.contains("latest notes"))
     }
 
+    @Test("B184: a note is redacted before it is cut, so a cut can't leave part of a secret unmatched")
+    func previousAttemptRedactsBeforeCutting() {
+        let note = String(repeating: "x", count: 3980) + " https://u:secretpassword@host"
+        let previous = WorkerBrief.PreviousAttempt(outcome: nil, notes: [note], redact: { Redactor.redact($0) })
+        #expect(previous.notes.count == 1)
+        #expect(previous.notes[0].count == WorkerBrief.PreviousAttempt.maxNoteLength)
+        #expect(!previous.notes[0].contains("secret"))
+    }
+
     @Test("B177: a verify failure that also happens on the base is listed, not fixed")
     func preExistingVerifyFailures() {
         let b = brief(guide: false)

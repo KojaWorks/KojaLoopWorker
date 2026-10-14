@@ -38,7 +38,7 @@ public struct WorkerBrief: Sendable {
 
         /// - Parameters:
         ///   - notes: All of the Manager's notes on the card, oldest first; the last
-        ///     `maxNotes` are kept, each cut to `maxNoteLength` characters.
+        ///     `maxNotes` are kept, each redacted and then cut to `maxNoteLength` characters.
         ///   - redact: Applied to the outcome's text and to every note.
         public init(outcome: Outcome?, notes: [String], redact: (String) -> String = { $0 }) {
             switch outcome {
@@ -46,7 +46,7 @@ public struct WorkerBrief: Sendable {
             case .stuck(let blocker)?: self.outcome = .stuck(blocker: redact(blocker))
             case nil: self.outcome = nil
             }
-            self.notes = notes.suffix(Self.maxNotes).map { redact(String($0.prefix(Self.maxNoteLength))) }
+            self.notes = notes.suffix(Self.maxNotes).map { String(redact($0).prefix(Self.maxNoteLength)) }
         }
     }
 
