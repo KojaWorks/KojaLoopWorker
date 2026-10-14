@@ -258,6 +258,24 @@ func temporaryDirectory() throws -> URL {
         #expect(await AuthGate.preflight(runner: killed, environment: [:]) == .inconclusive("claude -p was killed by signal 15"))
     }
 
+    @Test("B183: a quarantine value blocks unless its flags carry the approval bit; an unparseable one blocks")
+    func quarantineValues() throws {
+        #expect(Quarantine.blocksLaunch("0181;6720c1a3;Homebrew Cask;"))
+        #expect(!Quarantine.blocksLaunch("01c3;6720c1a3;Safari;"))
+        #expect(Quarantine.blocksLaunch(""))
+        #expect(Quarantine.blocksLaunch("zz;1;x"))
+        #if canImport(Darwin)
+        let file = try temporaryDirectory().appending(path: "tool")
+        try Data("#!/bin/sh\n".utf8).write(to: file)
+        #expect(!Quarantine.isFlagged(file))
+        for (value, flagged) in [("0181;6720c1a3;Homebrew Cask;", true), ("01c3;6720c1a3;Safari;", false)] {
+            let bytes = Array(value.utf8)
+            #expect(setxattr(file.path, Quarantine.attribute, bytes, bytes.count, 0, XATTR_NOFOLLOW) == 0)
+            #expect(Quarantine.isFlagged(file) == flagged, "\(value)")
+        }
+        #endif
+    }
+
     @Test("B183: a kill by a signal while claude is quarantined fails with the xattr remedy")
     func preflightKilledWhileQuarantinedFails() async throws {
         let dir = try temporaryDirectory()

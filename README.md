@@ -186,7 +186,9 @@ A LaunchDaemon, or any host where the Manager's user has no GUI session, can't a
 Gatekeeper's first-launch prompt, so macOS kills a quarantined binary (one that a Homebrew cask
 installed, for example) the moment it starts. Clear the flag from each tool the Manager runs
 with `xattr -d com.apple.quarantine <path>`, on the resolved binary rather than the symlink on
-`PATH`; `loopworker doctor` names every quarantined tool and the exact command.
+`PATH`; `loopworker doctor` names every quarantined tool and the exact command. A binary that
+a user already approved in a GUI session keeps the attribute with its approval flag set; doctor
+accepts it.
 
 ## Doctor
 
@@ -197,7 +199,7 @@ and exits 1 when anything fails. `--json` prints the same as JSON. It checks:
 - `secrets.env` is mode 600, and each token is set there (a token only in your shell warns);
 - `tmux`, `git`, `claude` and `bash` are on `PATH`; `git-lfs` and `storygrafter` warn when absent,
   and a missing `git-lfs` fails once a cloned project uses Git LFS;
-- none of those tools, nor `loopworker` itself, carries macOS's quarantine flag;
+- none of those tools, nor `loopworker` itself, carries macOS's quarantine flag without a user's approval;
 - claude answers `claude -p` headless, the same check that gates claims;
 - the container engine answers its probe (a warning only);
 - the backlog and forge accept their tokens, and whose they are;
