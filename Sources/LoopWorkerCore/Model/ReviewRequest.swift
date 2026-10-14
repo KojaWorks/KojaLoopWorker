@@ -10,11 +10,15 @@ public struct ReviewRequestDraft: Sendable, Equatable {
     /// Markdown. The Manager has already appended the guide link and the card reference.
     public var body: String
     public var draft: Bool
+    /// Assign the review request to the forge token's user, who owns the card. An open
+    /// review request without an assignee gets one too.
+    public var assignToOwner: Bool
 
     public init(
         project: ProjectSpec, card: Card, sourceBranch: String, targetBranch: String,
-        title: String, body: String, draft: Bool
+        title: String, body: String, draft: Bool, assignToOwner: Bool = false
     ) {
+        self.assignToOwner = assignToOwner
         self.project = project
         self.card = card
         self.sourceBranch = sourceBranch

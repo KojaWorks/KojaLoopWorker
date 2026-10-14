@@ -52,6 +52,7 @@ struct GLLabelEvent: Decodable, Sendable {
 struct GLMergeRequest: Decodable, Sendable {
     var iid: Int
     var webUrl: String
+    var assignees: [GLUser]?
 }
 
 struct GLPipeline: Decodable, Sendable {

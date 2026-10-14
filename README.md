@@ -135,7 +135,7 @@ moves a card between them:
 | `loopworker::next` | Ready to claim. | You added it, or the Manager released the card with a note saying why (a crash, a hang, an auth failure). |
 | `loopworker::working` | A worker is on it. | The Manager claimed it. |
 | `loopworker::ci` | Waiting for CI. Only for projects whose contract sets `[review] wait_for_ci`. | The Manager pushed the branch, opened a merge request, linked it in a note and is watching its pipeline. No worker runs. If CI fails, a worker fixes it on the same branch (the card shows `loopworker::working` meanwhile); if it keeps failing, times out or is canceled, the card becomes stuck. `loopworker status` lists these cards under "waiting for CI". |
-| `loopworker::review` | Done. | The Manager pushed the branch, opened a merge request and linked it in a note (and, after CI, the pipeline that passed). |
+| `loopworker::review` | Done. | The Manager pushed the branch, opened a merge request assigned to you and linked it in a note (and, after CI, the pipeline that passed). |
 | `loopworker::stuck` | The worker needs a human. | A note says what blocks it. You stay assigned, so it stays in your queue; answer it on the issue, then add `loopworker::next` (it replaces `loopworker::stuck`); the next worker continues from the pushed branch. A card with two `loopworker::*` labels is ignored. |
 
 The labels are GitLab scoped labels (`scope::value`, Premium and up): an issue carries one

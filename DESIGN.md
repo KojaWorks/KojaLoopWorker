@@ -158,7 +158,7 @@ that starts with `/` is escaped, so `/merge` or `/label` from a worker is shown,
    - `done`: check that the branch has commits ahead of the base (otherwise treat the outcome
      as `stuck`), push, attach the files that the outcome names (the guide, and each
      `attachment:<path>` link or image in the body, such as `![after](attachment:after.png)`),
-     open a draft review request, `markReview` (or, for a project
+     open a draft review request assigned to the forge token's user (the card's owner), `markReview` (or, for a project
      that waits for CI, `markVerifying`; see "Waiting for CI").
    - An attached file must resolve (symlinks resolved) inside the slot's state directory, be
      a regular non-empty file under 20 MB, not have a credential-like name, and not contain a

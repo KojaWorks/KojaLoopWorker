@@ -627,7 +627,7 @@ extension Manager {
         let cardLine = card.url.map { "Card: [\(card.ref.display)](\($0.absoluteString))" } ?? "Card: \(card.ref.display)"
         let draft = ReviewRequestDraft(
             project: spec.project, card: card, sourceBranch: branch, targetBranch: base, title: title,
-            body: "\(text)\n\n---\n\(cardLine)\(guideLine)\n", draft: spec.project.draftReviewRequests)
+            body: "\(text)\n\n---\n\(cardLine)\(guideLine)\n", draft: spec.project.draftReviewRequests, assignToOwner: true)
         let review = try await step("opening the review request") { try await self.deps.forge.openReviewRequest(draft) }
         guard waitForCI else {
             try await step("moving \(card.ref) to review") { try await self.deps.backlog.markReview(card, review: review) }

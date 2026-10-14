@@ -147,17 +147,31 @@ public struct GitHubForge: Forge {
             URLQueryItem(name: "state", value: "open"),
             URLQueryItem(name: "head", value: "\(owner):\(draft.sourceBranch)"),
         ], as: [Pull].self)
-        if let existing = open.first { return existing.reviewRequest(path) }
+        if let existing = open.first {
+            if draft.assignToOwner, existing.assignees?.isEmpty ?? true { try await assignOwner(path, existing.number) }
+            return existing.reviewRequest(path)
+        }
 
         var body = NewPull(title: draft.title, head: draft.sourceBranch, base: draft.targetBranch, body: draft.body, draft: draft.draft)
+        let pull: Pull
         do {
-            return try await request("POST", "repos/\(path)/pulls", body: body, as: Pull.self).reviewRequest(path)
+            pull = try await request("POST", "repos/\(path)/pulls", body: body, as: Pull.self)
         } catch let e as BackendRejection where body.draft && e.description.localizedCaseInsensitiveContains("draft") {
             // Private repos on free plans refuse drafts; a ready pull request beats a stuck card.
             log.warning("\(path) refuses draft pull requests; opening \(draft.sourceBranch) as ready for review")
             body.draft = false
-            return try await request("POST", "repos/\(path)/pulls", body: body, as: Pull.self).reviewRequest(path)
+            pull = try await request("POST", "repos/\(path)/pulls", body: body, as: Pull.self)
         }
+        // A failure here fails the finish; its retry finds the pull request open and assigns it then.
+        if draft.assignToOwner { try await assignOwner(path, pull.number) }
+        return pull.reviewRequest(path)
+    }
+
+    /// Assigns pull request `number` to the token's user.
+    private func assignOwner(_ path: String, _ number: Int) async throws {
+        struct Assignees: Encodable { var assignees: [String] }
+        let me = try await request("GET", "user", as: User.self)
+        _ = try await request("POST", "repos/\(path)/issues/\(number)/assignees", body: Assignees(assignees: [me.login]), as: Ignored.self)
     }
 
     /// The commit's latest check runs (GitHub Actions and other apps), read as one pipeline:
@@ -209,9 +223,13 @@ public struct GitHubForge: Forge {
 
     // MARK: HTTP
 
+    private struct User: Decodable { var login: String }
+    private struct Ignored: Decodable {}
+
     private struct Pull: Decodable {
         var number: Int
         var html_url: URL
+        var assignees: [User]?
         func reviewRequest(_ path: String) -> ReviewRequest { ReviewRequest(url: html_url, display: "\(path)#\(number)") }
     }
 

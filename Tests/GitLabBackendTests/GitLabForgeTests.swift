@@ -6,11 +6,35 @@ import Testing
 @Suite struct GitLabForgeTests {
     let mrs = "/api/v4/projects/mygroup%2Fapp/merge_requests"
 
-    func draft(_ isDraft: Bool = true) -> ReviewRequestDraft {
+    func draft(_ isDraft: Bool = true, assign: Bool = false) -> ReviewRequestDraft {
         ReviewRequestDraft(
             project: World.app, card: Card(ref: World.ref, project: "mygroup/app", title: "Fix it", state: .working),
             sourceBranch: "lw/12-fix-it", targetBranch: "main", title: "Fix it",
-            body: "Done.\n/approve\nsee a/b", draft: isDraft)
+            body: "Done.\n/approve\nsee a/b", draft: isDraft, assignToOwner: assign)
+    }
+
+    @Test("B182: a new merge request is assigned to the token's user")
+    func aNewMergeRequestIsAssigned() async throws {
+        let w = World()
+        w.gitlab.on("GET", mrs, json: [] as [Any])
+        w.gitlab.on("POST", mrs, status: 201, json: ["iid": 5, "web_url": "https://gitlab.example.com/mygroup/app/-/merge_requests/5"])
+        _ = try await w.make().forge.openReviewRequest(draft(assign: true))
+        #expect(w.gitlab.requests("POST", mrs).first?.json["assignee_id"] as? String == "1")
+    }
+
+    @Test("B182: an open merge request gets the assignee only when it has none")
+    func anOpenMergeRequestWithoutAssigneeIsAssigned() async throws {
+        let w = World()
+        w.gitlab.on("GET", mrs, json: [["iid": 4, "web_url": "https://gitlab.example.com/mygroup/app/-/merge_requests/4", "assignees": [] as [Any]]])
+        w.gitlab.on("PUT", mrs + "/4", json: ["iid": 4, "web_url": "https://gitlab.example.com/mygroup/app/-/merge_requests/4"])
+        _ = try await w.make().forge.openReviewRequest(draft(assign: true))
+        #expect(w.gitlab.requests("PUT", mrs + "/4").map { $0.json as? [String: String] } == [["assignee_id": "1"]])
+        #expect(w.gitlab.requests("POST", mrs).isEmpty)
+
+        let assigned = World()
+        assigned.gitlab.on("GET", mrs, json: [["iid": 4, "web_url": "https://gitlab.example.com/mygroup/app/-/merge_requests/4", "assignees": [Fixture.me]]])
+        _ = try await assigned.make().forge.openReviewRequest(draft(assign: true))
+        #expect(assigned.gitlab.requests("PUT", mrs + "/4").isEmpty)
     }
 
     @Test func B134_cloneURLHasNoCredentialsAndGitGetsThemThroughAskPass() throws {

@@ -54,10 +54,11 @@ private func forge(_ stub: StubGitHub, _ forgeSection: String = "") throws -> Gi
         transport: stub.transport, sleep: { stub.slept($0) }, now: { Date(timeIntervalSince1970: 1_000) })
 }
 
-private func draft(_ isDraft: Bool = true) -> ReviewRequestDraft {
+private func draft(_ isDraft: Bool = true, assign: Bool = false) -> ReviewRequestDraft {
     ReviewRequestDraft(
         project: project, card: Card(ref: CardRef(id: "u1", display: "~1"), project: "owner/app", title: "t", state: .working),
-        sourceBranch: "loopworker-1-add-export", targetBranch: "main", title: "Add export", body: "Body", draft: isDraft)
+        sourceBranch: "loopworker-1-add-export", targetBranch: "main", title: "Add export", body: "Body", draft: isDraft,
+        assignToOwner: assign)
 }
 
 private let pullJSON = #"{"number": 7, "html_url": "https://github.com/owner/app/pull/7"}"#
@@ -113,6 +114,39 @@ private let pullJSON = #"{"number": 7, "html_url": "https://github.com/owner/app
         #expect(body["base"] as? String == "main")
         #expect(body["title"] as? String == "Add export")
         #expect(body["body"] as? String == "Body")
+    }
+
+    @Test("B182: a new pull request is assigned to the token's login")
+    func aNewPullRequestIsAssigned() async throws {
+        let stub = StubGitHub { req, _ in
+            switch (req.httpMethod!, req.url!.path) {
+            case ("GET", "/user"): (200, [:], #"{"login": "octo"}"#)
+            case ("GET", _): (200, [:], "[]")
+            case (_, "/repos/owner/app/issues/7/assignees"): (201, [:], #"{"number": 7}"#)
+            default: (201, [:], pullJSON)
+            }
+        }
+        _ = try await forge(stub).openReviewRequest(draft(assign: true))
+        let assign = try #require(stub.requests.last)
+        #expect(assign.httpMethod == "POST")
+        #expect(assign.url?.path == "/repos/owner/app/issues/7/assignees")
+        #expect(try JSONSerialization.jsonObject(with: assign.httpBody!) as? [String: [String]] == ["assignees": ["octo"]])
+    }
+
+    @Test("B182: an open pull request gets the assignee only when it has none")
+    func anOpenPullRequestWithoutAssigneeIsAssigned() async throws {
+        for (assignees, expected) in [("[]", 1), (#"[{"login": "octo"}]"#, 0)] {
+            let stub = StubGitHub { req, _ in
+                switch (req.httpMethod!, req.url!.path) {
+                case ("GET", "/user"): (200, [:], #"{"login": "octo"}"#)
+                case ("GET", _): (200, [:], #"[{"number": 7, "html_url": "https://github.com/owner/app/pull/7", "assignees": \#(assignees)}]"#)
+                default: (201, [:], "{}")
+                }
+            }
+            _ = try await forge(stub).openReviewRequest(draft(assign: true))
+            #expect(stub.requests.filter { $0.url?.path == "/repos/owner/app/issues/7/assignees" }.count == expected)
+            #expect(!stub.requests.contains { $0.url?.path == "/repos/owner/app/pulls" && $0.httpMethod == "POST" })
+        }
     }
 
     @Test func aRepoThatRefusesDraftsGetsAReadyPullRequest() async throws {

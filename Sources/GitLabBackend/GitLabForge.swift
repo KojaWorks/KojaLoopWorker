@@ -31,7 +31,14 @@ public struct GitLabForge: Forge {
     public func openReviewRequest(_ draft: ReviewRequestDraft) async throws -> ReviewRequest {
         let path = projectPath(draft.project) + "/merge_requests"
         let open: [GLMergeRequest] = try await client.getAll(path, query: [("state", "opened"), ("source_branch", draft.sourceBranch)])
-        if let existing = open.first { return try review(existing, draft.project) }
+        // GitLab coerces the string to the integer that assignee_id takes.
+        let assignee = draft.assignToOwner ? ["assignee_id": String(try await client.me().id)] : [:]
+        if let existing = open.first {
+            if !assignee.isEmpty, existing.assignees?.isEmpty ?? true {
+                let _: GLMergeRequest = try await client.send("PUT", "\(path)/\(existing.iid)", body: assignee, idempotent: true)
+            }
+            return try review(existing, draft.project)
+        }
         let title = Trust.neutralizeQuickActions(draft.title)
         let created: GLMergeRequest = try await client.send("POST", path, body: [
             "source_branch": draft.sourceBranch,
@@ -39,7 +46,7 @@ public struct GitLabForge: Forge {
             "title": draft.draft ? "Draft: \(title)" : title,
             "description": Trust.neutralizeQuickActions(draft.body),
             "remove_source_branch": "true",
-        ], idempotent: false)
+        ].merging(assignee) { a, _ in a }, idempotent: false)
         return try review(created, draft.project)
     }
 
