@@ -128,6 +128,27 @@ import Testing
         #expect("\(comma)".contains("\"a,b\" contains a comma"))
     }
 
+    @Test("B163: [review] CI keys decode with defaults and are validated")
+    func reviewCIKeys() throws {
+        let dir = FileManager.default.temporaryDirectory.appending(path: "contract-\(UUID())")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        func load(_ toml: String) throws -> ProjectContract {
+            try toml.write(to: dir.appending(path: "manifest.toml"), atomically: true, encoding: .utf8)
+            return try ProjectContract.load(from: dir)
+        }
+        let defaults = try load("[review]\nguide = true\n").ci
+        #expect(!defaults.waitForCI && defaults.timeoutMinutes == 120 && defaults.fixAttempts == 2)
+
+        let ci = try load("[review]\nwait_for_ci = true\nci_timeout_minutes = 30\nci_fix_attempts = 0\n").ci
+        #expect(ci.waitForCI && ci.timeoutMinutes == 30 && ci.fixAttempts == 0)
+
+        let timeout = try #require(throws: ConfigError.self) { try load("[review]\nci_timeout_minutes = 0\n") }
+        #expect("\(timeout)".contains("[review] ci_timeout_minutes must be > 0"))
+        let attempts = try #require(throws: ConfigError.self) { try load("[review]\nci_fix_attempts = -1\n") }
+        #expect("\(attempts)".contains("[review] ci_fix_attempts must be >= 0"))
+    }
+
     @Test func outcomeTitleIsOneBoundedLine() {
         let long = String(repeating: "x", count: 500)
         guard case .done(let title, _, _) = Outcome.parse(Data(#"{"outcome":"done","title":"\#(long)\nsecond"}"#.utf8)) else {
