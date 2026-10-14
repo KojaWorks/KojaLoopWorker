@@ -17,3 +17,9 @@ wallclock_cap_minutes = 90
 
 [review]
 guide = false                     # ask for a storygrafter review guide
+
+[lfs]                             # only used when the repo stores files in Git LFS
+pull = true                       # false leaves LFS pointer files in the slot
+include = []                      # git-lfs path patterns to pull; empty means all
+exclude = []                      # git-lfs path patterns to skip
+pull_timeout_minutes = 60
