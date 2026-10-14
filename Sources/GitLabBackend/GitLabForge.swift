@@ -80,9 +80,19 @@ public struct GitLabForge: Forge {
         }
     }
 
-    /// Removes terminal color and erase sequences, which GitLab traces are full of.
+    /// Removes what GitLab traces carry besides the job's output: terminal color and erase
+    /// sequences, the runner's per-line timestamp prefix (`2026-10-14T16:59:46.845Z 00O+ `) and
+    /// collapsible-section markers, so the tail the worker reads is mostly real output.
     static func stripANSI(_ text: String) -> String {
-        text.replacing(/\x{1B}\[[0-9;?]*[A-Za-z]/, with: "")
+        // Markers go first, while the "\r" after each still ends its name. Foundation's replace
+        // works on code units; Swift's treats "\r\n" as one Character.
+        text.replacing(/section_(start|end):\d+:[A-Za-z0-9_\-]+(\[[^\]]*\])?/, with: "")
+            .replacing(/\x{1B}\[[0-9;?]*[A-Za-z]/, with: "")
+            .replacingOccurrences(of: "\r", with: "")
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.replacing(/^\d{4}-\d\d-\d\dT[\d:.]+Z \d+[OE]\+? ?/, with: "") }
+            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            .joined(separator: "\n")
     }
 
     private func review(_ mr: GLMergeRequest, _ project: ProjectSpec) throws -> ReviewRequest {

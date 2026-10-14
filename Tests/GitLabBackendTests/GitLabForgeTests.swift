@@ -129,4 +129,16 @@ import Testing
         #expect(p.failedJobs[1].logTail == "(GitLab has no log for this job)")
         #expect(w.gitlab.requests("GET", "/api/v4/projects/mygroup%2Fapp/jobs/2/trace").isEmpty)
     }
+
+    @Test func traceCleanupKeepsOnlyTheJobsOutput() {
+        let trace = "2026-10-14T16:59:46.845748Z 00O Running with gitlab-runner 19.5.0\n"
+            + "2026-10-14T16:59:51.975330Z 00O+section_start:1791997191:prepare_script\r\u{1B}[0K\u{1B}[36;1mPreparing environment\u{1B}[0;m\n"
+            + "2026-10-14T17:00:01.000000Z 01E BROKEN exists in the repository root; delete it to pass\n"
+            + "2026-10-14T17:00:01.100000Z 00O section_end:1791997201:step_script\r\u{1B}[0K\n"
+        #expect(GitLabForge.stripANSI(trace).components(separatedBy: "\n") == [
+            "Running with gitlab-runner 19.5.0",
+            "Preparing environment",
+            "BROKEN exists in the repository root; delete it to pass",
+        ])
+    }
 }
