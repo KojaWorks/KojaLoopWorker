@@ -255,8 +255,9 @@ extension Manager {
     }
 
     /// Resumes watching each `verifying` card that has a watch record, and marks the others
-    /// stuck, since nothing else would ever move them on. Runs at startup and with the
-    /// stranded-card sweep; a failed read changes nothing.
+    /// stuck, since nothing else would ever move them on. Then deletes the records of served
+    /// cards that are gone or no longer `verifying`. Runs at startup and with the stranded-card
+    /// sweep; a failed read changes nothing.
     func sweepVerifying() {
         let specs = order.compactMap { projects[$0]?.spec }
         guard !specs.isEmpty else { return }
@@ -269,6 +270,34 @@ extension Manager {
                 return
             }
             for card in cards { await self.resumeWatch(card) }
+            await self.pruneWatchRecords()
+        }
+    }
+
+    func pruneWatchRecords() async {
+        let dir = CIWatchRecord.directory(stateDir: stateDir)
+        let d = JSONDecoder()
+        d.dateDecodingStrategy = .iso8601
+        for name in ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []).sorted() where name.hasSuffix(".json") {
+            let file = dir.appending(path: name)
+            // Unreadable records and those of unconfigured projects are reported at startup.
+            guard let record = try? d.decode(CIWatchRecord.self, from: Data(contentsOf: file)),
+                  projects[ProjectSpec(path: record.project).key] != nil else { continue }
+            let ref = record.card
+            guard ciWatches[ref.id] == nil, !holds(ref) else { continue }
+            let card: Card?
+            do { card = try await deps.backlog.card(ref) }
+            catch {
+                log.warning("CI sweep: can't read \(ref) to check its watch record \(file.path): \(error); keeping it")
+                continue
+            }
+            guard card?.state != .verifying, ciWatches[ref.id] == nil, !holds(ref) else { continue }
+            do {
+                try FileManager.default.removeItem(at: file)
+                log.info("deleted the CI watch record of \(ref): it is \(card?.state.rawValue ?? "gone") now")
+            } catch {
+                log.error("can't delete the stale CI watch record \(file.path): \(error); delete it by hand")
+            }
         }
     }
 

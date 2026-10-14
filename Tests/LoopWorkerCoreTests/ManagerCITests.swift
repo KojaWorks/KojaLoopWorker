@@ -386,6 +386,24 @@ let reviewURL = URL(string: "https://forge.example/g/app/-/merge_requests/1")!
         #expect(!h.backlog.writes.contains { if case .release = $0 { true } else { false } })
     }
 
+    @Test("B170: the sweep deletes the watch records of cards that are no longer verifying")
+    func staleRecordsArePruned() async throws {
+        let h = try ManagerHarness(projects: oneColdProject, manifest: ciManifest)
+        h.addCard(12, state: .review)
+        h.addCard(13, state: .verifying)
+        let state = h.home.appending(path: "state")
+        for n in [12, 13] {
+            try CIWatchRecord(
+                card: CardRef(id: "id-\(n)", display: "g/app#\(n)"), project: "g/app", branch: "b", base: "main", sha: "abc",
+                review: ReviewRequest(url: reviewURL, display: "g/app!1"), round: 0, pushedAt: Date()
+            ).write(stateDir: state)
+        }
+        try await h.boot()
+        #expect(try CIWatchRecord.read(stateDir: state, cardID: "id-12") == nil)
+        #expect(h.log.contains("deleted the CI watch record of g/app#12: it is review now"))
+        #expect(try CIWatchRecord.read(stateDir: state, cardID: "id-13") != nil)
+    }
+
     @Test("B170: a failed read of verifying cards changes nothing")
     func failedVerifyingRead() async throws {
         let h = try ManagerHarness(projects: oneColdProject, manifest: ciManifest)
