@@ -477,6 +477,20 @@ func temporaryDirectory() throws -> URL {
         #expect(reason("blob.bin") == "its content looks like it holds a token or password")
     }
 
+    @Test("B185: an attachment: reference outside a markdown link or image is named, once, with the syntax to use")
+    func strayReferences() async throws {
+        try write("a.png", "png")
+        let body = """
+            ![a](attachment:a.png) [m](attachment:missing.png) <img src="attachment:a.png" width=400>
+            [ref]: attachment:b.png
+            ![c](<attachment:c d.png>) again <img src='attachment:a.png'> preattachment:x
+            """
+        let (out, refused) = try await Attachments.resolve(body, in: root) { URL(string: "https://forge.example/\($0.lastPathComponent)") }
+        #expect(out.hasPrefix("![a](https://forge.example/a.png) [m](attachment:missing.png) <img src=\"attachment:a.png\""))
+        #expect(refused.map(\.path) == ["missing.png", "attachment:a.png", "attachment:b.png", "attachment:c"])
+        #expect(refused.dropFirst().allSatisfy { $0.reason == "use `![alt](attachment:path)` or `[text](attachment:path)`" })
+    }
+
     @Test("B185: a forge without attachments, or one that refuses, leaves the reference; other errors throw")
     func forgeOutcomes() async throws {
         try write("a.png", "png")

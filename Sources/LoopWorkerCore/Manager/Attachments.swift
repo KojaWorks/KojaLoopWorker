@@ -26,10 +26,14 @@ enum Attachments {
     ]
 
     nonisolated(unsafe) private static let reference = #/\]\(attachment:([^)\s]+)/#
+    nonisolated(unsafe) private static let stray = #/\battachment:[^\s"'<>()\[\]`]*/#
+    static let strayReason = "use `![alt](attachment:path)` or `[text](attachment:path)`"
     nonisolated(unsafe) private static let pemPrivateKey = #/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/#
 
     /// Uploads each file that `body` references once and replaces its `attachment:<path>` with
-    /// the URL; a refused reference stays as it is.
+    /// the URL; a refused reference stays as it is. Any other `attachment:` left in the body,
+    /// such as one in an HTML `<img>` or a reference-style link, is refused with `strayReason`
+    /// and its `path` is the whole `attachment:...` text.
     /// - Throws: what `attach` throws other than a `BackendRejection`, which is a refusal.
     static func resolve(_ body: String, in root: URL, attach: (URL) async throws -> URL?) async throws -> (body: String, refused: [Refusal]) {
         var urls: [String: URL] = [:]
@@ -42,6 +46,9 @@ enum Attachments {
         }
         let out = body.replacing(reference) { m in
             urls[String(m.1)].map { "](\($0.absoluteString)" } ?? String(m.0)
+        }
+        for m in out.replacing(reference, with: "").matches(of: stray) where !refused.contains(where: { $0.path == String(m.0) }) {
+            refused.append(Refusal(path: String(m.0), reason: strayReason))
         }
         return (out, refused)
     }

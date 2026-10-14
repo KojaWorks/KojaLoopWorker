@@ -337,12 +337,13 @@ func fileMode(_ url: URL) throws -> Int {
         let h = try await spawned()
         try "png".write(to: h.stateDir().appending(path: "after.png"), atomically: true, encoding: .utf8)
         try "A=1".write(to: h.stateDir().appending(path: ".env"), atomically: true, encoding: .utf8)
-        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"![after](attachment:after.png) [env](attachment:.env)"}"#)
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"![after](attachment:after.png) [env](attachment:.env) <img src='attachment:after.png'>"}"#)
         h.tmux.set("lw_g--app_0", alive: false)
         await h.cycle()
         let body = try #require(h.forge.state.get.opened.first?.body)
-        #expect(body.hasPrefix("![after](https://forge.example/uploads/after.png) [env](attachment:.env)\n\nLoopWorker didn't attach .env: its name looks like a credential file\n\n---\nCard: "))
+        #expect(body.hasPrefix("![after](https://forge.example/uploads/after.png) [env](attachment:.env) <img src='attachment:after.png'>\n\nLoopWorker didn't attach .env: its name looks like a credential file\n\nLoopWorker didn't attach attachment:after.png: use `![alt](attachment:path)` or `[text](attachment:path)`\n\n---\nCard: "))
         #expect(h.log.contains("didn't attach .env", level: .warning))
+        #expect(h.log.contains("didn't attach attachment:after.png to g/app#12's review request: use", level: .warning))
         #expect(h.backlog.card(id: "id-12")?.state == .review)
     }
 
