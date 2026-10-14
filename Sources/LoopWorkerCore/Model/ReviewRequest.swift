@@ -11,7 +11,7 @@ public struct ReviewRequestDraft: Sendable, Equatable {
     public var body: String
     public var draft: Bool
     /// Assign the review request to the forge token's user, who owns the card. An open
-    /// review request without an assignee gets one too.
+    /// review request without an assignee gets one too. Best effort: the forge logs a failure.
     public var assignToOwner: Bool
 
     public init(

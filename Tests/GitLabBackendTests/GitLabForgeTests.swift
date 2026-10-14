@@ -37,6 +37,24 @@ import Testing
         #expect(assigned.gitlab.requests("PUT", mrs + "/4").isEmpty)
     }
 
+    @Test("B186: a failed assignment is logged and the merge request is still returned")
+    func aFailedAssignmentIsBestEffort() async throws {
+        let w = World()
+        w.gitlab.on("GET", mrs, json: [["iid": 4, "web_url": "https://gitlab.example.com/mygroup/app/-/merge_requests/4", "assignees": [] as [Any]]])
+        w.gitlab.on("PUT", mrs + "/4", status: 403, json: ["message": "403 Forbidden"])
+        let review = try await w.make().forge.openReviewRequest(draft(assign: true))
+        #expect(review.url.absoluteString == "https://gitlab.example.com/mygroup/app/-/merge_requests/4")
+        #expect(w.log.lines.contains { $0.contains("can't assign mygroup/app!4 (https://gitlab.example.com/mygroup/app/-/merge_requests/4) to the token's user") && $0.contains("403") })
+
+        let anonymous = World()
+        anonymous.gitlab.on("GET", "/api/v4/user", status: 403, json: ["message": "403 Forbidden"])
+        anonymous.gitlab.on("GET", mrs, json: [] as [Any])
+        anonymous.gitlab.on("POST", mrs, status: 201, json: ["iid": 5, "web_url": "https://gitlab.example.com/mygroup/app/-/merge_requests/5"])
+        _ = try await anonymous.make().forge.openReviewRequest(draft(assign: true))
+        #expect(anonymous.gitlab.requests("POST", mrs).first?.json["assignee_id"] == nil)
+        #expect(anonymous.log.lines.contains { $0.contains("can't read the token's user to assign the merge request for mygroup/app lw/12-fix-it") })
+    }
+
     @Test func B134_cloneURLHasNoCredentialsAndGitGetsThemThroughAskPass() throws {
         let w = World()
         let forge = try w.make().forge

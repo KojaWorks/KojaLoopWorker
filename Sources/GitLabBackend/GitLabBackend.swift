@@ -49,7 +49,7 @@ public enum GitLabBackend {
             let client = backlogClient.flatMap { $0.connection == connection ? $0 : nil }
                 ?? GitLabClient(connection: connection, transport: transport, sleep: sleep)
             let env = try GitAskPass.environment(scriptDirectory: config.stateDir, username: "oauth2", password: connection.token)
-            forge = GitLabForge(client: client, baseURL: connection.baseURL, gitEnvironment: env)
+            forge = GitLabForge(client: client, baseURL: connection.baseURL, gitEnvironment: env, log: log)
         }
         return (backlog, forge)
     }

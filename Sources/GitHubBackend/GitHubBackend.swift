@@ -148,8 +148,9 @@ public struct GitHubForge: Forge {
             URLQueryItem(name: "head", value: "\(owner):\(draft.sourceBranch)"),
         ], as: [Pull].self)
         if let existing = open.first {
-            if draft.assignToOwner, existing.assignees?.isEmpty ?? true { try await assignOwner(path, existing.number) }
-            return existing.reviewRequest(path)
+            let review = existing.reviewRequest(path)
+            if draft.assignToOwner, existing.assignees?.isEmpty ?? true { await assignOwner(path, existing.number, review) }
+            return review
         }
 
         var body = NewPull(title: draft.title, head: draft.sourceBranch, base: draft.targetBranch, body: draft.body, draft: draft.draft)
@@ -162,16 +163,20 @@ public struct GitHubForge: Forge {
             body.draft = false
             pull = try await request("POST", "repos/\(path)/pulls", body: body, as: Pull.self)
         }
-        // A failure here fails the finish; its retry finds the pull request open and assigns it then.
-        if draft.assignToOwner { try await assignOwner(path, pull.number) }
-        return pull.reviewRequest(path)
+        let review = pull.reviewRequest(path)
+        if draft.assignToOwner { await assignOwner(path, pull.number, review) }
+        return review
     }
 
-    /// Assigns pull request `number` to the token's user.
-    private func assignOwner(_ path: String, _ number: Int) async throws {
+    /// Assigns pull request `number` to the token's user, or logs why it can't.
+    private func assignOwner(_ path: String, _ number: Int, _ review: ReviewRequest) async {
         struct Assignees: Encodable { var assignees: [String] }
-        let me = try await request("GET", "user", as: User.self)
-        _ = try await request("POST", "repos/\(path)/issues/\(number)/assignees", body: Assignees(assignees: [me.login]), as: Ignored.self)
+        do {
+            let me = try await request("GET", "user", as: User.self)
+            _ = try await request("POST", "repos/\(path)/issues/\(number)/assignees", body: Assignees(assignees: [me.login]), as: Ignored.self)
+        } catch {
+            log.warning("can't assign \(review.display) (\(review.url.absoluteString)) to the token's user: \(error); leaving it unassigned")
+        }
     }
 
     /// The commit's latest check runs (GitHub Actions and other apps), read as one pipeline:

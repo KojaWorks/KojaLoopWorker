@@ -16,7 +16,8 @@ public protocol Forge: Sendable {
     /// Opens a review request for an already pushed branch. Idempotent: if one is already
     /// open for `draft.sourceBranch`, returns it, so a finish retried after a Manager restart
     /// never opens a duplicate; the only change made to it is the assignee that
-    /// `draft.assignToOwner` asks for when it has none.
+    /// `draft.assignToOwner` asks for when it has none. A failed assignment is logged and
+    /// leaves the review request unassigned; it never fails the call.
     func openReviewRequest(_ draft: ReviewRequestDraft) async throws -> ReviewRequest
 
     /// The latest CI pipeline for `commit` in `project`, whatever triggered it (a push of the

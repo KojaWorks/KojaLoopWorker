@@ -29,8 +29,11 @@ private final class StubGitHub: @unchecked Sendable {
     }
 }
 
-private final class NullLog: LogSink {
-    func log(_ level: LogLevel, _ message: String) {}
+private final class RecordingLog: LogSink, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _lines: [String] = []
+    var lines: [String] { lock.withLock { _lines } }
+    func log(_ level: LogLevel, _ message: String) { lock.withLock { _lines.append(message) } }
 }
 
 private let project = ProjectSpec(path: "owner/app")
@@ -48,9 +51,9 @@ private func host(_ forge: String = "") throws -> HostConfig {
         """, home: home)
 }
 
-private func forge(_ stub: StubGitHub, _ forgeSection: String = "") throws -> GitHubForge {
+private func forge(_ stub: StubGitHub, _ forgeSection: String = "", log: LogSink = RecordingLog()) throws -> GitHubForge {
     try GitHubBackend.makeForge(
-        config: host(forgeSection), log: NullLog(), environment: ["GITHUB_TOKEN": "ghp_FAKE0000"],
+        config: host(forgeSection), log: log, environment: ["GITHUB_TOKEN": "ghp_FAKE0000"],
         transport: stub.transport, sleep: { stub.slept($0) }, now: { Date(timeIntervalSince1970: 1_000) })
 }
 
@@ -79,7 +82,7 @@ private let pullJSON = #"{"number": 7, "html_url": "https://github.com/owner/app
     }
 
     @Test func missingTokenIsAConfigError() throws {
-        #expect(throws: ConfigError.self) { try GitHubBackend.makeForge(config: host(), log: NullLog(), environment: [:]) }
+        #expect(throws: ConfigError.self) { try GitHubBackend.makeForge(config: host(), log: RecordingLog(), environment: [:]) }
     }
 
     @Test func defaultBranchReadsTheRepo() async throws {
@@ -147,6 +150,22 @@ private let pullJSON = #"{"number": 7, "html_url": "https://github.com/owner/app
             #expect(stub.requests.filter { $0.url?.path == "/repos/owner/app/issues/7/assignees" }.count == expected)
             #expect(!stub.requests.contains { $0.url?.path == "/repos/owner/app/pulls" && $0.httpMethod == "POST" })
         }
+    }
+
+    @Test("B186: a failed assignment is logged and the pull request is still returned")
+    func aFailedAssignmentIsBestEffort() async throws {
+        let stub = StubGitHub { req, _ in
+            switch (req.httpMethod!, req.url!.path) {
+            case ("GET", "/user"): (403, [:], #"{"message": "Resource not accessible by integration"}"#)
+            case ("GET", _): (200, [:], "[]")
+            default: (201, [:], pullJSON)
+            }
+        }
+        let log = RecordingLog()
+        let review = try await forge(stub, log: log).openReviewRequest(draft(assign: true))
+        #expect(review.display == "owner/app#7")
+        #expect(log.lines.contains { $0.contains("can't assign owner/app#7") && $0.contains("Resource not accessible by integration") })
+        #expect(!stub.requests.contains { $0.url?.path == "/repos/owner/app/issues/7/assignees" })
     }
 
     @Test func aRepoThatRefusesDraftsGetsAReadyPullRequest() async throws {
