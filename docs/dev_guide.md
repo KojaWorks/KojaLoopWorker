@@ -80,9 +80,9 @@ model:
    .build/debug/loopworker
    ```
 
-6. On a sandbox issue, assign yourself and add `loopworker:next`. Within a tick or two the
+6. On a sandbox issue, assign yourself and add `loopworker::next`. Within a tick or two the
    Manager claims it; `loopworker status` (with the same `LOOPWORKER_HOME`) shows the slot, and
-   `$LOOPWORKER_HOME/state/manager.log` the steps. The issue ends at `loopworker:review` with a
+   `$LOOPWORKER_HOME/state/manager.log` the steps. The issue ends at `loopworker::review` with a
    merge request linked in a note. Ctrl-C drains and exits.
 
 ## Gotchas on a live host

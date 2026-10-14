@@ -80,7 +80,7 @@ contract    = "~/.loopworker/contracts/myapp" # optional host-local overlay of t
 worker_env  = ["MYAPP_LICENSE_SERVER"]        # Manager variables forwarded to this project's workers
 ```
 
-`status_mode = "none"` (the default) changes only the `loopworker:*` labels. `labels` also
+`status_mode = "none"` (the default) changes only the `loopworker::*` labels. `labels` also
 adds the status names as labels. `work_item_status` sets GitLab's native status field
 (Premium and up).
 
@@ -120,26 +120,34 @@ to (`loopworker doctor` names it). An issue is picked up when all of these hold:
 
 - it is open, in a configured `[[project]]` under an `allowed` prefix;
 - you assigned yourself;
-- you added the `loopworker:next` label.
+- you added the `loopworker::next` label.
 
 Adding the label vouches for the title, description and comments as they are at that moment.
 Later edits or comments by anyone else are withheld from the worker and named in the log. If a
 colleague assigned you, re-assign yourself before adding the label.
 
-Create the labels `loopworker:next`, `loopworker:working`, `loopworker:review` and
-`loopworker:stuck` once in the group, and `loopworker:ci` if a project waits for CI. The Manager
+Create the labels `loopworker::next`, `loopworker::working`, `loopworker::review` and
+`loopworker::stuck` once in the group, and `loopworker::ci` if a project waits for CI. The Manager
 moves a card between them:
 
 | Label | Meaning | What happened on the issue |
 | --- | --- | --- |
-| `loopworker:next` | Ready to claim. | You added it, or the Manager released the card with a note saying why (a crash, a hang, an auth failure). |
-| `loopworker:working` | A worker is on it. | The Manager claimed it. |
-| `loopworker:ci` | Waiting for CI. Only for projects whose contract sets `[review] wait_for_ci`. | The Manager pushed the branch, opened a merge request, linked it in a note and is watching its pipeline. No worker runs. If CI fails, a worker fixes it on the same branch (the card shows `loopworker:working` meanwhile); if it keeps failing, times out or is canceled, the card becomes stuck. `loopworker status` lists these cards under "waiting for CI". |
-| `loopworker:review` | Done. | The Manager pushed the branch, opened a merge request and linked it in a note (and, after CI, the pipeline that passed). |
-| `loopworker:stuck` | The worker needs a human. | A note says what blocks it. You stay assigned, so it stays in your queue; answer it on the issue, then replace `loopworker:stuck` with `loopworker:next`; the next worker continues from the pushed branch. A card with two `loopworker:*` labels is ignored. |
+| `loopworker::next` | Ready to claim. | You added it, or the Manager released the card with a note saying why (a crash, a hang, an auth failure). |
+| `loopworker::working` | A worker is on it. | The Manager claimed it. |
+| `loopworker::ci` | Waiting for CI. Only for projects whose contract sets `[review] wait_for_ci`. | The Manager pushed the branch, opened a merge request, linked it in a note and is watching its pipeline. No worker runs. If CI fails, a worker fixes it on the same branch (the card shows `loopworker::working` meanwhile); if it keeps failing, times out or is canceled, the card becomes stuck. `loopworker status` lists these cards under "waiting for CI". |
+| `loopworker::review` | Done. | The Manager pushed the branch, opened a merge request and linked it in a note (and, after CI, the pipeline that passed). |
+| `loopworker::stuck` | The worker needs a human. | A note says what blocks it. You stay assigned, so it stays in your queue; answer it on the issue, then add `loopworker::next` (it replaces `loopworker::stuck`); the next worker continues from the pushed branch. A card with two `loopworker::*` labels is ignored. |
+
+The labels are GitLab scoped labels (`scope::value`, Premium and up): an issue carries one
+`loopworker::*` label at a time, so adding `loopworker::next` to a stuck card replaces
+`loopworker::stuck` by itself. On Free they are plain labels; remove the old one yourself. A card
+can also carry `loopworker-priority::<n>` (higher is claimed sooner) and
+`loopworker-model::<alias>` (the claude model for that card). `[backlog.gitlab] label_prefix`
+changes the prefix; with a prefix that doesn't end in `::` (`label_prefix = "loopworker:"`) the
+labels are `loopworker:next`, `loopworker:priority:<n>` and so on.
 
 A card that crashes `max_attempts` times becomes stuck. Closing an issue or removing its
-`loopworker:*` label while a worker runs stops that worker; nothing is written back.
+`loopworker::*` label while a worker runs stops that worker; nothing is written back.
 
 ## Running
 
@@ -201,7 +209,7 @@ loopworker resume [project]
 
 Stopping escalates. The first SIGINT (Ctrl-C) drains: running workers finish, nothing new is
 claimed, then the Manager exits. A second SIGINT force-stops: it reaps every worker and releases
-its card back to `loopworker:next`. A third exits at once. SIGTERM force-stops. For the
+its card back to `loopworker::next`. A third exits at once. SIGTERM force-stops. For the
 LaunchAgent:
 
 ```bash

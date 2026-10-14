@@ -16,7 +16,7 @@ import Testing
         #expect(s.connection.baseURL.absoluteString == "https://gitlab.com")
         #expect(s.connection.tokenEnv == "LOOPWORKER_GITLAB_TOKEN")
         #expect(s.allowed == ["mygroup/"])
-        #expect(s.labelPrefix == "loopworker:")
+        #expect(s.labelPrefix == "loopworker::")
         #expect(s.statusMode == StatusMode.none)
         #expect(s.statusNames == [.ready: "To do", .working: "In progress", .verifying: "In progress", .review: "In review", .stuck: "To do"])
         #expect(s.isAllowed("mygroup/App"))
@@ -82,5 +82,14 @@ import Testing
 
         let backlogOnly = try make("[backlog]\nkind = \"gitlab\"\n[backlog.gitlab]\nallowed = [\"a/\"]\n[forge]\nkind = \"github\"")
         #expect(backlogOnly.backlog != nil && backlogOnly.forge == nil)
+    }
+
+    @Test func valueLabelsGetTheirOwnScopeUnderAScopedPrefix() throws {
+        var s = try backlog(#"allowed = ["g/"]"#)
+        #expect(s.valueLabelPrefix("priority") == "loopworker-priority::")
+        #expect(s.label(.ready) == "loopworker::next")
+        s.labelPrefix = "lw:"
+        #expect(s.valueLabelPrefix("model") == "lw:model:")
+        #expect(s.label(.stuck) == "lw:stuck")
     }
 }

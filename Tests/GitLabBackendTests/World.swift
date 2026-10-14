@@ -3,7 +3,7 @@ import LoopWorkerCore
 @testable import GitLabBackend
 
 /// A fake GitLab with one trusted ready card, `mygroup/app#12`: created by me at minute 0,
-/// assigned by me at minute 1, `loopworker:next` added by me at minute 2.
+/// assigned by me at minute 1, `loopworker::next` added by me at minute 2.
 struct World {
     let gitlab = FakeGitLab()
     let log = CollectingLog()
@@ -37,13 +37,13 @@ struct World {
         events([Fixture.labelEvent(1, at: 2)])
     }
 
-    func issue(_ issue: [String: Any], listedAs label: String = "loopworker:next") {
+    func issue(_ issue: [String: Any], listedAs label: String = "loopworker::next") {
         let iid = issue["iid"] as! Int, pid = issue["project_id"] as! Int
         gitlab.on("GET", "/api/v4/projects/\(pid)/issues/\(iid)", json: issue)
         listed([issue], as: label)
     }
 
-    func listed(_ issues: [[String: Any]], as label: String = "loopworker:next") {
+    func listed(_ issues: [[String: Any]], as label: String = "loopworker::next") {
         gitlab.on("GET", "/api/v4/issues", query: ["labels": label], json: issues)
     }
 

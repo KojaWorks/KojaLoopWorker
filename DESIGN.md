@@ -83,18 +83,18 @@ Every backlog maps its own fields onto six states:
 
 | State | Meaning | GitLab (labels mode) | Patch |
 | --- | --- | --- | --- |
-| `ready` | Trusted and waiting to be claimed. | open, assigned to me, `loopworker:next`, status To do | Backlog, unassigned |
-| `working` | Claimed; a worker should be running. | `loopworker:working`, status In progress | In progress |
-| `verifying` | The review request exists; the Manager waits for its CI. No slot is held. | `loopworker:ci`, status In progress | Verifying |
-| `review` | Finished; a review request exists. | `loopworker:review`, status In review | In review |
-| `stuck` | The worker needs a human. | `loopworker:stuck`, status To do, still assigned to me | Needs refinement |
-| `other` | Anything else. Never claimed, never reaped on its own. | closed, or no single `loopworker:*` label | |
+| `ready` | Trusted and waiting to be claimed. | open, assigned to me, `loopworker::next`, status To do | Backlog, unassigned |
+| `working` | Claimed; a worker should be running. | `loopworker::working`, status In progress | In progress |
+| `verifying` | The review request exists; the Manager waits for its CI. No slot is held. | `loopworker::ci`, status In progress | Verifying |
+| `review` | Finished; a review request exists. | `loopworker::review`, status In review | In review |
+| `stuck` | The worker needs a human. | `loopworker::stuck`, status To do, still assigned to me | Needs refinement |
+| `other` | Anything else. Never claimed, never reaped on its own. | closed, or no single `loopworker::*` label | |
 
 A card that a human closes, or moves to `other` in any way, while a worker runs is abandoned:
 the worker is reaped and nothing is written back.
 
 GitLab can express status either as the native work-item status field or as labels; the
-adapter supports both (`status_mode` in the host config). The `loopworker:*` labels always
+adapter supports both (`status_mode` in the host config). The `loopworker::*` labels always
 carry the Manager's own state, so the Manager never depends on how a team uses its board.
 
 ### Trust
@@ -103,11 +103,11 @@ A backlog only reports a card as `ready` if its own identity (the token's user) 
 For GitLab that means all of these hold:
 
 - the issue is assigned to me, and the system note that assigned me was written by me;
-- the most recent `loopworker:next` label event was added by me;
+- the most recent `loopworker::next` label event was added by me;
 - the issue's project is inside the configured allowlist.
 
 The time of that label event is the card's trust cutoff. When the Manager itself re-adds
-`loopworker:next` to release a card, the cutoff stays at the human's original label event (the
+`loopworker::next` to release a card, the cutoff stays at the human's original label event (the
 release note records it), so a retry never trusts content that arrived while the card was
 `working`.
 

@@ -42,7 +42,7 @@ import Testing
             Fixture.note(5, "<!-- loopworker -->\n\nLoopWorker is stuck on this card:\n\n<!-- loopworker:cutoff=2099-01-01T00:00:00Z -->", at: 30),
         ])
         let events: [GLLabelEvent] = try decode([Fixture.labelEvent(1, at: 2), Fixture.labelEvent(2, at: 31)])
-        #expect(Trust.check(issue: issue, me: me, nextLabel: "loopworker:next", notes: notes, events: events) == .trusted(cutoff: Fixture.date(31)))
+        #expect(Trust.check(issue: issue, me: me, nextLabel: "loopworker::next", notes: notes, events: events) == .trusted(cutoff: Fixture.date(31)))
     }
 
     @Test func aHumanReAddingTheLabelLongAfterAReleaseMovesTheCutoff() throws {
@@ -52,18 +52,18 @@ import Testing
             Fixture.note(5, "<!-- loopworker -->\n<!-- loopworker:cutoff=\(Fixture.t(2)) -->\n\nreleased", at: 30),
         ])
         let events: [GLLabelEvent] = try decode([Fixture.labelEvent(1, at: 2), Fixture.labelEvent(2, at: 30), Fixture.labelEvent(3, at: 90)])
-        #expect(Trust.check(issue: issue, me: me, nextLabel: "loopworker:next", notes: notes, events: events) == .trusted(cutoff: Fixture.date(90)))
+        #expect(Trust.check(issue: issue, me: me, nextLabel: "loopworker::next", notes: notes, events: events) == .trusted(cutoff: Fixture.date(90)))
     }
 
     @Test func anIssueCreatedByMeWithTheLabelAndAssigneeIsTrustedFromCreation() throws {
         let issue: GLIssue = try decode(Fixture.issue(created: 5))
-        #expect(Trust.check(issue: issue, me: me, nextLabel: "loopworker:next", notes: [], events: []) == .trusted(cutoff: Fixture.date(5)))
+        #expect(Trust.check(issue: issue, me: me, nextLabel: "loopworker::next", notes: [], events: []) == .trusted(cutoff: Fixture.date(5)))
     }
 
     @Test func anIssueCreatedBySomeoneElseAlreadyAssignedToMeIsNotTrusted() throws {
         let issue: GLIssue = try decode(Fixture.issue(author: Fixture.mallory))
         let events: [GLLabelEvent] = try decode([Fixture.labelEvent(1, at: 2)])
-        guard case .untrusted(let reason) = Trust.check(issue: issue, me: me, nextLabel: "loopworker:next", notes: [], events: events) else {
+        guard case .untrusted(let reason) = Trust.check(issue: issue, me: me, nextLabel: "loopworker::next", notes: [], events: events) else {
             Issue.record("expected untrusted"); return
         }
         #expect(reason.contains("@mallory created it"))
