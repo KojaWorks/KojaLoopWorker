@@ -122,13 +122,19 @@ extension Manager {
             return
         }
 
-        let claimed: Bool
+        var claimed: Bool
         do { claimed = try await deps.backlog.claim(card) }
         catch {
-            log.error("\(label(spec)): claiming \(card.ref) failed: \(error); the stranded-card sweep releases it if the claim landed")
-            try? fm.removeItem(at: cardRecordFile(spec))
-            free(ref)
-            return
+            // A lost response may hide a claim that landed; the card then reads as working.
+            if let current = try? await deps.backlog.card(card.ref), current.state == .working {
+                log.warning("\(label(spec)): claiming \(card.ref) reported \(error), but the card is working now; keeping it")
+                claimed = true
+            } else {
+                log.error("\(label(spec)): claiming \(card.ref) failed: \(error); the stranded-card sweep releases it if the claim landed")
+                try? fm.removeItem(at: cardRecordFile(spec))
+                free(ref)
+                return
+            }
         }
         guard claimed else {
             log.info("\(label(spec)): \(card.ref) was no longer ready; skipping it")

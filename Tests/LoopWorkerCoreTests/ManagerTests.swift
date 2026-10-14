@@ -86,6 +86,25 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(!FileManager.default.fileExists(atPath: h.stateDir().appending(path: "card.json").path))
     }
 
+    @Test func aClaimWhoseResponseWasLostButLandedIsKept() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        h.addCard(1)
+        h.backlog.state { $0.claimThrows = true }
+        try await h.boot()
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 1)
+    }
+
+    @Test func aClaimThatFailedWithoutLandingSkipsTheCard() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        h.addCard(1)
+        h.backlog.state { $0.claimThrows = false }
+        try await h.boot()
+        await h.cycle()
+        #expect(h.tmux.spawned.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: h.stateDir().appending(path: "card.json").path))
+    }
+
     @Test func acquireFailureBreaksTheSlotAndReleasesTheCard() async throws {  // B36, B75
         let h = try ManagerHarness(projects: oneColdProject)
         h.addCard(1)
