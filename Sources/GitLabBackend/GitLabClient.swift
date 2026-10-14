@@ -78,6 +78,12 @@ actor GitLabClient {
         return try decode(data, "GET", path)
     }
 
+    /// A plain-text body, such as a job trace; nil on 404.
+    func textIfFound(_ path: String) async throws -> String? {
+        let (data, response) = try await perform("GET", path, allowNotFound: true)
+        return response.statusCode == 404 ? nil : String(decoding: data, as: UTF8.self)
+    }
+
     /// Every page of a list endpoint, 100 per page.
     func getAll<T: Decodable>(_ path: String, query: [(String, String)] = []) async throws -> [T] {
         var all: [T] = []

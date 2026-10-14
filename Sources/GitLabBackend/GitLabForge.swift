@@ -52,6 +52,39 @@ public struct GitLabForge: Forge {
         return url
     }
 
+    /// The newest pipeline for `commit`, whatever triggered it. `success`, `skipped` and
+    /// `manual` pass; failed jobs that may fail are left out of `failedJobs`.
+    public func pipeline(for project: ProjectSpec, commit: String) async throws -> PipelineStatus? {
+        let base = projectPath(project)
+        let pipelines: [GLPipeline] = try await client.get(base + "/pipelines", query: [
+            ("sha", commit), ("order_by", "id"), ("sort", "desc"), ("per_page", "1"),
+        ])
+        guard let p = pipelines.first else { return nil }
+        let url = URL(string: p.webUrl)
+        switch p.status {
+        case "success", "skipped", "manual":
+            return PipelineStatus(state: .passed, url: url)
+        case "canceled":
+            return PipelineStatus(state: .canceled, url: url)
+        case "failed":
+            let jobs: [GLJob] = try await client.getAll(base + "/pipelines/\(p.id)/jobs", query: [("scope[]", "failed")])
+            var failed: [CIJob] = []
+            for job in jobs where !job.allowFailure {
+                let trace = try await client.textIfFound(base + "/jobs/\(job.id)/trace") ?? "(GitLab has no log for this job)"
+                failed.append(CIJob(name: job.name, stage: job.stage, url: URL(string: job.webUrl),
+                                    logTail: CIJob.tail(Self.stripANSI(trace))))
+            }
+            return PipelineStatus(state: .failed, url: url, failedJobs: failed)
+        default:
+            return PipelineStatus(state: .running, url: url)
+        }
+    }
+
+    /// Removes terminal color and erase sequences, which GitLab traces are full of.
+    static func stripANSI(_ text: String) -> String {
+        text.replacing(/\x{1B}\[[0-9;?]*[A-Za-z]/, with: "")
+    }
+
     private func review(_ mr: GLMergeRequest, _ project: ProjectSpec) throws -> ReviewRequest {
         guard let url = URL(string: mr.webUrl) else {
             throw GitLabError("merge request \(project.path)!\(mr.iid) has an unusable web_url: \(mr.webUrl)")

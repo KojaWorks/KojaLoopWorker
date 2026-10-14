@@ -54,6 +54,21 @@ struct GLMergeRequest: Decodable, Sendable {
     var webUrl: String
 }
 
+struct GLPipeline: Decodable, Sendable {
+    var id: Int
+    /// `created`, `pending`, `running`, `success`, `failed`, `canceled`, `skipped`, `manual`, ...
+    var status: String
+    var webUrl: String
+}
+
+struct GLJob: Decodable, Sendable {
+    var id: Int
+    var name: String
+    var stage: String
+    var webUrl: String
+    var allowFailure: Bool
+}
+
 struct GLUpload: Decodable, Sendable {
     /// Relative to the project, e.g. `/uploads/<secret>/shot.png`.
     var url: String
