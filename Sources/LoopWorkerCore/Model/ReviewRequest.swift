@@ -70,12 +70,15 @@ public struct CIJob: Sendable, Equatable {
     public var url: URL?
     /// The last lines of the job's log, unredacted.
     public var logTail: String
+    /// The forge's id for `Forge.retryJobs`; nil when the forge can't re-run this job.
+    public var id: String?
 
-    public init(name: String, stage: String, url: URL?, logTail: String) {
+    public init(name: String, stage: String, url: URL?, logTail: String, id: String? = nil) {
         self.name = name
         self.stage = stage
         self.url = url
         self.logTail = logTail
+        self.id = id
     }
 
     /// How many log lines `logTail` holds at most.
@@ -85,4 +88,15 @@ public struct CIJob: Sendable, Equatable {
     public static func tail(_ log: String) -> String {
         log.split(separator: "\n", omittingEmptySubsequences: false).suffix(tailLines).joined(separator: "\n")
     }
+}
+
+/// How the job of the same name did on the base branch. Tells a failure that the change caused
+/// from one that the base branch already has.
+public enum CIJobBaseline: Sendable, Equatable {
+    /// The job passed on the base branch; the URL is that job's.
+    case passed(URL?)
+    /// The job failed on the base branch too; the URL is that job's.
+    case failed(URL?)
+    /// The base branch has no passed or failed job of that name, or it couldn't be read.
+    case unknown
 }

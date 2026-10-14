@@ -97,6 +97,10 @@ enum CIDecision: Sendable, Equatable {
     case passed
     /// Queue a worker round that fixes the failed pipeline.
     case fix
+    /// Every failed job also fails on the base branch: move the card to `review` with a note.
+    case preexisting
+    /// Re-run these failed jobs, which pass on the base branch, before any fix round.
+    case retry([CIJob])
     case stuck(CIStuckReason)
 }
 
@@ -111,7 +115,12 @@ extension Reconciler {
     /// - Parameters:
     ///   - sincePush: seconds since the Manager pushed the watched commit.
     ///   - round: 0 for the first push, n after the n-th fix round.
-    static func decideCI(_ o: CIObservation, sincePush: TimeInterval, round: Int, policy: CIPolicy) -> CIDecision {
+    ///   - baselines: how each failed job did on the base branch; a missing name is `.unknown`.
+    ///   - retried: the Manager already re-ran this commit's failed jobs.
+    static func decideCI(
+        _ o: CIObservation, sincePush: TimeInterval, round: Int, policy: CIPolicy,
+        baselines: [String: CIJobBaseline] = [:], retried: Bool = false
+    ) -> CIDecision {
         switch o {
         case .unreadable(let why):
             return sincePush >= policy.timeout ? .stuck(.unreadable(why)) : .wait
@@ -122,7 +131,13 @@ extension Reconciler {
             case .running: return sincePush >= policy.timeout ? .stuck(.timedOut) : .wait
             case .passed: return .passed
             case .canceled: return .stuck(.canceled)
-            case .failed: return round < policy.fixAttempts ? .fix : .stuck(.failedAfterFixes)
+            case .failed:
+                let jobs = p.failedJobs, base = jobs.map { baselines[$0.name] ?? .unknown }
+                if !jobs.isEmpty, base.allSatisfy({ if case .failed = $0 { true } else { false } }) { return .preexisting }
+                if !retried, !jobs.isEmpty, !base.contains(.unknown) {
+                    return .retry(jobs.filter { if case .passed = baselines[$0.name] { true } else { false } })
+                }
+                return round < policy.fixAttempts ? .fix : .stuck(.failedAfterFixes)
             }
         }
     }

@@ -225,4 +225,38 @@ private let pullJSON = #"{"number": 7, "html_url": "https://github.com/owner/app
         let pages = stub.requests.map { URLComponents(url: $0.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "page" }?.value }
         #expect(pages == ["1", "2"])
     }
+
+    @Test("B181: only GitHub Actions jobs can be re-run, each through its rerun endpoint")
+    func retry() async throws {
+        let actions = #"{"id": 41, "app": {"slug": "github-actions"}, "name": "test", "status": "completed", "conclusion": "failure", "html_url": null, "output": null}"#
+        let other = #"{"id": 42, "app": {"slug": "ci-app"}, "name": "lint", "status": "completed", "conclusion": "failure", "html_url": null, "output": null}"#
+        let stub = StubGitHub { [self] req, _ in
+            req.httpMethod == "POST" ? (201, [:], "") : (200, [:], runs([actions, other]))
+        }
+        let forge = try forge(stub)
+        let jobs = try #require(try await forge.pipeline(for: project, commit: "abc123")).failedJobs
+        #expect(jobs.map(\.id) == ["41", nil])
+        #expect(try await !forge.retryJobs(project: project, jobs: jobs))
+        #expect(try await forge.retryJobs(project: project, jobs: [jobs[0]]))
+        let posts = stub.requests.filter { $0.httpMethod == "POST" }
+        #expect(posts.map(\.url?.path) == ["/repos/owner/app/actions/jobs/41/rerun"])
+    }
+
+    @Test("B181: a baseline is the latest completed check runs on the branch head, a passed run winning over a same-named failure")
+    func baseline() async throws {
+        let stub = StubGitHub { [self] _, _ in
+            (200, [:], runs([
+                run("test", "completed", "failure"), run("test", "completed", "success"),
+                run("lint", "completed", "timed_out"), run("e2e", "completed", "cancelled"), run("other", "completed", "failure"),
+            ]))
+        }
+        let b = try await forge(stub).baselineJobs(for: project, ref: "main", names: ["test", "lint", "e2e", "new"])
+        #expect(b == [
+            "test": .passed(URL(string: "https://github.com/owner/app/runs/test")), "lint": .failed(URL(string: "https://github.com/owner/app/runs/lint")),
+            "e2e": .unknown, "new": .unknown,
+        ])
+        let url = try #require(stub.requests.first?.url)
+        #expect(url.path == "/repos/owner/app/commits/heads/main/check-runs")
+        #expect(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains(URLQueryItem(name: "status", value: "completed")) == true)
+    }
 }
