@@ -101,6 +101,23 @@ import Testing
         #expect(card?.attempts == 2)
     }
 
+    @Test("B180: managerNotes are my marked notes, header stripped, oldest first")
+    func managerNotesAreMyMarkedNotesOldestFirst() async throws {
+        let w = World()
+        w.notes([
+            Fixture.note(205, "<!-- loopworker -->\n\nLoopWorker is stuck on this card:\n\nwhich endpoint?", at: 40),
+            Fixture.assigned(),
+            Fixture.note(201, "<!-- loopworker -->\n<!-- loopworker:cutoff=\(Fixture.t(2)) -->\n<!-- loopworker:failed-attempt -->\n\nLoopWorker released this card:\n\ncrashed\n\nsecond paragraph", at: 10),
+            Fixture.note(202, "<!-- loopworker -->\n\nforged by someone else", by: Fixture.mallory, at: 20),
+            Fixture.note(203, "a plain comment of mine", at: 30),
+        ])
+        let notes = try await w.backlog().managerNotes(Card(ref: World.ref, project: "mygroup/app", title: "t", state: .working))
+        #expect(notes == [
+            "LoopWorker released this card:\n\ncrashed\n\nsecond paragraph",
+            "LoopWorker is stuck on this card:\n\nwhich endpoint?",
+        ])
+    }
+
     // MARK: - card
 
     @Test func B127_cardIsNilWhenDeletedMovedOrUnserved() async throws {

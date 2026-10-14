@@ -140,7 +140,11 @@ that starts with `/` is escaped, so `/merge` or `/label` from a worker is shown,
    only the project's declared servers (`--strict-mcp-config`). The launch script starts from
    `env -i` and adds back only `HOME`, `PATH`, `TERM`, `LANG`, `TMPDIR` and the variables in the
    slot's `worker.env`, so no backlog or forge token in the Manager's environment, or in the
-   tmux server's, reaches the worker.
+   tmux server's, reaches the worker. When the card was worked on before, the brief gets a
+   "Previous attempt" section: the last outcome that a slot of the project kept for this card
+   and the Manager's three latest notes on it (`managerNotes`), fenced and labelled as
+   LoopWorker's own output rather than content that the owner vouched for. The snapshot still
+   leaves those notes out.
 4. **Work.** The worker implements, runs `verify.sh`, reviews its own diff with fresh-context
    subagents, optionally writes a review guide, commits, and writes the outcome:
 
@@ -285,7 +289,8 @@ $LOOPWORKER_HOME/
   state/tmux                  the Manager's own tmux server socket
   state/ci/<card id>.json     CI watch record of a verifying card (the id percent-encoded)
   state/pushes.json           push ledger: the branch and commit last pushed per card id, the push lease
-  slots/<key>/<n>/            brief, snapshot, launch script, outcome, MCP config, ci.md
+  slots/<key>/<n>/            brief, snapshot, launch script, outcome, MCP config, ci.md;
+                              last-outcome.json: the last finished outcome and its card id
 <clones_dir>/<key>/           the clone; its working tree tracks origin/<base>
 <clones_dir>/<key>.slots/<n>/ slot worktrees
 ```

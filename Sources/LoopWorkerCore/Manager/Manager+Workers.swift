@@ -30,6 +30,31 @@ struct CardRecord: Codable, Equatable {
     }
 }
 
+/// `last-outcome.json` in a slot's state directory: the outcome of the slot's last finished
+/// card, which the card's next attempt gets as background.
+struct LastOutcome: Codable, Equatable {
+    static let fileName = "last-outcome.json"
+    /// `CardRef.id`.
+    var card: String
+    var finishedAt: Date
+    /// The outcome file as the worker wrote it.
+    var outcome: String
+
+    static func read(_ file: URL) -> LastOutcome? {
+        guard let data = try? Data(contentsOf: file) else { return nil }
+        let d = JSONDecoder()
+        d.dateDecodingStrategy = .iso8601
+        return try? d.decode(LastOutcome.self, from: data)
+    }
+
+    func write(_ file: URL) throws {
+        let e = JSONEncoder()
+        e.dateEncodingStrategy = .iso8601
+        e.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try e.encode(self).write(to: file, options: .atomic)
+    }
+}
+
 /// The last commit the Manager pushed for a card, in `state/pushes.json` keyed by card id. It
 /// outlives the slot's `card.json`, so a card claimed again leases against its own last push.
 struct PushRecord: Codable, Equatable {
@@ -265,7 +290,7 @@ extension Manager {
         }
         let brief = WorkerBrief(card: card, project: spec.project, slot: spec, baseBranch: base, branch: branch,
                                 snapshotFile: snapshotFile, excluded: snapshot.excluded, contract: contract, ciFix: ciFix,
-                                resuming: resuming).render()
+                                resuming: resuming, previousAttempt: await previousAttempt(spec, card: card)).render()
 
         var env: [(name: String, value: String)] = []
         for name in ["CLAUDE_CODE_OAUTH_TOKEN"] + spec.project.workerEnv where !env.contains(where: { $0.name == name }) {
@@ -304,6 +329,21 @@ extension Manager {
         } catch {
             throw StepError(step: "writing the worker's files in \(dir.path)", error: error)
         }
+    }
+
+    /// The newest outcome that any of the project's slots kept for this card, and the
+    /// Manager's notes on it; nil when there is neither. A failed notes read is logged and
+    /// leaves the notes out: they are background, not worth failing the start for.
+    func previousAttempt(_ spec: SlotSpec, card: Card) async -> WorkerBrief.PreviousAttempt? {
+        var notes: [String] = []
+        do { notes = try await deps.backlog.managerNotes(card) }
+        catch { log.warning("\(label(spec)): can't read LoopWorker's earlier notes on \(card.ref): \(error); the worker starts without them") }
+        let slotDirs = (try? FileManager.default.contentsOfDirectory(at: spec.stateDir.deletingLastPathComponent(), includingPropertiesForKeys: nil)) ?? []
+        let last = slotDirs.compactMap { LastOutcome.read($0.appending(path: LastOutcome.fileName)) }
+            .filter { $0.card == card.ref.id }
+            .max { $0.finishedAt < $1.finishedAt }
+        let previous = WorkerBrief.PreviousAttempt(outcome: last.map { Outcome.parse(Data($0.outcome.utf8)) }, notes: notes, redact: deps.redact)
+        return previous.outcome == nil && previous.notes.isEmpty ? nil : previous
     }
 
     /// A start failed after the claim: release the card (not counted against it: the host
@@ -497,19 +537,19 @@ extension Manager {
     }
 
     /// Recycles the slot's stack, clears its card files and frees it (or retires it).
+    /// `keepOutcome` saves the outcome as `last-outcome.json`, tagged with the card.
     func recycle(_ ref: SlotRef, keepOutcome: Bool) async {
         guard let s = slot(ref), let p = projects[ref.key] else { return }
         let contract = p.contract ?? ProjectContract(directory: ProjectContract.directory(for: p.spec, clone: p.clone))
         await deps.lifecycle.recycle(s.spec, contract: contract)
         let fm = FileManager.default
         let outcome = s.spec.outcomeFile
-        if keepOutcome {
-            let last = s.spec.stateDir.appending(path: "last-outcome.json")
-            try? fm.removeItem(at: last)
-            try? fm.moveItem(at: outcome, to: last)
-        } else {
-            try? fm.removeItem(at: outcome)
+        if keepOutcome, let card = s.card, let data = try? Data(contentsOf: outcome) {
+            let last = s.spec.stateDir.appending(path: LastOutcome.fileName)
+            do { try LastOutcome(card: card.ref.id, finishedAt: clock.now(), outcome: String(decoding: data, as: UTF8.self)).write(last) }
+            catch { log.warning("\(label(s.spec)): can't write \(last.path): \(error); \(card.ref)'s next attempt won't see this outcome") }
         }
+        try? fm.removeItem(at: outcome)
         try? fm.removeItem(at: cardRecordFile(s.spec))
         free(ref)
     }

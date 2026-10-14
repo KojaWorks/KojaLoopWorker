@@ -193,6 +193,21 @@ public actor GitLabBacklog: Backlog {
         }
         """
 
+    /// Notes by the token's user that start with the Manager marker, header stripped, oldest first.
+    public func managerNotes(_ card: Card) async throws -> [String] {
+        guard let read = try await read(card.ref) else { return [] }
+        let me = try await client.me()
+        return read.notes
+            .filter { $0.author.id == me.id && !$0.system }
+            .sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
+            .compactMap { note in
+                let header = Trust.managerHeader(note.body)
+                guard !header.isEmpty else { return nil }
+                return note.body.split(separator: "\n", omittingEmptySubsequences: false)
+                    .dropFirst(header.count + 1).joined(separator: "\n")
+            }
+    }
+
     // MARK: - Writes
 
     public func claim(_ card: Card) async throws -> Bool {

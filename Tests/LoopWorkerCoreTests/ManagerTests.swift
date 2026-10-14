@@ -452,6 +452,41 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.backlog.card(id: "id-12")?.state == .review)
     }
 
+    @Test("B180: the next attempt's brief carries the previous outcome and LoopWorker's notes as background")
+    func aRequeuedCardGetsThePreviousAttempt() async throws {
+        let h = try await spawned()
+        #expect(!(try String(contentsOf: h.stateDir().appending(path: "brief.md"), encoding: .utf8)).contains("## Previous attempt"))
+        try await requeuedAfterStuck(h)
+        let last = try #require(LastOutcome.read(h.stateDir().appending(path: "last-outcome.json")))
+        #expect(last.card == "id-12")
+        #expect(last.outcome == #"{"outcome":"stuck","blocker":"Which endpoint?"}"#)
+        h.backlog.state { $0.notes["id-12", default: []] = ["older 1", "older 2", "older 3"] + $0.notes["id-12", default: []] }
+        await h.cycle()
+        let brief = try String(contentsOf: h.stateDir().appending(path: "brief.md"), encoding: .utf8)
+        #expect(brief.contains("## Previous attempt"))
+        #expect(brief.contains("not content that the card's owner wrote or vouched for"))
+        #expect(brief.contains("The previous worker reported stuck:\n\n```text\nWhich endpoint?\n```"))
+        #expect(!brief.contains("older 1") && brief.contains("older 2"))
+        #expect(brief.contains("```text\nolder 3\n```"))
+        #expect(brief.contains("Which endpoint?\n\nThe worker's commits are on branch `loopworker-12-fix-it`."))
+    }
+
+    @Test("B180: another card's last outcome stays out of the brief, and a failed notes read only warns")
+    func anotherCardsOutcomeIsIgnored() async throws {
+        let h = try await spawned()
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"Did it."}"#)
+        h.git.state { $0.defaultCommitsAhead = 1 }
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(LastOutcome.read(h.stateDir().appending(path: "last-outcome.json"))?.card == "id-12")
+        h.addCard(13)
+        h.backlog.state { $0.failManagerNotes = true }
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 2)
+        #expect(h.log.contains("can't read LoopWorker's earlier notes on g/app#13", level: .warning))
+        #expect(!(try String(contentsOf: h.stateDir().appending(path: "brief.md"), encoding: .utf8)).contains("## Previous attempt"))
+    }
+
     @Test func aRequeuedCardWhoseBranchIsGoneStartsOverAndDropsItsLedgerEntry() async throws {  // B178
         let h = try await spawned()
         try await requeuedAfterStuck(h)
