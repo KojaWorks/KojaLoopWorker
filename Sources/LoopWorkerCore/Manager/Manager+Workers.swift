@@ -67,7 +67,7 @@ extension Manager {
 
         // A queued fix round finishes a card already in flight, so it goes before new claims.
         for c in candidates {
-            guard let id = queuedFix(for: c.key), let slot = projects[c.key]?.slots.first(where: { $0.id == c.slot }), isFree(slot) else { continue }
+            guard let id = queuedFix(for: c.key, at: now), let slot = projects[c.key]?.slots.first(where: { $0.id == c.slot }), isFree(slot) else { continue }
             startFixRound(id, on: SlotRef(key: c.key, id: c.slot))
             return
         }
@@ -133,8 +133,8 @@ extension Manager {
                            branch: branch, base: base, claimedAt: clock.now(),
                            ciRound: fix.map { $0.record.round + 1 }, ciCommit: fix?.record.sha).write(cardRecordFile(spec))
         } catch {
-            log.error("\(label(spec)): can't write \(dir.path): \(error); not claiming \(card.ref)")
-            if fix != nil { ciWatches[card.ref.id]?.fixStarting = false }
+            if fix != nil { fixStartFailed(card.ref.id, "can't write \(dir.path): \(error)") }
+            else { log.error("\(label(spec)): can't write \(dir.path): \(error); not claiming \(card.ref)") }
             free(ref)
             return
         }

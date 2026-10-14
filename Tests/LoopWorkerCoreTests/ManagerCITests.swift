@@ -284,6 +284,32 @@ let reviewURL = URL(string: "https://forge.example/g/app/-/merge_requests/1")!
         #expect(h.log.contains("says g/gone#9 of g/gone waits for CI, but that project is no longer in config.toml", level: .error))
     }
 
+    @Test("B168: a fix round that fails to start backs off, lets claims through, and is stuck after 3 failures")
+    func fixStartBacksOff() async throws {
+        let h = try await queuedFix()
+        h.backlog.state { $0.failResumeFix = true }
+        try FileManager.default.removeItem(at: h.home.appending(path: "state/PAUSED"))
+        let resumes = { h.backlog.writes.filter { $0 == .resumeFix("id-12") }.count }
+        await h.cycle()
+        #expect(resumes() == 1)
+        #expect(h.log.contains("g/app#12: CI fix round 1 failed to start (1 in a row): moving g/app#12 back to working failed: resumeFix g/app#12 failed; retrying in 30 s", level: .error))
+        h.addCard(13)
+        await h.cycle()
+        #expect(resumes() == 1)
+        #expect(h.backlog.card(id: "id-13")?.state == .working)
+
+        h.backlog.setState("id-13", .review)
+        await h.cycle()  // card 13's worker is abandoned and its slot freed
+        h.clock.advance(31)
+        await h.cycle()
+        #expect(resumes() == 2)
+        h.clock.advance(61)
+        await h.cycle()
+        #expect(resumes() == 3)
+        await h.cycle()
+        #expect(stuckBlocker(h)?.contains("Its fix round failed to start 3 times in a row; the last error: moving g/app#12 back to working failed") == true)
+    }
+
     @Test("B168: a fix round for a card a human moved out of verifying is dropped")
     func resumeFixFalseDropsTheRound() async throws {
         let h = try await verifying()

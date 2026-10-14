@@ -26,6 +26,7 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
         var failVerifying = false
         /// `resumeFix` returns this instead of checking the card.
         var resumeFixOverride: Bool?
+        var failResumeFix = false
         /// The note each `markReview` got, by card id.
         var reviewNotes: [String: String] = [:]
         var claimOverride: Bool?
@@ -101,8 +102,9 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
     }
 
     func resumeFix(_ card: Card) async throws -> Bool {
-        state {
+        try state {
             $0.writes.append(.resumeFix(card.ref.id))
+            if $0.failResumeFix { throw FakeError("resumeFix \(card.ref) failed") }
             if let o = $0.resumeFixOverride { return o }
             guard $0.cards[card.ref.id]?.state == .verifying else { return false }
             $0.cards[card.ref.id]?.state = .working

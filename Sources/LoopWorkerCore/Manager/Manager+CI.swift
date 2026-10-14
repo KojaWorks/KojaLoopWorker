@@ -65,6 +65,10 @@ extension Manager {
         var fixQueuedAt: Date?
         /// A slot is starting the fix round.
         var fixStarting = false
+        /// Consecutive fix-round starts that failed, the last one's error, and when to retry.
+        var fixFailures = 0
+        var fixError: String?
+        var fixRetryAt: Date?
     }
 
     // MARK: Watching
@@ -111,6 +115,9 @@ extension Manager {
         let failed = "CI failed on `\(w.record.sha.prefix(12))`: \((w.fix?.url ?? w.record.review.url).absoluteString)."
         guard let p = projects[ProjectSpec(path: w.record.project).key], !p.removing else {
             return "\(failed) \(w.record.project) is no longer served by this Manager, so no fix round can run."
+        }
+        if w.fixFailures >= Self.fixStartAttempts {
+            return "\(failed) Its fix round failed to start \(w.fixFailures) times in a row; the last error: \(w.fixError ?? "unknown")"
         }
         let timeout = (p.contract ?? ProjectContract(directory: URL(filePath: "/"))).ci.timeoutMinutes
         guard let queued = w.fixQueuedAt, now.timeIntervalSince(queued) >= timeout * 60 else { return nil }
@@ -272,10 +279,13 @@ extension Manager {
 
     // MARK: Fix rounds
 
-    /// The oldest queued fix round for project `key`, if any.
-    func queuedFix(for key: String) -> String? {
+    static let fixStartAttempts = 3
+
+    /// The oldest queued fix round for project `key` that may start at `now`, if any.
+    func queuedFix(for key: String, at now: Date) -> String? {
         ciWatches.values
-            .filter { $0.fix != nil && !$0.fixStarting && ProjectSpec(path: $0.record.project).key == key }
+            .filter { $0.fix != nil && !$0.fixStarting && $0.fixFailures < Self.fixStartAttempts && ProjectSpec(path: $0.record.project).key == key }
+            .filter { $0.fixRetryAt.map { $0 <= now } ?? true }
             .min { $0.record.pushedAt < $1.record.pushedAt }?.record.card.id
     }
 
@@ -314,8 +324,7 @@ extension Manager {
                 log.warning("\(label(spec)): resuming \(card.ref) reported \(error), but the card is working now; keeping it")
                 resumed = true
             } else {
-                log.error("\(label(spec)): moving \(card.ref) back to working for a CI fix round failed: \(error); retrying at the next fill")
-                ciWatches[id]?.fixStarting = false
+                fixStartFailed(id, "moving \(card.ref) back to working failed: \(error)")
                 return false
             }
         }
@@ -326,6 +335,20 @@ extension Manager {
         }
         unwatch(id)
         return true
+    }
+
+    /// Backs off a fix round that failed to start: 30 s doubling to 10 min. The third failure
+    /// in a row makes the next `pollCI` mark the card stuck.
+    func fixStartFailed(_ id: String, _ why: String) {
+        guard var w = ciWatches[id] else { return }
+        w.fixStarting = false
+        w.fixFailures += 1
+        w.fixError = why
+        let delay = min(30 * pow(2, Double(w.fixFailures - 1)), 600)
+        w.fixRetryAt = clock.now().addingTimeInterval(delay)
+        ciWatches[id] = w
+        let next = w.fixFailures >= Self.fixStartAttempts ? "marking it stuck" : "retrying in \(Int(delay)) s"
+        log.error("\(w.record.card): CI fix round \(w.record.round + 1) failed to start (\(w.fixFailures) in a row): \(why); \(next)")
     }
 
     /// `ci.md` for a fix round: the failed jobs with their redacted log tails, framed as data.
