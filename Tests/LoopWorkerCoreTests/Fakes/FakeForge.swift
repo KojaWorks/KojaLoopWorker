@@ -19,6 +19,15 @@ final class FakeForge: Forge, @unchecked Sendable {
         /// Every commit `pipeline` was asked about.
         var pipelineCalls: [String] = []
         var failPipeline = false
+        /// How each job name did on the base branch; a missing name is `.unknown`.
+        var baselines: [String: CIJobBaseline] = [:]
+        /// `<ref>: <names>` per `baselineJobs` call.
+        var baselineCalls: [String] = []
+        var failBaseline = false
+        /// The job ids of each `retryJobs` call.
+        var retries: [[String]] = []
+        var retrySupported = true
+        var failRetry = false
     }
 
     let state = Guarded(State())
@@ -47,6 +56,23 @@ final class FakeForge: Forge, @unchecked Sendable {
             $0.pipelineCalls.append(commit)
             if $0.failPipeline { throw FakeError("pipeline read for \(commit) failed") }
             return $0.pipelines[commit]
+        }
+    }
+
+    func baselineJobs(for project: ProjectSpec, ref: String, names: [String]) async throws -> [String: CIJobBaseline] {
+        try state {
+            $0.baselineCalls.append("\(ref): \(names.joined(separator: ", "))")
+            if $0.failBaseline { throw FakeError("baseline read for \(ref) failed") }
+            let known = $0.baselines
+            return Dictionary(names.map { ($0, known[$0] ?? .unknown) }, uniquingKeysWith: { a, _ in a })
+        }
+    }
+
+    func retryJobs(project: ProjectSpec, jobs: [CIJob]) async throws -> Bool {
+        try state {
+            $0.retries.append(jobs.map { $0.id ?? "nil" })
+            if $0.failRetry { throw FakeError("retry failed") }
+            return $0.retrySupported
         }
     }
 

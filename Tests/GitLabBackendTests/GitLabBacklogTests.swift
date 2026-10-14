@@ -101,7 +101,7 @@ import Testing
         #expect(card?.attempts == 2)
     }
 
-    @Test("B180: managerNotes are my marked notes, header stripped, oldest first")
+    @Test("B184: managerNotes are my marked notes, header stripped, oldest first")
     func managerNotesAreMyMarkedNotesOldestFirst() async throws {
         let w = World()
         w.notes([

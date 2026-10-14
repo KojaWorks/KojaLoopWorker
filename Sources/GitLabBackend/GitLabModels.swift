@@ -71,6 +71,8 @@ struct GLJob: Decodable, Sendable {
     var stage: String
     var webUrl: String
     var allowFailure: Bool
+    /// `success`, `failed`, `canceled`, `skipped`, `manual`, ...
+    var status: String?
 }
 
 struct GLUpload: Decodable, Sendable {

@@ -317,7 +317,7 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(try h.status().projects[0].slots[0].state == "idle")
     }
 
-    @Test func guideOutsideTheStateDirectoryIsNotAttached() async throws {  // B89, B181
+    @Test func guideOutsideTheStateDirectoryIsNotAttached() async throws {  // B89, B185
         let h = try await spawned()
         try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b","guide":"../../../config.toml"}"#)
         h.tmux.set("lw_g--app_0", alive: false)
@@ -330,7 +330,7 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.backlog.writes.last == .markReview("id-12", url: URL(string: "https://forge.example/g/app/-/merge_requests/1")!))
     }
 
-    @Test("B181: attachment references become URLs; refused ones stay and are named under the body")
+    @Test("B185: attachment references become URLs; refused ones stay and are named under the body")
     func attachmentReferences() async throws {
         let h = try await spawned()
         try "png".write(to: h.stateDir().appending(path: "after.png"), atomically: true, encoding: .utf8)
@@ -344,7 +344,7 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.backlog.card(id: "id-12")?.state == .review)
     }
 
-    @Test("B181: a forge without attachments names each file under the body, the guide too")
+    @Test("B185: a forge without attachments names each file under the body, the guide too")
     func forgeWithoutAttachments() async throws {
         let h = try await spawned()
         h.forge.state { $0.supportsAttachments = false }
@@ -481,7 +481,7 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.backlog.card(id: "id-12")?.state == .review)
     }
 
-    @Test("B180: the next attempt's brief carries the previous outcome and LoopWorker's notes as background")
+    @Test("B184: the next attempt's brief carries the previous outcome and LoopWorker's notes as background")
     func aRequeuedCardGetsThePreviousAttempt() async throws {
         let h = try await spawned()
         #expect(!(try String(contentsOf: h.stateDir().appending(path: "brief.md"), encoding: .utf8)).contains("## Previous attempt"))
@@ -500,7 +500,7 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(brief.contains("Which endpoint?\n\nThe worker's commits are on branch `loopworker-12-fix-it`."))
     }
 
-    @Test("B180: another card's last outcome stays out of the brief, and a failed notes read only warns")
+    @Test("B184: another card's last outcome stays out of the brief, and a failed notes read only warns")
     func anotherCardsOutcomeIsIgnored() async throws {
         let h = try await spawned()
         try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"Did it."}"#)

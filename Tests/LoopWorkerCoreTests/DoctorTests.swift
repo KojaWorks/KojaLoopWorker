@@ -11,6 +11,8 @@ private final class DiagnosableForge: Forge, Diagnosable, @unchecked Sendable {
     func openReviewRequest(_ draft: ReviewRequestDraft) async throws -> ReviewRequest { fatalError("unused") }
     func attach(_ file: URL, to project: ProjectSpec) async throws -> URL? { nil }
     func pipeline(for project: ProjectSpec, commit: String) async throws -> PipelineStatus? { nil }
+    func baselineJobs(for project: ProjectSpec, ref: String, names: [String]) async throws -> [String: CIJobBaseline] { [:] }
+    func retryJobs(project: ProjectSpec, jobs: [CIJob]) async throws -> Bool { false }
     func diagnose() async -> [DoctorCheck] { [check] }
 }
 
@@ -141,7 +143,7 @@ private final class DiagnosableForge: Forge, Diagnosable, @unchecked Sendable {
         #expect(!Doctor.passed(checks))
     }
 
-    @Test("B179: a quarantined tool or loopworker binary fails with the xattr remedy, and claude isn't run")
+    @Test("B183: a quarantined tool or loopworker binary fails with the xattr remedy, and claude isn't run")
     func quarantinedBinariesFail() async throws {
         let real = home.appending(path: "Caskroom/claude")
         try FileManager.default.createDirectory(at: real.deletingLastPathComponent(), withIntermediateDirectories: true)

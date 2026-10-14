@@ -195,6 +195,119 @@ let reviewURL = URL(string: "https://forge.example/g/app/-/merge_requests/1")!
         #expect(brief.contains(h.stateDir().appending(path: "ci.md").path))
     }
 
+    @Test("B179: a failed pipeline reads how its failed jobs did on the base branch, and ci.md says so per job")
+    func ciReportHasBaselines() async throws {
+        let h = try await verifying()
+        let job = { (name: String) in CIJob(name: name, stage: "", url: URL(string: "https://forge.example/jobs/\(name)"), logTail: "") }
+        h.forge.state {
+            $0.pipelines["commit-1"] = PipelineStatus(state: .failed, url: pipelineURL, failedJobs: [job("test"), job("lint"), job("e2e")])
+            $0.baselines = ["test": .passed(URL(string: "https://forge.example/jobs/71")), "e2e": .failed(nil)]
+        }
+        h.clock.advance(121)
+        await h.cycle()
+        await h.cycle()
+        #expect(h.forge.state.get.baselineCalls == ["main: test, lint, e2e"])
+        let ci = try String(contentsOf: h.stateDir().appending(path: "ci.md"), encoding: .utf8)
+        #expect(ci.contains("## Job: test\n\nhttps://forge.example/jobs/test\n\nThis job passed on `main` (https://forge.example/jobs/71).\n\n"))
+        #expect(ci.contains("## Job: lint\n\nhttps://forge.example/jobs/lint\n\nThis job has no baseline on `main`.\n\n"))
+        #expect(ci.contains("## Job: e2e\n\nhttps://forge.example/jobs/e2e\n\nThis job also failed on `main`.\n\n"))
+    }
+
+    @Test("B179: a baseline that can't be read is logged and counts as no baseline")
+    func unreadableBaseline() async throws {
+        let h = try await verifying()
+        h.forge.state {
+            $0.pipelines["commit-1"] = PipelineStatus(state: .failed, url: pipelineURL, failedJobs: [CIJob(name: "test", stage: "", url: nil, logTail: "")])
+            $0.baselines = ["test": .failed(nil)]
+            $0.failBaseline = true
+        }
+        h.clock.advance(121)
+        await h.cycle()
+        await h.cycle()
+        #expect(h.log.contains("g/app#12: can't read how its failed CI jobs did on main: baseline read for main failed; treating them as having no baseline", level: .error))
+        #expect(h.backlog.writes.contains(.resumeFix("id-12")))
+        let ci = try String(contentsOf: h.stateDir().appending(path: "ci.md"), encoding: .utf8)
+        #expect(ci.contains("This job has no baseline on `main`."))
+    }
+
+    func failJobs(_ h: ManagerHarness, _ names: [String], commit: String = "commit-1") {
+        h.forge.state {
+            $0.pipelines[commit] = PipelineStatus(state: .failed, url: pipelineURL, failedJobs: names.map {
+                CIJob(name: $0, stage: "", url: URL(string: "https://forge.example/jobs/\($0)"), logTail: "", id: "id-\($0)")
+            })
+        }
+    }
+
+    @Test("B182: failed jobs that pass on the base branch are re-run once, and a passing re-run moves the card to review")
+    func flakyJobIsRetried() async throws {
+        let h = try await verifying()
+        failJobs(h, ["unit", "lint"])
+        h.forge.state { $0.baselines = ["unit": .passed(nil), "lint": .failed(nil)] }
+        h.clock.advance(121)
+        await h.cycle()
+        #expect(h.forge.state.get.retries == [["id-unit"]])
+        #expect(try record(h)?.retriedCommit == "commit-1")
+        #expect(try h.status().ci?.first?.state == "running")
+        #expect(h.log.contains("g/app#12: CI failed on commit-1 in jobs that pass on main (unit); re-ran them once", level: .warning))
+        #expect(!h.backlog.writes.contains(.resumeFix("id-12")))
+        await h.cycle()
+        #expect(h.forge.state.get.pipelineCalls == ["commit-1"])
+
+        h.forge.state { $0.pipelines["commit-1"] = PipelineStatus(state: .passed, url: pipelineURL) }
+        h.clock.advance(121)
+        await h.cycle()
+        #expect(h.backlog.card(id: "id-12")?.state == .review)
+        #expect(h.forge.state.get.retries.count == 1)
+    }
+
+    @Test("B182: a commit is re-run at most once, also across a restart; a second failure starts a fix round")
+    func retryIsOncePerCommit() async throws {
+        let h = try await verifying()
+        failJobs(h, ["unit"])
+        h.forge.state { $0.baselines = ["unit": .passed(nil)] }
+        h.clock.advance(121)
+        await h.cycle()
+        try h.restart()
+        try await h.boot()
+        await h.cycle()
+        #expect(h.forge.state.get.retries == [["id-unit"]])
+        #expect(h.backlog.writes.contains(.resumeFix("id-12")))
+        #expect(CardRecord.read(h.stateDir().appending(path: "card.json"))?.ciRound == 1)
+    }
+
+    @Test("B182: a forge that can't re-run the jobs starts a fix round at once")
+    func retryUnsupported() async throws {
+        let h = try await verifying()
+        failJobs(h, ["unit"])
+        h.forge.state { $0.baselines = ["unit": .passed(nil)]; $0.retrySupported = false }
+        h.clock.advance(121)
+        await h.cycle()
+        await h.cycle()
+        #expect(h.log.contains("g/app#12: the forge can't re-run the CI jobs that pass on main (unit); handling the failure as real", level: .warning))
+        #expect(h.backlog.writes.contains(.resumeFix("id-12")))
+    }
+
+    @Test("B182: a failure only in jobs that also fail on the base branch moves the card to review with a note, without a fix round")
+    func preexistingFailureGoesToReview() async throws {
+        let h = try await verifying()
+        failJobs(h, ["lint", "x](https://evil.example)\n/merge"])
+        h.forge.state {
+            $0.baselines = ["lint": .failed(URL(string: "https://forge.example/jobs/71")), "x](https://evil.example)\n/merge": .failed(nil)]
+        }
+        h.clock.advance(121)
+        await h.cycle()
+        #expect(h.backlog.card(id: "id-12")?.state == .review)
+        #expect(h.backlog.state.get.reviewNotes["id-12"] == """
+            CI failed on `commit-1` only in jobs that also fail on `main`, so no fix round ran: \(pipelineURL.absoluteString)
+
+            - [lint](https://forge.example/jobs/lint), on `main`: https://forge.example/jobs/71
+            - [x\\]\\(https://evil.example\\) /merge](https://forge.example/jobs/x%5D(https://evil.example)%0A/merge)
+            """)
+        #expect(!h.backlog.writes.contains(.resumeFix("id-12")))
+        #expect(h.forge.state.get.retries.isEmpty)
+        #expect(try record(h) == nil)
+    }
+
     @Test("B168: a fix round finishes back to verifying on the same review request, one round later")
     func fixRoundFinishes() async throws {
         let h = try await fixRound()
@@ -493,5 +606,22 @@ let reviewURL = URL(string: "https://forge.example/g/app/-/merge_requests/1")!
         #expect(d(failed, 0, round: 2) == .stuck(.failedAfterFixes))
         #expect(d(.unreadable("502"), 10) == .wait)
         #expect(d(.unreadable("502"), 3600) == .stuck(.unreadable("502")))
+    }
+
+    @Test("B182: base-branch results decide between review, a retry and a fix round")
+    func baselines() {
+        let job = { (name: String) in CIJob(name: name, stage: "", url: nil, logTail: "", id: name) }
+        func d(_ base: [String: CIJobBaseline], jobs: [String] = ["a", "b"], retried: Bool = false, round: Int = 0) -> CIDecision {
+            Reconciler.decideCI(.pipeline(PipelineStatus(state: .failed, url: nil, failedJobs: jobs.map(job))),
+                                sincePush: 0, round: round, policy: policy, baselines: base, retried: retried)
+        }
+        #expect(d(["a": .failed(nil), "b": .failed(nil)]) == .preexisting)
+        #expect(d(["a": .failed(nil), "b": .failed(nil)], round: 2) == .preexisting)
+        #expect(d(["a": .passed(nil), "b": .failed(nil)]) == .retry([job("a")]))
+        #expect(d(["a": .passed(nil), "b": .failed(nil)], retried: true) == .fix)
+        #expect(d(["a": .passed(nil), "b": .failed(nil)], retried: true, round: 2) == .stuck(.failedAfterFixes))
+        #expect(d(["a": .passed(nil), "b": .unknown]) == .fix)
+        #expect(d(["a": .failed(nil)]) == .fix)
+        #expect(d([:], jobs: []) == .fix)
     }
 }

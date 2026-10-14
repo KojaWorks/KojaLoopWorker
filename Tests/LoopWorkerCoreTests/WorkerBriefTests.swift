@@ -26,7 +26,7 @@ import Testing
         #expect(b.contains("/c/g--app.slots/0"))
         #expect(b.contains("$LOOPWORKER_OUTCOME"))
         #expect(!b.contains("storygrafter"))
-        #expect(b.contains("files into `/h/slots/g--app/0` (never into the worktree)"))  // B181
+        #expect(b.contains("files into `/h/slots/g--app/0` (never into the worktree)"))  // B185
         #expect(b.contains("`![after](attachment:after.png)`"))
     }
 
@@ -42,7 +42,7 @@ import Testing
         #expect(b.hasSuffix("## Project brief\n\nUse make.\n"))
     }
 
-    @Test("B180: a previous attempt is fenced background, capped to the 3 latest notes of 4000 characters")
+    @Test("B184: a previous attempt is fenced background, capped to the 3 latest notes of 4000 characters")
     func previousAttempt() {
         #expect(!brief(guide: false).contains("## Previous attempt"))
         let long = String(repeating: "x", count: 5000)

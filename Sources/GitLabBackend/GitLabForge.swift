@@ -90,7 +90,7 @@ public struct GitLabForge: Forge {
                     do { trace = try await client.textIfFound(base + "/jobs/\(job.id)/trace") ?? "(GitLab has no log for this job)" }
                     catch { trace = "(LoopWorker couldn't read this job's log: \(error))" }
                     jobs.append(CIJob(name: job.name, stage: job.stage, url: URL(string: job.webUrl),
-                                      logTail: CIJob.tail(Self.stripANSI(trace))))
+                                      logTail: CIJob.tail(Self.stripANSI(trace)), id: String(job.id)))
                 }
             }
             return PipelineStatus(state: .failed, url: URL(string: first.webUrl), failedJobs: jobs)
@@ -99,6 +99,41 @@ public struct GitLabForge: Forge {
             if let p = latest.first(where: { state($0) == s }) { return PipelineStatus(state: s, url: URL(string: p.webUrl)) }
         }
         return PipelineStatus(state: .passed, url: URL(string: latest[0].webUrl))
+    }
+
+    /// Reads the newest of the 20 latest pipelines on `ref` that succeeded or failed, child
+    /// pipelines left out, and maps each named job's latest attempt there: `success` passed,
+    /// `failed` failed, any other status unknown.
+    public func baselineJobs(for project: ProjectSpec, ref: String, names: [String]) async throws -> [String: CIJobBaseline] {
+        var result = Dictionary(names.map { ($0, CIJobBaseline.unknown) }, uniquingKeysWith: { a, _ in a })
+        let base = projectPath(project)
+        let recent: [GLPipeline] = try await client.get(base + "/pipelines", query: [
+            ("ref", ref), ("order_by", "id"), ("sort", "desc"), ("per_page", "20"),
+        ])
+        guard let finished = recent.first(where: { $0.source != "parent_pipeline" && ["success", "failed"].contains($0.status) }) else {
+            return result
+        }
+        let jobs: [GLJob] = try await client.getAll(base + "/pipelines/\(finished.id)/jobs")
+        for job in jobs.sorted(by: { $0.id < $1.id }) where result[job.name] != nil {
+            let url = URL(string: job.webUrl)
+            result[job.name] = switch job.status {
+            case "success": .passed(url)
+            case "failed": .failed(url)
+            default: .unknown
+            }
+        }
+        return result
+    }
+
+    /// `POST /projects/:id/jobs/:job_id/retry` per job, which puts the pipeline back to running.
+    public func retryJobs(project: ProjectSpec, jobs: [CIJob]) async throws -> Bool {
+        let ids = jobs.compactMap(\.id)
+        guard ids.count == jobs.count else { return false }
+        struct Retried: Decodable { var id: Int }
+        for id in ids {
+            let _: Retried = try await client.send("POST", projectPath(project) + "/jobs/\(id)/retry", body: [:], idempotent: false)
+        }
+        return true
     }
 
     /// Removes what GitLab traces carry besides the job's output: terminal color and erase

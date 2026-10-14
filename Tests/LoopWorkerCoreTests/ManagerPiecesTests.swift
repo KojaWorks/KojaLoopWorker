@@ -258,7 +258,7 @@ func temporaryDirectory() throws -> URL {
         #expect(await AuthGate.preflight(runner: killed, environment: [:]) == .inconclusive("claude -p was killed by signal 15"))
     }
 
-    @Test("B179: a kill by a signal while claude is quarantined fails with the xattr remedy")
+    @Test("B183: a kill by a signal while claude is quarantined fails with the xattr remedy")
     func preflightKilledWhileQuarantinedFails() async throws {
         let dir = try temporaryDirectory()
         let claude = dir.appending(path: "claude")
@@ -401,7 +401,7 @@ func temporaryDirectory() throws -> URL {
         return nil
     }
 
-    @Test("B181: each referenced file is uploaded once and its reference becomes the URL")
+    @Test("B185: each referenced file is uploaded once and its reference becomes the URL")
     func resolvesReferences() async throws {
         try write("after.png", "png bytes")
         try write("out/log.txt", "built 3f786850e387550fdab836ed7e6dc881de23001b\n")  // a SHA isn't a secret
@@ -416,7 +416,7 @@ func temporaryDirectory() throws -> URL {
         #expect(out == "| Before | After |\n| --- | --- |\n| x | ![after](https://forge.example/uploads/after.png) |\n\n[log](https://forge.example/uploads/log.txt) [again](https://forge.example/uploads/after.png) [web](https://x.example)")
     }
 
-    @Test("B181: every refusal names its reason")
+    @Test("B185: every refusal names its reason")
     func refusals() throws {
         try write("secret.txt", "x", in: outside)
         try FileManager.default.createSymbolicLink(at: root.appending(path: "link.txt"), withDestinationURL: outside.appending(path: "secret.txt"))
@@ -448,7 +448,7 @@ func temporaryDirectory() throws -> URL {
         #expect(reason("blob.bin") == "its content looks like it holds a token or password")
     }
 
-    @Test("B181: a forge without attachments, or one that refuses, leaves the reference; other errors throw")
+    @Test("B185: a forge without attachments, or one that refuses, leaves the reference; other errors throw")
     func forgeOutcomes() async throws {
         try write("a.png", "png")
         let body = "![a](attachment:a.png)"

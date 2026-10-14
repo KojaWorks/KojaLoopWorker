@@ -396,7 +396,7 @@ private func make(_ fake: FakePatch, _ patchKeys: String = "", log: LogRecorder 
         #expect(fake.rows["patch_blocks"]!.first?["content"]?["text"] == .string("LoopWorker is stuck on this card:\n\nNeeds a **staging** key"))
     }
 
-    @Test("B180: managerNotes are the owner's tagged blocks of this card, in body order")
+    @Test("B184: managerNotes are the owner's tagged blocks of this card, in body order")
     func managerNotesAreTheOwnersTaggedBlocks() async throws {
         let fake = FakePatch()
         fake.rows["roadmap"] = [card(1, status: "In progress"), card(2, status: "In progress")]
