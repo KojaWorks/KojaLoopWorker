@@ -52,32 +52,44 @@ public struct GitLabForge: Forge {
         return url
     }
 
-    /// The newest pipeline for `commit`, whatever triggered it. `success`, `skipped` and
-    /// `manual` pass; failed jobs that may fail are left out of `failedJobs`.
+    /// The commit's pipelines, read as one: the newest per (ref, source) among the 20 newest,
+    /// leaving out child pipelines (their parent reflects them). Any failed is failed, with the
+    /// failed jobs of each failed pipeline (jobs allowed to fail left out); else any running
+    /// is running; else any canceled is canceled; else passed. `success`, `skipped` and
+    /// `manual` pass, other statuses run.
     public func pipeline(for project: ProjectSpec, commit: String) async throws -> PipelineStatus? {
         let base = projectPath(project)
-        let pipelines: [GLPipeline] = try await client.get(base + "/pipelines", query: [
-            ("sha", commit), ("order_by", "id"), ("sort", "desc"), ("per_page", "1"),
+        let all: [GLPipeline] = try await client.get(base + "/pipelines", query: [
+            ("sha", commit), ("order_by", "id"), ("sort", "desc"), ("per_page", "20"),
         ])
-        guard let p = pipelines.first else { return nil }
-        let url = URL(string: p.webUrl)
-        switch p.status {
-        case "success", "skipped", "manual":
-            return PipelineStatus(state: .passed, url: url)
-        case "canceled":
-            return PipelineStatus(state: .canceled, url: url)
-        case "failed":
-            let jobs: [GLJob] = try await client.getAll(base + "/pipelines/\(p.id)/jobs", query: [("scope[]", "failed")])
-            var failed: [CIJob] = []
-            for job in jobs where !job.allowFailure {
-                let trace = try await client.textIfFound(base + "/jobs/\(job.id)/trace") ?? "(GitLab has no log for this job)"
-                failed.append(CIJob(name: job.name, stage: job.stage, url: URL(string: job.webUrl),
-                                    logTail: CIJob.tail(Self.stripANSI(trace))))
+        var seen: Set<String> = []
+        let latest = all.filter { $0.source != "parent_pipeline" && seen.insert("\($0.ref ?? "")|\($0.source ?? "")").inserted }
+        guard !latest.isEmpty else { return nil }
+        func state(_ p: GLPipeline) -> PipelineStatus.State {
+            switch p.status {
+            case "success", "skipped", "manual": .passed
+            case "failed": .failed
+            case "canceled": .canceled
+            default: .running
             }
-            return PipelineStatus(state: .failed, url: url, failedJobs: failed)
-        default:
-            return PipelineStatus(state: .running, url: url)
         }
+        let failed = latest.filter { state($0) == .failed }
+        if let first = failed.first {
+            var jobs: [CIJob] = []
+            for p in failed {
+                let listed: [GLJob] = try await client.getAll(base + "/pipelines/\(p.id)/jobs", query: [("scope[]", "failed")])
+                for job in listed where !job.allowFailure {
+                    let trace = try await client.textIfFound(base + "/jobs/\(job.id)/trace") ?? "(GitLab has no log for this job)"
+                    jobs.append(CIJob(name: job.name, stage: job.stage, url: URL(string: job.webUrl),
+                                      logTail: CIJob.tail(Self.stripANSI(trace))))
+                }
+            }
+            return PipelineStatus(state: .failed, url: URL(string: first.webUrl), failedJobs: jobs)
+        }
+        for s in [PipelineStatus.State.running, .canceled] {
+            if let p = latest.first(where: { state($0) == s }) { return PipelineStatus(state: s, url: URL(string: p.webUrl)) }
+        }
+        return PipelineStatus(state: .passed, url: URL(string: latest[0].webUrl))
     }
 
     /// Removes what GitLab traces carry besides the job's output: terminal color and erase

@@ -59,6 +59,9 @@ struct GLPipeline: Decodable, Sendable {
     /// `created`, `pending`, `running`, `success`, `failed`, `canceled`, `skipped`, `manual`, ...
     var status: String
     var webUrl: String
+    var ref: String?
+    /// What triggered it: `push`, `merge_request_event`, `parent_pipeline` (a child), ...
+    var source: String?
 }
 
 struct GLJob: Decodable, Sendable {

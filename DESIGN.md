@@ -167,9 +167,10 @@ verification, so its `verify.sh` can stay light. Finish writes a watch record,
 `state/ci/<card id>.json` (the card, branch, pushed commit, review request, round and push
 time), and only then moves the card to `verifying` and frees the slot.
 
-Every 120 s the Manager re-reads each watched card and the forge's newest pipeline for the
-pushed commit (by commit, not by review request, because some repos run pipelines only on
-branch pushes):
+Every 120 s the Manager re-reads each watched card and the forge's pipeline for the pushed
+commit (by commit, not by review request, because some repos run pipelines only on branch
+pushes). A commit can have several pipelines (a branch push and a merge request pipeline);
+the forge combines the newest of each kind, and any failure fails the commit:
 
 | Pipeline | Decision |
 | --- | --- |

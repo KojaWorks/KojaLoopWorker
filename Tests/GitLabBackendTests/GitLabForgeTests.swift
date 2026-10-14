@@ -91,7 +91,7 @@ import Testing
         w.gitlab.on("GET", pipelines, json: [] as [Any])
         #expect(try await w.make().forge.pipeline(for: World.app, commit: "abc123") == nil)
         let get = try #require(w.gitlab.requests("GET", pipelines).first)
-        #expect(get.query == ["sha": "abc123", "order_by": "id", "sort": "desc", "per_page": "1"])
+        #expect(get.query == ["sha": "abc123", "order_by": "id", "sort": "desc", "per_page": "20"])
     }
 
     @Test("B172: GitLab pipeline statuses map to running, passed and canceled",
@@ -103,6 +103,41 @@ import Testing
         w.gitlab.on("GET", pipelines, json: pipeline(status))
         let p = try await w.make().forge.pipeline(for: World.app, commit: "abc123")
         #expect(p == PipelineStatus(state: state, url: URL(string: "https://gitlab.example.com/mygroup/app/-/pipelines/55")))
+    }
+
+    func p(_ id: Int, _ status: String, ref: String = "loopworker-12-fix", source: String = "push") -> [String: Any] {
+        ["id": id, "status": status, "web_url": "https://gitlab.example.com/p/\(id)", "ref": ref, "source": source]
+    }
+
+    @Test("B172: the newest pipeline per ref and source counts, child pipelines don't, and running beats passed")
+    func combinesPipelines() async throws {
+        let w = World()
+        w.gitlab.on("GET", pipelines, json: [
+            p(60, "failed", source: "parent_pipeline"),
+            p(59, "success"),
+            p(58, "running", ref: "refs/merge-requests/4/head", source: "merge_request_event"),
+            p(57, "failed"),
+        ])
+        let status = try await w.make().forge.pipeline(for: World.app, commit: "abc123")
+        #expect(status == PipelineStatus(state: .running, url: URL(string: "https://gitlab.example.com/p/58")))
+        #expect(w.gitlab.requests.filter { $0.path.contains("/jobs") }.isEmpty)
+    }
+
+    @Test("B172: any failed pipeline fails the commit, with the jobs of each; canceled beats passed")
+    func failedAndCanceled() async throws {
+        let w = World()
+        w.gitlab.on("GET", pipelines, json: [p(59, "success"), p(58, "failed", ref: "refs/merge-requests/4/head", source: "merge_request_event")])
+        w.gitlab.on("GET", pipelines + "/58/jobs", json: [
+            ["id": 5, "name": "lint", "stage": "test", "web_url": "https://gitlab.example.com/j/5", "allow_failure": false],
+        ])
+        w.gitlab.on("GET", "/api/v4/projects/mygroup%2Fapp/jobs/5/trace", responses: [.init(status: 200, body: Data("bad style".utf8), headers: [:])])
+        let failed = try #require(try await w.make().forge.pipeline(for: World.app, commit: "abc123"))
+        #expect(failed.state == .failed && failed.url == URL(string: "https://gitlab.example.com/p/58"))
+        #expect(failed.failedJobs.map(\.logTail) == ["bad style"])
+
+        let c = World()
+        c.gitlab.on("GET", pipelines, json: [p(59, "manual"), p(58, "canceled", source: "web")])
+        #expect(try await c.make().forge.pipeline(for: World.app, commit: "abc123")?.state == .canceled)
     }
 
     @Test("B172: a failed pipeline lists its failed jobs with trace tails, leaving out jobs allowed to fail")
