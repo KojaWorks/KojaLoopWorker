@@ -23,7 +23,7 @@ public enum WorkerLaunch {
             set -a; . \(q(state + "/worker.env")); set +a
             export LOOPWORKER=1 LOOPWORKER_OUTCOME=\(q(state + "/outcome.json")) LOOPWORKER_SLOT_DIR=\(q(worktree.path)) LOOPWORKER_PORT=\(port)
             unset USER   # claude-code 2.1.201: USER plus MCP ToolSearch gives a 401
-            exec claude --permission-mode auto --strict-mcp-config --mcp-config \(q(state + "/mcp.json"))\(modelFlag) "$(cat \(q(state + "/brief.md")))"
+            exec claude --permission-mode auto --add-dir \(q(state)) --strict-mcp-config --mcp-config \(q(state + "/mcp.json"))\(modelFlag) "$(cat \(q(state + "/brief.md")))"
 
             """
     }
