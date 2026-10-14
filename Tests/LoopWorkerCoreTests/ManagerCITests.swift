@@ -195,6 +195,41 @@ let reviewURL = URL(string: "https://forge.example/g/app/-/merge_requests/1")!
         #expect(brief.contains(h.stateDir().appending(path: "ci.md").path))
     }
 
+    @Test("B179: a failed pipeline reads how its failed jobs did on the base branch, and ci.md says so per job")
+    func ciReportHasBaselines() async throws {
+        let h = try await verifying()
+        let job = { (name: String) in CIJob(name: name, stage: "", url: URL(string: "https://forge.example/jobs/\(name)"), logTail: "") }
+        h.forge.state {
+            $0.pipelines["commit-1"] = PipelineStatus(state: .failed, url: pipelineURL, failedJobs: [job("test"), job("lint"), job("e2e")])
+            $0.baselines = ["test": .passed(URL(string: "https://forge.example/jobs/71")), "e2e": .failed(nil)]
+        }
+        h.clock.advance(121)
+        await h.cycle()
+        await h.cycle()
+        #expect(h.forge.state.get.baselineCalls == ["main: test, lint, e2e"])
+        let ci = try String(contentsOf: h.stateDir().appending(path: "ci.md"), encoding: .utf8)
+        #expect(ci.contains("## Job: test\n\nhttps://forge.example/jobs/test\n\nThis job passed on `main` (https://forge.example/jobs/71).\n\n"))
+        #expect(ci.contains("## Job: lint\n\nhttps://forge.example/jobs/lint\n\nThis job has no baseline on `main`.\n\n"))
+        #expect(ci.contains("## Job: e2e\n\nhttps://forge.example/jobs/e2e\n\nThis job also failed on `main`.\n\n"))
+    }
+
+    @Test("B179: a baseline that can't be read is logged and counts as no baseline")
+    func unreadableBaseline() async throws {
+        let h = try await verifying()
+        h.forge.state {
+            $0.pipelines["commit-1"] = PipelineStatus(state: .failed, url: pipelineURL, failedJobs: [CIJob(name: "test", stage: "", url: nil, logTail: "")])
+            $0.baselines = ["test": .failed(nil)]
+            $0.failBaseline = true
+        }
+        h.clock.advance(121)
+        await h.cycle()
+        await h.cycle()
+        #expect(h.log.contains("g/app#12: can't read how its failed CI jobs did on main: baseline read for main failed; treating them as having no baseline", level: .error))
+        #expect(h.backlog.writes.contains(.resumeFix("id-12")))
+        let ci = try String(contentsOf: h.stateDir().appending(path: "ci.md"), encoding: .utf8)
+        #expect(ci.contains("This job has no baseline on `main`."))
+    }
+
     @Test("B168: a fix round finishes back to verifying on the same review request, one round later")
     func fixRoundFinishes() async throws {
         let h = try await fixRound()

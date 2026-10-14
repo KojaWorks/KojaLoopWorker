@@ -225,4 +225,22 @@ private let pullJSON = #"{"number": 7, "html_url": "https://github.com/owner/app
         let pages = stub.requests.map { URLComponents(url: $0.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "page" }?.value }
         #expect(pages == ["1", "2"])
     }
+
+    @Test("B181: a baseline is the latest completed check runs on the branch head, a passed run winning over a same-named failure")
+    func baseline() async throws {
+        let stub = StubGitHub { [self] _, _ in
+            (200, [:], runs([
+                run("test", "completed", "failure"), run("test", "completed", "success"),
+                run("lint", "completed", "timed_out"), run("e2e", "completed", "cancelled"), run("other", "completed", "failure"),
+            ]))
+        }
+        let b = try await forge(stub).baselineJobs(for: project, ref: "main", names: ["test", "lint", "e2e", "new"])
+        #expect(b == [
+            "test": .passed(URL(string: "https://github.com/owner/app/runs/test")), "lint": .failed(URL(string: "https://github.com/owner/app/runs/lint")),
+            "e2e": .unknown, "new": .unknown,
+        ])
+        let url = try #require(stub.requests.first?.url)
+        #expect(url.path == "/repos/owner/app/commits/heads/main/check-runs")
+        #expect(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains(URLQueryItem(name: "status", value: "completed")) == true)
+    }
 }

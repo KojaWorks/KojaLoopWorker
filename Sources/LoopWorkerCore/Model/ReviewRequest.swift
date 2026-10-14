@@ -86,3 +86,14 @@ public struct CIJob: Sendable, Equatable {
         log.split(separator: "\n", omittingEmptySubsequences: false).suffix(tailLines).joined(separator: "\n")
     }
 }
+
+/// How the job of the same name did on the base branch. Tells a failure that the change caused
+/// from one that the base branch already has.
+public enum CIJobBaseline: Sendable, Equatable {
+    /// The job passed on the base branch; the URL is that job's.
+    case passed(URL?)
+    /// The job failed on the base branch too; the URL is that job's.
+    case failed(URL?)
+    /// The base branch has no passed or failed job of that name, or it couldn't be read.
+    case unknown
+}

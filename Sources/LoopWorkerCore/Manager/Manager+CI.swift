@@ -44,10 +44,12 @@ struct CIWatchRecord: Codable, Equatable {
     }
 }
 
-/// A fix round about to start: the watch it came from and the failed pipeline.
+/// A fix round about to start: the watch it came from, the failed pipeline and how its failed
+/// jobs did on the base branch.
 struct FixRound: Sendable {
     var record: CIWatchRecord
     var pipeline: PipelineStatus
+    var baselines: [String: CIJobBaseline] = [:]
 }
 
 extension Manager {
@@ -62,6 +64,7 @@ extension Manager {
         var pipeline: PipelineStatus?
         /// A failed pipeline that waits for a fix round, and since when.
         var fix: PipelineStatus?
+        var fixBaselines: [String: CIJobBaseline] = [:]
         var fixQueuedAt: Date?
         /// A slot is starting the fix round.
         var fixStarting = false
@@ -149,6 +152,10 @@ extension Manager {
             log.error("CI watch for \(r.card): can't read the pipeline for \(r.sha.prefix(12)): \(error); trying again in \(Int(Self.ciPollInterval)) s")
             observation = .unreadable("\(error)")
         }
+        var baselines: [String: CIJobBaseline] = [:]
+        if case .pipeline(let p?) = observation, p.state == .failed {
+            baselines = await baselineJobs(project?.spec ?? ProjectSpec(path: r.project), r, p)
+        }
         guard ciWatches[id] != nil else { return }
         let pipeline: PipelineStatus? = if case .pipeline(let p) = observation { p } else { ciWatches[id]?.pipeline }
         ciWatches[id]!.card = fresh
@@ -165,6 +172,7 @@ extension Manager {
             await ciPassed(id, fresh, r, pipeline)
         case .fix:
             ciWatches[id]!.fix = pipeline
+            ciWatches[id]!.fixBaselines = baselines
             ciWatches[id]!.fixQueuedAt = clock.now()
             if let why = queuedFixProblem(ciWatches[id]!, clock.now()) {
                 await ciStuck(id, fresh, r, why)
@@ -174,6 +182,18 @@ extension Manager {
             log.warning("\(r.card): CI failed on \(r.sha.prefix(12)); queued fix round \(r.round + 1) of \(ci.fixAttempts)")
         case .stuck(let reason):
             await ciStuck(id, fresh, r, ciBlocker(reason, r, pipeline: pipeline, ci: ci))
+        }
+    }
+
+    /// How the failed jobs of `p` did on the review request's base branch; empty, so every job
+    /// is unknown, when the forge can't tell.
+    func baselineJobs(_ spec: ProjectSpec, _ r: CIWatchRecord, _ p: PipelineStatus) async -> [String: CIJobBaseline] {
+        let names = p.failedJobs.map(\.name)
+        guard !names.isEmpty else { return [:] }
+        do { return try await deps.forge.baselineJobs(for: spec, ref: r.base, names: names) }
+        catch {
+            log.error("\(r.card): can't read how its failed CI jobs did on \(r.base): \(error); treating them as having no baseline")
+            return [:]
         }
     }
 
@@ -202,7 +222,7 @@ extension Manager {
         }
         switch current?.state {
         case .failed?:
-            return FixRound(record: r, pipeline: current!)
+            return FixRound(record: r, pipeline: current!, baselines: fix.baselines)
         case .passed?, .running?:
             ciWatches[id]?.fix = nil
             ciWatches[id]?.fixQueuedAt = nil
@@ -406,7 +426,7 @@ extension Manager {
             $0.finishError = nil
         }
         fillSoon = true
-        let fix = FixRound(record: r, pipeline: pipeline)
+        let fix = FixRound(record: r, pipeline: pipeline, baselines: w.fixBaselines)
         track { await self.startTask(ref, card: w.card, contract: contract, base: r.base, branch: r.branch, fix: fix) }
     }
 
@@ -485,9 +505,19 @@ extension Manager {
             let stage = job.stage.isEmpty ? "" : ", stage \(deps.redact(job.stage.replacingOccurrences(of: "\n", with: " ")))"
             out += "\n## Job: \(name)\(stage)\n\n"
             if let url = job.url { out += "\(url.absoluteString)\n\n" }
+            out += Self.baselineLine(fix.baselines[job.name] ?? .unknown, base: r.base) + "\n\n"
             out += "Last \(CIJob.tailLines) lines of its log:\n\n\(fence)text\n\(tail)\n\(fence)\n"
         }
         return out
+    }
+
+    /// One sentence on how a failed job did on `base`.
+    static func baselineLine(_ baseline: CIJobBaseline, base: String) -> String {
+        switch baseline {
+        case .passed(let url): "This job passed on `\(base)`" + (url.map { " (\($0.absoluteString))." } ?? ".")
+        case .failed(let url): "This job also failed on `\(base)`" + (url.map { " (\($0.absoluteString))." } ?? ".")
+        case .unknown: "This job has no baseline on `\(base)`."
+        }
     }
 
     /// The `ci` list of the status file.

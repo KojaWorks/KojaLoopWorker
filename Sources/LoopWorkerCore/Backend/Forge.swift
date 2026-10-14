@@ -25,6 +25,14 @@ public protocol Forge: Sendable {
     /// - Throws: when the forge can't be read; a later poll retries.
     func pipeline(for project: ProjectSpec, commit: String) async throws -> PipelineStatus?
 
+    /// How each job named in `names` did on branch `ref`, for telling a pre-existing failure
+    /// from a new one. GitLab reads the latest pipeline on `ref` that succeeded or failed (the
+    /// latest attempt per job name); GitHub reads the latest completed check runs on the head
+    /// commit of `ref`. Every name in `names` is a key of the result; a name without a passed
+    /// or failed job there is `.unknown`.
+    /// - Throws: when the forge can't be read; the Manager then treats every job as `.unknown`.
+    func baselineJobs(for project: ProjectSpec, ref: String, names: [String]) async throws -> [String: CIJobBaseline]
+
     /// Uploads a file and returns a URL that the review request body can link to, or nil
     /// when the forge has no attachments. The Manager then leaves the link out.
     func attach(_ file: URL, to project: ProjectSpec) async throws -> URL?

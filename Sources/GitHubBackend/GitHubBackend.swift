@@ -167,29 +167,7 @@ public struct GitHubForge: Forge {
     /// ends the wait. Commit statuses from the older status API are not read. `url` is the
     /// commit's checks page.
     public func pipeline(for project: ProjectSpec, commit: String) async throws -> PipelineStatus? {
-        struct Page: Decodable {
-            var total_count: Int
-            var check_runs: [Run]
-        }
-        struct Run: Decodable {
-            var name: String
-            var status: String
-            var conclusion: String?
-            var html_url: URL?
-            var output: Output?
-            struct Output: Decodable {
-                var summary: String?
-                var text: String?
-            }
-        }
-        var runs: [Run] = []
-        for page in 1... {
-            let p = try await request("GET", "repos/\(project.path)/commits/\(commit)/check-runs", query: [
-                URLQueryItem(name: "per_page", value: "100"), URLQueryItem(name: "page", value: "\(page)"),
-            ], as: Page.self)
-            runs += p.check_runs
-            if p.check_runs.isEmpty || runs.count >= p.total_count { break }
-        }
+        let runs = try await checkRuns(project, ref: commit)
         guard !runs.isEmpty else { return nil }
         let url = URL(string: "\(webBase)/\(project.path)/commit/\(commit)/checks")
         if runs.contains(where: { $0.status != "completed" }) { return PipelineStatus(state: .running, url: url) }
@@ -204,10 +182,55 @@ public struct GitHubForge: Forge {
         return PipelineStatus(state: runs.allSatisfy { passing.contains($0.conclusion) } ? .passed : .running, url: url)
     }
 
+    /// Reads the latest completed check runs on the head commit of branch `ref`: `success` passed,
+    /// `failure` or `timed_out` failed, other conclusions unknown. When several runs share a
+    /// name, a passed one wins.
+    public func baselineJobs(for project: ProjectSpec, ref: String, names: [String]) async throws -> [String: CIJobBaseline] {
+        var result = Dictionary(names.map { ($0, CIJobBaseline.unknown) }, uniquingKeysWith: { a, _ in a })
+        for run in try await checkRuns(project, ref: "heads/\(ref)", status: "completed") where result[run.name] != nil {
+            switch (result[run.name]!, run.conclusion) {
+            case (.passed, _): continue
+            case (_, "success"): result[run.name] = .passed(run.html_url)
+            case (_, "failure"), (_, "timed_out"): result[run.name] = .failed(run.html_url)
+            default: continue
+            }
+        }
+        return result
+    }
+
     /// Always nil: GitHub's API has no way to attach a file to a pull request.
     public func attach(_ file: URL, to project: ProjectSpec) async throws -> URL? { nil }
 
     // MARK: HTTP
+
+    private struct CheckRun: Decodable {
+        var name: String
+        var status: String
+        var conclusion: String?
+        var html_url: URL?
+        var output: Output?
+        struct Output: Decodable {
+            var summary: String?
+            var text: String?
+        }
+    }
+
+    /// Every latest check run on `ref` (a commit, or `heads/<branch>`), optionally only those with `status`.
+    private func checkRuns(_ project: ProjectSpec, ref: String, status: String? = nil) async throws -> [CheckRun] {
+        struct Page: Decodable {
+            var total_count: Int
+            var check_runs: [CheckRun]
+        }
+        var runs: [CheckRun] = []
+        for page in 1... {
+            let p = try await request("GET", "repos/\(project.path)/commits/\(ref)/check-runs", query: [
+                URLQueryItem(name: "per_page", value: "100"), URLQueryItem(name: "page", value: "\(page)"),
+            ] + (status.map { [URLQueryItem(name: "status", value: $0)] } ?? []), as: Page.self)
+            runs += p.check_runs
+            if p.check_runs.isEmpty || runs.count >= p.total_count { break }
+        }
+        return runs
+    }
 
     private struct Pull: Decodable {
         var number: Int

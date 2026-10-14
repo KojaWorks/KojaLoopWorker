@@ -94,6 +94,30 @@ public struct GitLabForge: Forge {
         return PipelineStatus(state: .passed, url: URL(string: latest[0].webUrl))
     }
 
+    /// Reads the newest of the 20 latest pipelines on `ref` that succeeded or failed, child
+    /// pipelines left out, and maps each named job's latest attempt there: `success` passed,
+    /// `failed` failed, any other status unknown.
+    public func baselineJobs(for project: ProjectSpec, ref: String, names: [String]) async throws -> [String: CIJobBaseline] {
+        var result = Dictionary(names.map { ($0, CIJobBaseline.unknown) }, uniquingKeysWith: { a, _ in a })
+        let base = projectPath(project)
+        let recent: [GLPipeline] = try await client.get(base + "/pipelines", query: [
+            ("ref", ref), ("order_by", "id"), ("sort", "desc"), ("per_page", "20"),
+        ])
+        guard let finished = recent.first(where: { $0.source != "parent_pipeline" && ["success", "failed"].contains($0.status) }) else {
+            return result
+        }
+        let jobs: [GLJob] = try await client.getAll(base + "/pipelines/\(finished.id)/jobs")
+        for job in jobs.sorted(by: { $0.id < $1.id }) where result[job.name] != nil {
+            let url = URL(string: job.webUrl)
+            result[job.name] = switch job.status {
+            case "success": .passed(url)
+            case "failed": .failed(url)
+            default: .unknown
+            }
+        }
+        return result
+    }
+
     /// Removes what GitLab traces carry besides the job's output: terminal color and erase
     /// sequences, the runner's per-line timestamp prefix (`2026-10-14T16:59:46.845Z 00O+ `) and
     /// collapsible-section markers, so the tail the worker reads is mostly real output.

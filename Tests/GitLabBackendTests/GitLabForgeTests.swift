@@ -168,6 +168,37 @@ import Testing
         #expect(w.gitlab.requests("GET", "/api/v4/projects/mygroup%2Fapp/jobs/2/trace").isEmpty)
     }
 
+    @Test("B180: a baseline is the latest attempt of each named job in the newest finished, non-child pipeline on the branch")
+    func baseline() async throws {
+        let w = World()
+        w.gitlab.on("GET", pipelines, json: [
+            p(70, "running", ref: "main"), p(69, "failed", ref: "main", source: "parent_pipeline"),
+            p(68, "canceled", ref: "main"), p(67, "failed", ref: "main"), p(66, "success", ref: "main"),
+        ])
+        func job(_ id: Int, _ name: String, _ status: String) -> [String: Any] {
+            ["id": id, "name": name, "stage": "test", "web_url": "https://gitlab.example.com/j/\(id)", "allow_failure": false, "status": status]
+        }
+        w.gitlab.on("GET", pipelines + "/67/jobs", json: [
+            job(3, "test", "success"), job(1, "test", "failed"), job(2, "lint", "failed"), job(4, "e2e", "skipped"), job(5, "other", "failed"),
+        ])
+        let b = try await w.make().forge.baselineJobs(for: World.app, ref: "main", names: ["test", "lint", "e2e", "new"])
+        #expect(b == [
+            "test": .passed(URL(string: "https://gitlab.example.com/j/3")), "lint": .failed(URL(string: "https://gitlab.example.com/j/2")),
+            "e2e": .unknown, "new": .unknown,
+        ])
+        let get = try #require(w.gitlab.requests("GET", pipelines).first)
+        #expect(get.query == ["ref": "main", "order_by": "id", "sort": "desc", "per_page": "20"])
+    }
+
+    @Test("B180: no finished pipeline on the branch leaves every job unknown")
+    func noBaseline() async throws {
+        let w = World()
+        w.gitlab.on("GET", pipelines, json: [p(70, "running", ref: "main")])
+        let b = try await w.make().forge.baselineJobs(for: World.app, ref: "main", names: ["test"])
+        #expect(b == ["test": .unknown])
+        #expect(w.gitlab.requests.filter { $0.path.contains("/jobs") }.isEmpty)
+    }
+
     @Test func traceCleanupKeepsOnlyTheJobsOutput() {
         let trace = "2026-10-14T16:59:46.845748Z 00O Running with gitlab-runner 19.5.0\n"
             + "2026-10-14T16:59:51.975330Z 00O+section_start:1791997191:prepare_script\r\u{1B}[0K\u{1B}[36;1mPreparing environment\u{1B}[0;m\n"
