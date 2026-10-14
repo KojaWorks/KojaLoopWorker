@@ -129,7 +129,7 @@ Create the labels `loopworker:next`, `loopworker:working`, `loopworker:review` a
 | `loopworker:next` | Ready to claim. | You added it, or the Manager released the card with a note saying why (a crash, a hang, an auth failure). |
 | `loopworker:working` | A worker is on it. | The Manager claimed it. |
 | `loopworker:review` | Done. | The Manager pushed the branch, opened a merge request and linked it in a note. |
-| `loopworker:stuck` | The worker needs a human. | A note says what blocks it. You stay assigned, so it stays in your queue; fix the issue and add `loopworker:next` again. |
+| `loopworker:stuck` | The worker needs a human. | A note says what blocks it. You stay assigned, so it stays in your queue; answer it on the issue, then replace `loopworker:stuck` with `loopworker:next`. A card with two `loopworker:*` labels is ignored. |
 
 A card that crashes `max_attempts` times becomes stuck. Closing an issue or removing its
 `loopworker:*` label while a worker runs stops that worker; nothing is written back.
