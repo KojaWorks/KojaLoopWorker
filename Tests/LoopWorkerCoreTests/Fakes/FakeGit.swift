@@ -14,6 +14,8 @@ final class FakeGit: GitDriving, @unchecked Sendable {
         var defaultCommitsAhead = 1
         var failCloneOrFetch = false
         var failPushOnce = false
+        var usesLFS = false
+        var failLFSPushOnce = false
     }
 
     let state = Guarded(State())
@@ -56,7 +58,21 @@ final class FakeGit: GitDriving, @unchecked Sendable {
             if $0.failPushOnce { $0.failPushOnce = false; throw FakeError("git push \(branch) failed") }
             if let e = $0.pushFailure { $0.pushFailure = nil; throw e }
             $0.pushes.append((worktree, url, branch, expected, environment))
+            $0.calls.append("push \(branch)")
             return "commit-\($0.pushes.count)"
+        }
+    }
+
+    func usesLFS(_ worktree: URL) async throws -> Bool { state.get.usesLFS }
+
+    func lfsPull(_ worktree: URL, url: String, include: [String], exclude: [String], timeout: Duration, environment: [String: String]) async throws {
+        state { $0.calls.append("lfsPull \(url)") }
+    }
+
+    func lfsPush(_ worktree: URL, url: String, environment: [String: String]) async throws {
+        try state {
+            if $0.failLFSPushOnce { $0.failLFSPushOnce = false; throw FakeError("git lfs push failed") }
+            $0.calls.append("lfsPush \(url) \(environment == FakeForge.environment ? "forge-env" : "other-env")")
         }
     }
 

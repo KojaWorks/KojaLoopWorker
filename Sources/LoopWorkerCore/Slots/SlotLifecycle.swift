@@ -47,11 +47,13 @@ public struct SlotFailure: Error, CustomStringConvertible, Equatable {
 /// `LOOPWORKER_SLOT_DIR` (the worktree) and `LOOPWORKER_PORT` set, under the contract's
 /// timeouts, with output streamed to the log.
 public protocol SlotLifecycle: Sendable {
-    /// Hot slots: ensures the worktree exists and runs `provision.sh` once. Cold slots: no-op.
+    /// Hot slots: ensures the worktree exists, pulls its Git LFS content (see `acquire`) and
+    /// runs `provision.sh` once. Cold slots: no-op.
     func prepare(_ slot: SlotSpec, contract: ProjectContract) async throws(SlotFailure)
 
     /// Gets a slot ready for a card: resets the worktree to `origin/<base>`, checks out
-    /// `branch`, then runs `reset.sh` (hot) or `provision.sh` (cold). Returns the base commit.
+    /// `branch`, pulls the Git LFS content when the repo uses LFS and the contract's `[lfs]`
+    /// allows it, then runs `reset.sh` (hot) or `provision.sh` (cold). Returns the base commit.
     func acquire(_ slot: SlotSpec, contract: ProjectContract, base: String, branch: String) async throws(SlotFailure) -> String
 
     /// After a card: cold slots run `teardown.sh`; hot slots detach HEAD so that no idle slot

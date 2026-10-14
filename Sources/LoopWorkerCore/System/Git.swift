@@ -64,14 +64,44 @@ public protocol GitDriving: Sendable {
     ///   `GitError` for any other failure.
     func push(_ worktree: URL, to url: String, branch: String, expected: String?, environment: [String: String]) async throws -> String
 
+    /// True when a `.gitattributes` file at any depth in HEAD's tree contains `filter=lfs`,
+    /// that is, when the repo stores some files in Git LFS.
+    /// - Throws: `GitError` when HEAD can't be read.
+    func usesLFS(_ worktree: URL) async throws -> Bool
+
+    /// Downloads the LFS content that HEAD references and replaces the pointer files in
+    /// `worktree` with it. First installs the LFS filters into the repo config with smudge
+    /// skipped and no hooks, so a later checkout, the worker's included, leaves pointers instead
+    /// of downloading without credentials, and the worker's `git add` still stores new content
+    /// in LFS.
+    /// - Parameters:
+    ///   - url: The forge clone URL. The LFS endpoint is always `<url>/info/lfs`, never one
+    ///     from repo config.
+    ///   - include: git-lfs path patterns to download; empty means all.
+    ///   - exclude: git-lfs path patterns to skip.
+    ///   - timeout: Kills the pull after this long; a cold pull can be gigabytes.
+    ///   - environment: The forge's git environment (askpass credentials).
+    /// - Throws: `GitError` naming the command, with its output tail.
+    func lfsPull(_ worktree: URL, url: String, include: [String], exclude: [String], timeout: Duration, environment: [String: String]) async throws
+
+    /// Uploads to `<url>/info/lfs` the LFS objects that HEAD references and that no `origin/*`
+    /// tracking ref references. Call it before `push`, or the forge gets a branch whose
+    /// pointers name content it doesn't have. Times out after 60 min.
+    /// - Parameters:
+    ///   - url: The forge clone URL.
+    ///   - environment: The forge's git environment (askpass credentials).
+    /// - Throws: `GitError` naming the command, with its output tail.
+    func lfsPush(_ worktree: URL, url: String, environment: [String: String]) async throws
+
     /// Removes the worktree directory (`git worktree remove --force`) and prunes. Best effort:
     /// logs failures, never throws.
     func removeWorktree(clone: URL, worktree: URL) async
 }
 
 /// `GitDriving` over the `git` CLI. Each call throws `GitError` naming the command when git
-/// fails or exceeds its timeout: 30 min for clone, 10 min for fetch and push, 2 min for local
-/// operations.
+/// fails or exceeds its timeout: 30 min for clone, 10 min for fetch and push, 60 min for LFS
+/// push, the caller's for LFS pull, 2 min for local operations. Every command runs with `GIT_LFS_SKIP_SMUDGE=1`: a
+/// checkout leaves LFS pointer files and never downloads; only `lfsPull` fetches LFS content.
 public struct Git: GitDriving {
     private let runner: any ProcessRunning
     private let log: any LogSink
@@ -87,6 +117,7 @@ public struct Git: GitDriving {
     private static let cloneTimeout: Duration = .seconds(30 * 60)
     private static let networkTimeout: Duration = .seconds(10 * 60)
     private static let localTimeout: Duration = .seconds(2 * 60)
+    private static let lfsTimeout: Duration = .seconds(60 * 60)
 
     /// Prefix for every call that carries forge credentials. The empty `credential.helper`
     /// resets the helper list, so no configured helper is asked to store the password.
@@ -154,10 +185,42 @@ public struct Git: GitDriving {
         let head = try await git(["-C", worktree.path, "rev-parse", "HEAD"]).output.trimmingCharacters(in: .whitespacesAndNewlines)
         let arguments = Self.credentialed + ["-C", worktree.path, "push", "--no-verify",
                                              "--force-with-lease=refs/heads/\(branch):\(expected ?? "")", url, "\(head):refs/heads/\(branch)"]
-        let result = try await runner.run(ProcessSpec("git", arguments, environment: environment.mapValues { $0 }, timeout: Self.networkTimeout))
+        let result = try await runner.run(Self.spec(arguments, Self.networkTimeout, environment))
         if result.succeeded { return head }
         if result.output.contains("stale info") { throw PushRejected(branch: branch, url: url) }
         throw GitError(command: arguments.joined(separator: " "), result: result)
+    }
+
+    public func usesLFS(_ worktree: URL) async throws -> Bool {
+        let arguments = ["-C", worktree.path, "grep", "-q", "-F", "-e", "filter=lfs", "HEAD", "--", ":(glob)**/.gitattributes"]
+        let result = try await runner.run(Self.spec(arguments, Self.localTimeout, [:]))
+        if result.succeeded { return true }
+        if result.status == 1 && !result.timedOut { return false }  // grep found nothing
+        throw GitError(command: arguments.joined(separator: " "), result: result)
+    }
+
+    public func lfsPull(_ worktree: URL, url: String, include: [String], exclude: [String], timeout: Duration, environment: [String: String]) async throws {
+        let prefix = Self.lfsCredentialed(url) + ["-C", worktree.path, "lfs"]
+        // Hooks would conflict with any existing hook and are useless under core.hooksPath=/dev/null.
+        try await git(prefix + ["install", "--local", "--skip-smudge", "--skip-repo"])
+        var pull = prefix + ["pull"]
+        if !include.isEmpty { pull += ["--include", include.joined(separator: ",")] }
+        if !exclude.isEmpty { pull += ["--exclude", exclude.joined(separator: ",")] }
+        try await git(pull, timeout, environment)
+    }
+
+    /// `origin` lets git-lfs skip objects that `origin/*` tracking refs already reference; a
+    /// URL would make it re-check HEAD's whole history. The `-c` URL keeps `origin` valid when
+    /// the worker removed the remote.
+    public func lfsPush(_ worktree: URL, url: String, environment: [String: String]) async throws {
+        try await git(Self.lfsCredentialed(url) + ["-c", "remote.origin.url=\(url)", "-C", worktree.path, "lfs", "push", "origin", "HEAD"],
+                      Self.lfsTimeout, environment)
+    }
+
+    /// `credentialed` plus the forge's LFS endpoint. `lfs.pushurl` in repo config would
+    /// otherwise beat `lfs.url` for uploads.
+    static func lfsCredentialed(_ url: String) -> [String] {
+        credentialed + ["-c", "lfs.url=\(url)/info/lfs", "-c", "lfs.pushurl=\(url)/info/lfs"]
     }
 
     public func removeWorktree(clone: URL, worktree: URL) async {
@@ -173,8 +236,7 @@ public struct Git: GitDriving {
     /// True when `worktree` is the top level of a worktree that shares `clone`'s repository.
     private func isWorktree(_ worktree: URL, of clone: URL) async throws -> Bool {
         guard FileManager.default.fileExists(atPath: worktree.path) else { return false }
-        let probe = try await runner.run(ProcessSpec(
-            "git", ["-C", worktree.path, "rev-parse", "--show-toplevel", "--git-common-dir"], timeout: Self.localTimeout))
+        let probe = try await runner.run(Self.spec(["-C", worktree.path, "rev-parse", "--show-toplevel", "--git-common-dir"], Self.localTimeout, [:]))
         let lines = probe.output.split(separator: "\n").map(String.init)
         guard probe.succeeded, lines.count == 2 else { return false }
         let cloneCommon = try await git(["-C", clone.path, "rev-parse", "--git-common-dir"]).output
@@ -194,9 +256,12 @@ public struct Git: GitDriving {
 
     @discardableResult
     private func git(_ arguments: [String], _ timeout: Duration = localTimeout, _ environment: [String: String] = [:]) async throws -> ProcessResult {
-        let result = try await runner.run(ProcessSpec(
-            "git", arguments, environment: environment.mapValues { $0 }, timeout: timeout))
+        let result = try await runner.run(Self.spec(arguments, timeout, environment))
         guard result.succeeded else { throw GitError(command: arguments.joined(separator: " "), result: result) }
         return result
+    }
+
+    private static func spec(_ arguments: [String], _ timeout: Duration, _ environment: [String: String]) -> ProcessSpec {
+        ProcessSpec("git", arguments, environment: environment.merging(["GIT_LFS_SKIP_SMUDGE": "1"]) { _, skip in skip }.mapValues { $0 }, timeout: timeout)
     }
 }
