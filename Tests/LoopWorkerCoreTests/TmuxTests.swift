@@ -90,16 +90,14 @@ struct BaseEnvironmentRunner: ProcessRunning {
         }
     }
 
-    @Test("B14: alive unless gone or back at a shell", arguments: [
-        ("lw_a_1:0:claude\n", true), ("lw_a_1:0:node\n", true), ("lw_a_1:0:zsh\n", false), ("lw_a_1:0:-bash\n", false),
-        ("lw_a_1:0:fish\n", false), ("lw_a_1:0:login\n", false), ("\n", false), ("lw_a_10:0:claude\n", false),
-        ("lw_a_1:1:claude\n", false),
+    @Test("B14: alive while the pane's process runs, whatever its foreground command", arguments: [
+        ("lw_a_1:0\n", true), ("lw_a_1:1\n", false), ("\n", false), ("lw_a_10:0\n", false),
     ])
     func isAlive(output: String, alive: Bool) async throws {
         let (tmux, runner) = tmux { _ in ProcessResult(status: 0, output: output) }
         #expect(try await tmux.isAlive("lw_a_1") == alive)
         #expect(runner.calls[0].arguments.dropFirst(2)
-            == ["display-message", "-p", "-t", "=lw_a_1:", "#{session_name}:#{pane_dead}:#{pane_current_command}"])
+            == ["display-message", "-p", "-t", "=lw_a_1:", "#{session_name}:#{pane_dead}"])
     }
 
     @Test("B11, B14: a missing session is dead, a timeout or other failure throws")

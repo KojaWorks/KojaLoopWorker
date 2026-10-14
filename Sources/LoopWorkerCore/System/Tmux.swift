@@ -11,9 +11,8 @@ public protocol TmuxDriving: Sendable {
     /// (`remain-on-exit`), so its last screen can be captured; `kill` removes it.
     func spawn(session: String, directory: URL, script: URL) async throws
 
-    /// True when the session exists, its pane's process hasn't exited, and it runs something
-    /// other than a shell. A finished-but-idle `claude` counts as alive; the outcome file says
-    /// when it is done.
+    /// True when the session exists and its pane's process (the worker) hasn't exited. A
+    /// finished-but-idle `claude` counts as alive; the outcome file says when it is done.
     func isAlive(_ session: String) async throws -> Bool
 
     /// The last `lines` lines of the session's pane, for auth-failure and trust-dialog
@@ -85,18 +84,16 @@ public struct Tmux: TmuxDriving {
     }
 
     public func isAlive(_ session: String) async throws -> Bool {
-        let command = ["display-message", "-p", "-t", Self.pane(session), "#{session_name}:#{pane_dead}:#{pane_current_command}"]
+        let command = ["display-message", "-p", "-t", Self.pane(session), "#{session_name}:#{pane_dead}"]
         let result = try await tmux(command)
         if !result.succeeded {
             if !result.timedOut && (Self.noServer(result) || Self.noSession(result)) { return false }
             throw TmuxError(command: command, result: result)
         }
         let output = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard output.hasPrefix(session + ":") else { return false }
-        let rest = output.dropFirst(session.count + 1)
-        guard rest.hasPrefix("0:") else { return false }  // 1: the process exited; the pane is kept for capture
-        let current = rest.dropFirst(2).drop { $0 == "-" }
-        return !current.isEmpty && !Self.shells.contains(String(current))
+        // The pane runs the launch script, which execs claude, so the pane's process is the
+        // worker. The foreground command is no signal: it is a shell whenever claude runs one.
+        return output == session + ":0"
     }
 
     public func capture(_ session: String, lines: Int) async throws -> String {
@@ -115,7 +112,6 @@ public struct Tmux: TmuxDriving {
         }
     }
 
-    private static let shells: Set = ["bash", "zsh", "sh", "fish", "dash", "login"]
 
     // "=" makes tmux match the session name exactly; otherwise `lw_x_1` also finds `lw_x_10`.
     private static func pane(_ session: String) -> String { "=\(session):" }
