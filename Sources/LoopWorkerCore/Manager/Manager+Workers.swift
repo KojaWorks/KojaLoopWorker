@@ -320,7 +320,8 @@ extension Manager {
         var pane = ""
         do {
             alive = try await deps.tmux.isAlive(spec.session)
-            if alive { pane = (try? await deps.tmux.capture(spec.session, lines: 40)) ?? "" }
+            // A dead pane is kept (remain-on-exit), so its last screen explains a crash.
+            pane = (try? await deps.tmux.capture(spec.session, lines: 40)) ?? ""
             fresh = try await deps.backlog.card(card.ref)
         } catch {
             log.error("\(label(spec)): can't observe \(card.ref): \(error); trying again next tick")
@@ -331,7 +332,7 @@ extension Manager {
         let lines = PaneReading.tail(pane, 15).map(deps.redact)
         update(ref) {
             if let fresh { $0.card = fresh }
-            if alive { $0.pane = lines }
+            if !lines.isEmpty { $0.pane = lines }
         }
         let cap = (projects[ref.key]?.contract?.wallclockCapMinutes ?? 90) * 60
         let observation = SlotObservation(
@@ -361,7 +362,10 @@ extension Manager {
                 log.error("\(label(spec)): the worker hit claude's login screen; pausing new claims for \(Int(delay)) s")
                 notify(key: "auth-release", "LoopWorker: a worker on \(hostName) hit claude's login screen; new claims paused \(Int(delay)) s")
             }
-            let tail = lines.isEmpty ? s.pane : lines  // a dead session has no pane; use the last capture
+            let tail = lines.isEmpty ? s.pane : lines  // the session may be gone entirely; use the last capture
+            if reason == .crashed, !tail.isEmpty {
+                log.warning("\(label(spec)): last lines of \(spec.session) before it ended:\n\(tail.joined(separator: "\n"))")
+            }
             update(ref) { $0.task = .releasing }
             track { await self.releaseTask(ref, card: target, reason: reason, pane: tail, cap: cap) }
         }
