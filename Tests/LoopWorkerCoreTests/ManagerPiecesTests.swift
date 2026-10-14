@@ -172,19 +172,55 @@ func temporaryDirectory() throws -> URL {
         var g = AuthGate()
         #expect(!g.allowsDispatch(at: t0))
         #expect(g.needsCheck(at: t0))
-        do { let r = g.record(ok: true, detail: "", at: t0); #expect(r == nil) }
+        do { let r = g.record(.ok, at: t0); #expect(r == nil) }
         #expect(g.allowsDispatch(at: t0))
         #expect(!g.needsCheck(at: t0 + 179))
         #expect(g.needsCheck(at: t0 + 180))
-        do { let r = g.record(ok: false, detail: "401", at: t0); #expect(r == .failed("401")) }
-        do { let r = g.record(ok: false, detail: "401", at: t0); #expect(r == nil) }
+        do { let r = g.record(.failed("401"), at: t0); #expect(r == .failed("401")) }
+        do { let r = g.record(.failed("401"), at: t0); #expect(r == nil) }
+        #expect(g.detail == "failed (2 in a row): 401; next check in 180 s")
         #expect(!g.allowsDispatch(at: t0))
-        do { let r = g.record(ok: true, detail: "", at: t0); #expect(r == .recovered) }
+        do { let r = g.record(.ok, at: t0); #expect(r == .recovered) }
+        #expect(g.detail == nil)
+    }
+
+    @Test func inconclusiveKeepsTheHealthAndRechecksSooner() {  // B176
+        var g = AuthGate()
+        _ = g.record(.ok, at: t0)
+        do { let r = g.record(.inconclusive("claude -p timed out after 120 s"), at: t0); #expect(r == nil) }
+        #expect(g.health == .ok)
+        #expect(g.allowsDispatch(at: t0))
+        #expect(g.detail == "inconclusive (1 in a row): claude -p timed out after 120 s; next check in 30 s")
+        #expect(!g.needsCheck(at: t0 + 29))
+        #expect(g.needsCheck(at: t0 + 30))
+        do { let r = g.record(.ok, at: t0 + 30); #expect(r == nil) }
+        #expect(g.detail == nil)
+        #expect(!g.needsCheck(at: t0 + 209))
+    }
+
+    @Test func threeInconclusiveInARowCountAsFailing() {  // B176
+        var g = AuthGate()
+        _ = g.record(.ok, at: t0)
+        do { let r = g.record(.inconclusive("killed"), at: t0); #expect(r == nil) }
+        do { let r = g.record(.inconclusive("killed"), at: t0); #expect(r == nil) }
+        #expect(g.health == .ok)
+        do { let r = g.record(.inconclusive("killed"), at: t0); #expect(r == .failed("killed, 3 checks in a row")) }
+        #expect(g.health == .failing)
+        do { let r = g.record(.inconclusive("killed"), at: t0); #expect(r == nil) }
+        #expect(g.detail == "inconclusive (4 in a row): killed; next check in 30 s")
+        do { let r = g.record(.ok, at: t0); #expect(r == .recovered) }
+    }
+
+    @Test func inconclusiveBeforeTheFirstOkKeepsClaimsOff() {  // B176
+        var g = AuthGate()
+        _ = g.record(.inconclusive("killed"), at: t0)
+        #expect(g.health == .unknown)
+        #expect(!g.allowsDispatch(at: t0))
     }
 
     @Test func authReleaseBackoffIsExponentialAndCapped() {  // B98
         var g = AuthGate()
-        _ = g.record(ok: true, detail: "", at: t0)
+        _ = g.record(.ok, at: t0)
         do { let r = g.noteAuthRelease(at: t0); #expect(r == 30) }
         #expect(!g.allowsDispatch(at: t0 + 29))
         #expect(g.allowsDispatch(at: t0 + 30))
@@ -199,28 +235,27 @@ func temporaryDirectory() throws -> URL {
     @Test func preflightStripsUserAndPassesTheToken() async {  // B95
         let runner = ScriptedRunner { _ in ProcessResult(status: 1, output: "warming up\nInvalid API key\n") }
         let r = await AuthGate.preflight(runner: runner, environment: ["CLAUDE_CODE_OAUTH_TOKEN": "fabricated"])
-        #expect(r.ok == false)
-        #expect(r.detail == "Invalid API key")
+        #expect(r == .failed("Invalid API key"))
         let spec = runner.specs.get[0]
         #expect(spec.executable == "claude")
         #expect(spec.arguments == ["-p", "ok", "--model", "haiku"])
         #expect(spec.environment["USER"] == .some(nil))
         #expect(spec.environment["CLAUDE_CODE_OAUTH_TOKEN"] == "fabricated")
-        #expect(spec.timeout == .seconds(60))
+        #expect(spec.timeout == .seconds(120))
     }
 
     @Test func preflightLoginPromptIsAFailureDespiteExitZero() async {  // B95
         let runner = ScriptedRunner { _ in ProcessResult(status: 0, output: "Not logged in \u{00B7} Please run /login\n") }
         let r = await AuthGate.preflight(runner: runner, environment: [:])
-        #expect(!r.ok)
-        #expect(r.detail.contains("Not logged in"))
+        guard case .failed(let why) = r else { Issue.record("not failed: \(r)"); return }
+        #expect(why.contains("Not logged in"))
     }
 
-    @Test func preflightTimeoutIsAFailure() async {
-        let runner = ScriptedRunner { _ in ProcessResult(status: -9, output: "", timedOut: true) }
-        let r = await AuthGate.preflight(runner: runner, environment: [:])
-        #expect(!r.ok)
-        #expect(r.detail.contains("timed out"))
+    @Test func preflightTimeoutOrSignalIsInconclusive() async {  // B176
+        let timedOut = ScriptedRunner { _ in ProcessResult(status: -9, output: "", timedOut: true) }
+        #expect(await AuthGate.preflight(runner: timedOut, environment: [:]) == .inconclusive("claude -p timed out after 120 s"))
+        let killed = ScriptedRunner { _ in ProcessResult(status: -15, output: "") }
+        #expect(await AuthGate.preflight(runner: killed, environment: [:]) == .inconclusive("claude -p was killed by signal 15"))
     }
 }
 

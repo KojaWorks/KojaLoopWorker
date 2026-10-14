@@ -23,7 +23,8 @@ public struct ManagerStatus: Codable, Sendable, Equatable {
     public struct Auth: Codable, Sendable, Equatable {
         /// `unknown` before the first preflight, then `ok` or `failing`.
         public var state: String
-        /// Why the last preflight failed.
+        /// Why the last preflight failed or was inconclusive, how many in a row, and when the
+        /// next check runs; nil after an ok.
         public var detail: String?
         /// Dispatch is paused until then after auth releases (the circuit breaker).
         public var backoffUntil: Date?
