@@ -2,7 +2,9 @@
 
 This file lists the behaviors that the Swift Manager must have, one testable row each, with the Python origin that a porter can read. Where a row and [../DESIGN.md](../DESIGN.md) disagree, DESIGN.md wins.
 
-Status: `keep` ports the Python behavior as is; `fix` states the corrected behavior for a Python gap or bug; `changed` states the behavior that the new design puts in place of the Python one; `patch` only matters for the Patch backlog (round 2). Python paths are under `loopworker/`, tests under `tests/`. "untested" means no pytest covered it, so the Swift test is the first one.
+The Origin column cites the Python implementation, which was deleted after commit `8742f58331`; read a cited file with `git show 8742f58331:<path>`.
+
+Status: `keep` ports the Python behavior as is; `fix` states the corrected behavior for a Python gap or bug; `changed` states the behavior that the new design puts in place of the Python one; `patch` only matters for the Patch backlog (round 2). Python paths are under `loopworker/`, tests under `pytests/`. "untested" means no pytest covered it, so the Swift test is the first one.
 
 ## ProcessRunner
 
