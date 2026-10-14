@@ -69,6 +69,9 @@ extension Manager {
         var fixFailures = 0
         var fixError: String?
         var fixRetryAt: Date?
+        /// Consecutive failures to move the card on after a CI verdict, and when to poll again.
+        var exitFailures = 0
+        var exitRetryAt: Date?
     }
 
     // MARK: Watching
@@ -92,6 +95,7 @@ extension Manager {
     /// leaving, or no slot took it within `ci_timeout_minutes`.
     func pollCI(_ now: Date) {
         for (id, w) in ciWatches where !w.polling && !w.fixStarting {
+            if let retry = w.exitRetryAt, now < retry { continue }
             if w.fix != nil {
                 guard let why = queuedFixProblem(w, now) else { continue }
                 ciWatches[id]!.polling = true
@@ -101,7 +105,7 @@ extension Manager {
                 }
                 continue
             }
-            if let last = w.lastPoll, now.timeIntervalSince(last) < Self.ciPollInterval { continue }
+            if w.exitRetryAt == nil, let last = w.lastPoll, now.timeIntervalSince(last) < Self.ciPollInterval { continue }
             ciWatches[id]!.polling = true
             ciWatches[id]!.lastPoll = now
             track { await self.pollTask(id) }
@@ -161,7 +165,7 @@ extension Manager {
             let link = (pipeline?.url ?? r.review.url).absoluteString
             do { try await deps.backlog.markReview(fresh, review: r.review, note: "CI passed on `\(r.sha.prefix(12))`: \(link)") }
             catch {
-                log.error("\(r.card): CI passed, but moving it to review failed: \(error); trying again in \(Int(Self.ciPollInterval)) s")
+                ciExitFailed(id, "CI passed, but moving it to review failed: \(error)")
                 return
             }
             log.info("\(r.card): CI passed on \(r.sha.prefix(12)); moved to review: \(r.review.display) \(r.review.url.absoluteString)")
@@ -184,12 +188,27 @@ extension Manager {
         let text = blocker + "\n\nReview request: [\(r.review.display)](\(r.review.url.absoluteString))"
         do { try await deps.backlog.markStuck(card, blocker: text) }
         catch {
-            log.error("\(r.card): can't mark it stuck (\(blocker.prefix(200))): \(error); trying again in \(Int(Self.ciPollInterval)) s")
+            ciExitFailed(id, "marking it stuck (\(blocker.prefix(200))) failed: \(error)")
             return
         }
         log.warning("\(r.card): marked stuck: \(blocker.prefix(200))")
         notify(key: "stuck-\(r.card.id)", "LoopWorker: \(r.card) is stuck: \(blocker.prefix(300))")
         unwatch(id)
+    }
+
+    /// Backs off a failed move after a CI verdict: 30 s doubling to 10 min, then the next
+    /// poll re-reads the card and the pipeline and decides again. Notifies at the third
+    /// failure in a row.
+    func ciExitFailed(_ id: String, _ why: String) {
+        guard var w = ciWatches[id] else { return }
+        w.exitFailures += 1
+        let delay = min(30 * pow(2, Double(w.exitFailures - 1)), 600)
+        w.exitRetryAt = clock.now().addingTimeInterval(delay)
+        ciWatches[id] = w
+        log.error("\(w.record.card): \(why); trying again in \(Int(delay)) s (\(w.exitFailures) failure(s) in a row)")
+        if w.exitFailures == 3 {
+            notify(key: "ci-exit-failing-\(id)", "LoopWorker on \(hostName): \(w.record.card) can't leave verifying, 3 failures in a row: \(why.prefix(300))")
+        }
     }
 
     func ciBlocker(_ reason: CIStuckReason, _ r: CIWatchRecord, pipeline: PipelineStatus?, ci: ProjectContract.CI) -> String {

@@ -412,6 +412,27 @@ import Testing
             ["loopworker:next", "loopworker:working", "loopworker:review", "loopworker:stuck", "In review", "To do"]))
     }
 
+    @Test("B172: a retried write doesn't repeat a note that landed while its label change failed")
+    func retriedWriteSkipsTheLandedNote() async throws {
+        let w = world("loopworker:ci")
+        let body = "<!-- loopworker -->\n\nReview request: \(review.url.absoluteString)\n\nCI passed"
+        w.notes([Fixture.assigned(), Fixture.note(300, body, at: 10)])
+        w.events([Fixture.labelEvent(1, at: 2), Fixture.labelEvent(2, "loopworker:ci", at: 5)])
+        try await w.backlog().markReview(card, review: review, note: "CI passed")
+        #expect(w.gitlab.requests("POST", Fixture.issuePath + "/notes").isEmpty)
+        #expect(w.gitlab.requests("PUT", Fixture.issuePath).count == 1)
+    }
+
+    @Test("B172: the same note after a label change is posted again, so repeated releases still count")
+    func sameNoteAfterALabelChangeIsPosted() async throws {
+        let w = world("loopworker:ci")
+        let body = "<!-- loopworker -->\n\nReview request: \(review.url.absoluteString)\n\nCI passed"
+        w.notes([Fixture.assigned(), Fixture.note(300, body, at: 10)])
+        w.events([Fixture.labelEvent(1, at: 2), Fixture.labelEvent(2, "loopworker:ci", at: 11)])
+        try await w.backlog().markReview(card, review: review, note: "CI passed")
+        #expect(w.gitlab.requests("POST", Fixture.issuePath + "/notes").count == 1)
+    }
+
     @Test("B172: markReview and markStuck accept a verifying card and neutralize CI-derived text")
     func reviewAndStuckFromVerifying() async throws {
         let w = world("loopworker:ci")

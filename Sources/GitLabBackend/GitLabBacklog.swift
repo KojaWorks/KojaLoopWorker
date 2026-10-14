@@ -259,8 +259,19 @@ public actor GitLabBacklog: Backlog {
     }
 
     /// Posts a Manager note. Everything after the markers passes through quick-action neutralization.
+    /// Skips the post when my newest note already has this body and no label changed since:
+    /// a retry after a write whose note landed but whose label change failed.
     private func postNote(_ read: Read, _ text: String, markers: String = "") async throws {
         let body = Trust.managerMarker + "\n" + markers + "\n" + Trust.neutralizeQuickActions(text)
+        let me = try await client.me()
+        if let last = read.notes.filter({ $0.author.id == me.id && !$0.system }).max(by: { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }),
+           last.body == body {
+            let events: [GLLabelEvent] = try await client.getAll(eventsPath(read.issue))
+            if !events.contains(where: { $0.createdAt >= last.createdAt }) {
+                log.info("\(read.card.ref.display): note \(last.id) already says this; not posting it again")
+                return
+            }
+        }
         let _: GLNote = try await client.send("POST", notesPath(read.issue), body: ["body": body], idempotent: false)
     }
 

@@ -9,8 +9,8 @@ let reviewURL = URL(string: "https://forge.example/g/app/-/merge_requests/1")!
 @Suite struct ManagerCITests {
     /// Card 12 finished on a wait_for_ci project: its review request is open and it waits for
     /// CI on `commit-1`.
-    func verifying() async throws -> ManagerHarness {
-        let h = try ManagerHarness(projects: oneColdProject, manifest: ciManifest)
+    func verifying(top: String = "") async throws -> ManagerHarness {
+        let h = try ManagerHarness(projects: oneColdProject, top: top, manifest: ciManifest)
         h.addCard(12)
         try await h.boot()
         await h.cycle()
@@ -102,6 +102,27 @@ let reviewURL = URL(string: "https://forge.example/g/app/-/merge_requests/1")!
         h.clock.advance(15 * 60)
         await h.cycle()
         #expect(stuckBlocker(h)?.hasPrefix("No CI pipeline started for `commit-1` within 15 min of the push.") == true)
+    }
+
+    @Test("B167: a failed move after a CI verdict backs off from 30 s and notifies at the third failure")
+    func exitBacksOff() async throws {
+        let h = try await verifying(top: "notify_command = \"x\"")
+        h.forge.state { $0.pipelines["commit-1"] = PipelineStatus(state: .passed, url: pipelineURL) }
+        h.backlog.state { $0.failMarkReview = FakeError("502 Bad Gateway") }
+        h.clock.advance(121)
+        await h.cycle()
+        #expect(h.log.contains("g/app#12: CI passed, but moving it to review failed: 502 Bad Gateway; trying again in 30 s (1 failure(s) in a row)", level: .error))
+        h.clock.advance(31)
+        await h.cycle()
+        #expect(h.forge.state.get.pipelineCalls.count == 2)
+        h.clock.advance(61)
+        await h.cycle()
+        #expect(h.forge.state.get.pipelineCalls.count == 3)
+        #expect(h.runner.specs.get.contains { $0.environment["LOOPWORKER_ALERT"]??.contains("g/app#12 can't leave verifying, 3 failures in a row") == true })
+        h.backlog.state { $0.failMarkReview = nil }
+        h.clock.advance(121)
+        await h.cycle()
+        #expect(h.backlog.card(id: "id-12")?.state == .review)
     }
 
     @Test("B167: a canceled pipeline marks the card stuck instead of starting a fix round")
