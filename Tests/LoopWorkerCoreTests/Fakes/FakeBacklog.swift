@@ -9,6 +9,8 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
         case release(String, reason: String, countsAsAttempt: Bool)
         case markStuck(String, blocker: String)
         case markReview(String, url: URL)
+        case markVerifying(String, url: URL)
+        case resumeFix(String)
     }
 
     struct State {
@@ -20,6 +22,12 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
         var failWorking = false
         var failRelease = false
         var failMarkReview: (any Error)?
+        var failMarkVerifying: (any Error)?
+        var failVerifying = false
+        /// `resumeFix` returns this instead of checking the card.
+        var resumeFixOverride: Bool?
+        /// The note each `markReview` got, by card id.
+        var reviewNotes: [String: String] = [:]
         var claimOverride: Bool?
         /// `claim` throws after (true) or instead of (false) moving the card, like a lost response.
         var claimThrows: Bool?
@@ -75,6 +83,33 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
         }
     }
 
+    func verifying(in projects: [ProjectSpec]) async throws -> [Card] {
+        try state {
+            if $0.failVerifying { throw FakeError("verifying failed") }
+            let keys = Set(projects.map { $0.path.lowercased() })
+            return $0.cards.values.filter { $0.state == .verifying && keys.contains($0.project.lowercased()) }
+        }
+    }
+
+    func markVerifying(_ card: Card, review: ReviewRequest) async throws {
+        try state {
+            if let e = $0.failMarkVerifying { throw e }
+            guard $0.cards[card.ref.id]?.state == .working else { throw FakeError("markVerifying \(card.ref): not working") }
+            $0.writes.append(.markVerifying(card.ref.id, url: review.url))
+            $0.cards[card.ref.id]?.state = .verifying
+        }
+    }
+
+    func resumeFix(_ card: Card) async throws -> Bool {
+        state {
+            $0.writes.append(.resumeFix(card.ref.id))
+            if let o = $0.resumeFixOverride { return o }
+            guard $0.cards[card.ref.id]?.state == .verifying else { return false }
+            $0.cards[card.ref.id]?.state = .working
+            return true
+        }
+    }
+
     func claim(_ card: Card) async throws -> Bool {
         try state {
             $0.writes.append(.claim(card.ref.id))
@@ -93,10 +128,11 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
         state { $0.snapshots[card.ref.id] ?? CardSnapshot(markdown: "# \(card.title)\n") }
     }
 
-    func markReview(_ card: Card, review: ReviewRequest) async throws {
+    func markReview(_ card: Card, review: ReviewRequest, note: String?) async throws {
         try state {
             if let e = $0.failMarkReview { throw e }
             $0.writes.append(.markReview(card.ref.id, url: review.url))
+            $0.reviewNotes[card.ref.id] = note
             $0.cards[card.ref.id]?.state = .review
         }
     }

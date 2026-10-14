@@ -210,10 +210,6 @@ public actor GitLabBacklog: Backlog {
         try await move(read, to: .review)
     }
 
-    public func markReview(_ card: Card, review: ReviewRequest) async throws {
-        try await markReview(card, review: review, note: nil)
-    }
-
     public func markVerifying(_ card: Card, review: ReviewRequest) async throws {
         let read = try await require(card, in: [.working], for: "markVerifying")
         try await postNote(read, "Review request: \(review.url.absoluteString)\n\nWaiting for CI before review.")

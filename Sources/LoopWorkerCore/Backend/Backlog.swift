@@ -20,6 +20,10 @@ public protocol Backlog: Sendable {
     /// its slots to find cards stranded by a Manager or host crash.
     func working(in projects: [ProjectSpec]) async throws -> [Card]
 
+    /// Every card in state `verifying` in the given projects. The Manager resumes watching
+    /// their CI at startup and in the stranded-card sweep.
+    func verifying(in projects: [ProjectSpec]) async throws -> [Card]
+
     /// Moves a `ready` card to `working`. Returns false when the card is no longer `ready`
     /// (someone else moved it); the Manager then skips it.
     func claim(_ card: Card) async throws -> Bool
@@ -27,10 +31,21 @@ public protocol Backlog: Sendable {
     /// The card's trusted content for the worker. See `CardSnapshot`.
     func snapshot(_ card: Card) async throws -> CardSnapshot
 
-    /// Moves a `working` card to `review` and links the review request from the card.
-    func markReview(_ card: Card, review: ReviewRequest) async throws
+    /// Moves a `working` or `verifying` card to `review` and links the review request from
+    /// the card, followed by `note` (markdown) when given, e.g. a link to the CI pipeline
+    /// that passed.
+    func markReview(_ card: Card, review: ReviewRequest, note: String?) async throws
 
-    /// Moves a `working` card to `stuck` and posts `blocker` (markdown) on the card under the
+    /// Moves a `working` card to `verifying`: the review request is open and the Manager
+    /// waits for its CI. Links the review request from the card and says that CI is pending.
+    func markVerifying(_ card: Card, review: ReviewRequest) async throws
+
+    /// Moves a `verifying` card back to `working` for a round that fixes its failed CI.
+    /// Returns false, writing nothing, when the card is no longer `verifying` (a human moved
+    /// it); the Manager then drops the round.
+    func resumeFix(_ card: Card) async throws -> Bool
+
+    /// Moves a `working` or `verifying` card to `stuck` and posts `blocker` (markdown) on the card under the
     /// backend's own header, so `blocker` doesn't repeat one. The card stays assigned to its
     /// human so it shows up in their queue.
     func markStuck(_ card: Card, blocker: String) async throws
@@ -40,4 +55,11 @@ public protocol Backlog: Sendable {
     /// is recorded so that later reads report `Card.attempts` one higher; releases caused by
     /// the host (auth failures, Manager restarts) pass false and don't count.
     func release(_ card: Card, reason: String, countsAsAttempt: Bool) async throws
+}
+
+extension Backlog {
+    /// `markReview(_:review:note:)` without a note.
+    public func markReview(_ card: Card, review: ReviewRequest) async throws {
+        try await markReview(card, review: review, note: nil)
+    }
 }

@@ -13,6 +13,11 @@ final class FakeForge: Forge, @unchecked Sendable {
         var attached: [URL] = []
         var supportsAttachments = true
         var defaultBranch = "main"
+        /// The pipeline per commit; a commit without one has no pipeline.
+        var pipelines: [String: PipelineStatus] = [:]
+        /// Every commit `pipeline` was asked about.
+        var pipelineCalls: [String] = []
+        var failPipeline = false
     }
 
     let state = Guarded(State())
@@ -33,6 +38,14 @@ final class FakeForge: Forge, @unchecked Sendable {
             $0.opened.append(draft)
             $0.byBranch[draft.sourceBranch] = rr
             return rr
+        }
+    }
+
+    func pipeline(for project: ProjectSpec, commit: String) async throws -> PipelineStatus? {
+        try state {
+            $0.pipelineCalls.append(commit)
+            if $0.failPipeline { throw FakeError("pipeline read for \(commit) failed") }
+            return $0.pipelines[commit]
         }
     }
 

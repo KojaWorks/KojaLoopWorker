@@ -106,10 +106,6 @@ public actor PatchBacklog: Backlog {
                        kind: "note", fields: fields)
     }
 
-    public func markReview(_ card: Card, review: ReviewRequest) async throws {
-        try await markReview(card, review: review, note: nil)
-    }
-
     public func markVerifying(_ card: Card, review: ReviewRequest) async throws {
         var fields: [String: JSON] = ["status": .string(config.status.verifying)]
         if let field = config.reviewLinkField { fields[field] = .string(review.url.absoluteString) }
