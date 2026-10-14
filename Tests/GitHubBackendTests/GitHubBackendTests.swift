@@ -175,3 +175,54 @@ private let pullJSON = #"{"number": 7, "html_url": "https://github.com/owner/app
         #expect(stub.requests.count == 4)
     }
 }
+
+@Suite struct GitHubPipelineTests {
+    func runs(_ runs: [String], total: Int? = nil) -> String {
+        #"{"total_count": \#(total ?? runs.count), "check_runs": [\#(runs.joined(separator: ","))]}"#
+    }
+    func run(_ name: String, _ status: String, _ conclusion: String?, text: String? = nil) -> String {
+        let c = conclusion.map { "\"\($0)\"" } ?? "null"
+        let t = text.map { #""text": "\#($0)""# } ?? #""text": null"#
+        return #"{"name": "\#(name)", "status": "\#(status)", "conclusion": \#(c), "html_url": "https://github.com/owner/app/runs/\#(name)", "output": {"summary": "summary of \#(name)", \#(t)}}"#
+    }
+
+    @Test("B173: no check runs is no pipeline; the commit's check runs are read")
+    func none() async throws {
+        let stub = StubGitHub { _, _ in (200, [:], #"{"total_count": 0, "check_runs": []}"#) }
+        #expect(try await forge(stub).pipeline(for: project, commit: "abc123") == nil)
+        #expect(stub.requests.first?.url?.path == "/repos/owner/app/commits/abc123/check-runs")
+    }
+
+    @Test("B173: check runs map to running, failed, canceled and passed",
+          arguments: [
+            ([("a", "completed", "success"), ("b", "in_progress", nil)], PipelineStatus.State.running),
+            ([("a", "completed", "failure"), ("b", "queued", nil)], .running),
+            ([("a", "completed", "failure"), ("b", "completed", "cancelled")], .failed),
+            ([("a", "completed", "timed_out")], .failed),
+            ([("a", "completed", "cancelled"), ("b", "completed", "success")], .canceled),
+            ([("a", "completed", "success"), ("b", "completed", "neutral"), ("c", "completed", "skipped")], .passed),
+            ([("a", "completed", "action_required")], .running),
+          ] as [([(String, String, String?)], PipelineStatus.State)])
+    func mapping(_ checks: [(String, String, String?)], _ state: PipelineStatus.State) async throws {
+        let body = runs(checks.map { run($0.0, $0.1, $0.2) })
+        let p = try await forge(StubGitHub { _, _ in (200, [:], body) }).pipeline(for: project, commit: "abc123")
+        #expect(p?.state == state)
+        #expect(p?.url == URL(string: "https://github.com/owner/app/commit/abc123/checks"))
+    }
+
+    @Test("B173: failed jobs come from the failing runs, with output text or summary as the tail; pages are followed")
+    func failedJobsAndPages() async throws {
+        let stub = StubGitHub { [self] _, n in
+            n == 1 ? (200, [:], runs([run("test", "completed", "failure", text: "assert failed")], total: 2))
+                   : (200, [:], runs([run("lint", "completed", "timed_out")], total: 2))
+        }
+        let p = try #require(try await forge(stub).pipeline(for: project, commit: "abc123"))
+        #expect(p.state == .failed)
+        #expect(p.failedJobs == [
+            CIJob(name: "test", stage: "", url: URL(string: "https://github.com/owner/app/runs/test"), logTail: "assert failed"),
+            CIJob(name: "lint", stage: "", url: URL(string: "https://github.com/owner/app/runs/lint"), logTail: "summary of lint"),
+        ])
+        let pages = stub.requests.map { URLComponents(url: $0.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "page" }?.value }
+        #expect(pages == ["1", "2"])
+    }
+}
