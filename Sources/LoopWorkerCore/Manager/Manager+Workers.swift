@@ -178,21 +178,52 @@ extension Manager {
             return
         }
 
-        await acquireAndSpawn(ref, spec: spec, card: card, contract: contract, base: base, branch: branch, fix: nil)
+        let resuming: Bool
+        do { resuming = try await resumesPushedBranch(spec, card: card, base: base, branch: branch) }
+        catch {
+            await abortStart(ref, card: card, contract: contract, why: "\(error)", broken: nil)
+            return
+        }
+        await acquireAndSpawn(ref, spec: spec, card: card, contract: contract, base: base, branch: branch, fix: nil, resuming: resuming)
     }
 
-    /// A fix round resets the slot to the pushed card branch instead of the base branch.
-    func acquireAndSpawn(_ ref: SlotRef, spec: SlotSpec, card: Card, contract: ProjectContract, base: String, branch: String, fix: FixRound?) async {
+    /// True when an earlier attempt of this card pushed `branch` and it is still on the forge,
+    /// so the worker continues from it instead of overwriting it. When the push ledger names
+    /// the branch but the forge no longer has it, drops the ledger entry so the fresh start's
+    /// push expects no branch.
+    func resumesPushedBranch(_ spec: SlotSpec, card: Card, base: String, branch: String) async throws -> Bool {
+        var pushes = readPushes()
+        guard let pushed = pushes[card.ref.id], pushed.branch == branch else { return false }
+        let exists = try await step("checking whether \(branch) is still on the forge") {
+            try await self.deps.git.cloneOrFetch(url: self.deps.forge.cloneURL(for: spec.project), into: spec.clone,
+                                                 environment: self.deps.forge.gitEnvironment())
+            return try await self.deps.git.hasRemoteBranch(spec.clone, branch: branch)
+        }
+        if exists {
+            log.info("\(label(spec)): resuming \(card.ref) from origin/\(branch), which an earlier attempt pushed at \(pushed.commit.prefix(12))")
+            return true
+        }
+        pushes[card.ref.id] = nil
+        do { try writePushes(pushes) }
+        catch { throw StepError(step: "dropping \(card.ref)'s entry from \(pushLedger.path)", error: error) }
+        log.warning("\(label(spec)): origin/\(branch), which an earlier attempt of \(card.ref) pushed, is gone from the forge; starting over from origin/\(base)")
+        return false
+    }
+
+    /// A fix round or a resumed card resets the slot to the pushed card branch instead of the
+    /// base branch.
+    func acquireAndSpawn(_ ref: SlotRef, spec: SlotSpec, card: Card, contract: ProjectContract, base: String, branch: String,
+                         fix: FixRound?, resuming: Bool = false) async {
         let dir = spec.stateDir
         let baseCommit: String
-        do { baseCommit = try await deps.lifecycle.acquire(spec, contract: contract, base: fix == nil ? base : branch, branch: branch) }
+        do { baseCommit = try await deps.lifecycle.acquire(spec, contract: contract, base: fix == nil && !resuming ? base : branch, branch: branch) }
         catch {
             await abortStart(ref, card: card, contract: contract, why: "preparing the slot failed: \(error)", broken: error, fix: fix)
             return
         }
 
         do {
-            try await writeWorkerFiles(spec, card: card, contract: contract, base: base, branch: branch, fix: fix)
+            try await writeWorkerFiles(spec, card: card, contract: contract, base: base, branch: branch, fix: fix, resuming: resuming)
         } catch {
             await abortStart(ref, card: card, contract: contract, why: "\(error)", broken: nil, fix: fix)
             return
@@ -210,12 +241,13 @@ extension Manager {
             $0.spawnedAt = clock.now()
         }
         if fix != nil { unwatch(card.ref.id) }
-        let round = fix.map { " for CI fix round \($0.record.round + 1)" } ?? ""
+        let round = fix.map { " for CI fix round \($0.record.round + 1)" } ?? (resuming ? " resuming its pushed branch" : "")
         log.info("\(label(spec)): spawned worker\(round) for \(card.ref) on \(branch) at \(baseCommit.prefix(12)), base \(base), model \(model ?? "default")")
         watchFolderTrust(spec.session)
     }
 
-    func writeWorkerFiles(_ spec: SlotSpec, card: Card, contract: ProjectContract, base: String, branch: String, fix: FixRound? = nil) async throws {
+    func writeWorkerFiles(_ spec: SlotSpec, card: Card, contract: ProjectContract, base: String, branch: String,
+                          fix: FixRound? = nil, resuming: Bool = false) async throws {
         let dir = spec.stateDir
         let snapshot: CardSnapshot
         do { snapshot = try await deps.backlog.snapshot(card) }
@@ -232,7 +264,8 @@ extension Manager {
                               round: $0.record.round + 1, rounds: contract.ci.fixAttempts)
         }
         let brief = WorkerBrief(card: card, project: spec.project, slot: spec, baseBranch: base, branch: branch,
-                                snapshotFile: snapshotFile, excluded: snapshot.excluded, contract: contract, ciFix: ciFix).render()
+                                snapshotFile: snapshotFile, excluded: snapshot.excluded, contract: contract, ciFix: ciFix,
+                                resuming: resuming).render()
 
         var env: [(name: String, value: String)] = []
         for name in ["CLAUDE_CODE_OAUTH_TOKEN"] + spec.project.workerEnv where !env.contains(where: { $0.name == name }) {
@@ -570,9 +603,7 @@ extension Manager {
     /// overwritten, then records the new commit. Uploads the branch's LFS objects first.
     @discardableResult
     func pushBranch(_ spec: SlotSpec, card: Card, branch: String) async throws -> String {
-        let ledger = stateDir.appending(path: "pushes.json")
-        var pushes = (try? JSONDecoder().decode([String: PushRecord].self, from: Data(contentsOf: ledger))) ?? [:]
-        let last = pushes[card.ref.id].flatMap { $0.branch == branch ? $0.commit : nil }
+        let last = readPushes()[card.ref.id].flatMap { $0.branch == branch ? $0.commit : nil }
         let url = deps.forge.cloneURL(for: spec.project), env = deps.forge.gitEnvironment(), git = deps.git
         do {
             if try await git.usesLFS(spec.worktree) { try await git.lfsPush(spec.worktree, url: url, environment: env) }
@@ -581,11 +612,23 @@ extension Manager {
         do { commit = try await git.push(spec.worktree, to: url, branch: branch, expected: last, environment: env) }
         catch let rejected as PushRejected { throw rejected }
         catch { throw StepError(step: "pushing \(branch)", error: error) }
+        var pushes = readPushes()  // re-read: other cards' finishes may have written it during the push
         pushes[card.ref.id] = PushRecord(branch: branch, commit: commit)
         // Failing the finish here would retry the push against a stale lease.
-        do { try JSONEncoder().encode(pushes).write(to: ledger, options: .atomic) }
-        catch { log.error("\(label(spec)): pushed \(branch) at \(commit.prefix(12)) but can't record it in \(ledger.path): \(error); the card's next push will be refused as someone else's branch") }
+        do { try writePushes(pushes) }
+        catch { log.error("\(label(spec)): pushed \(branch) at \(commit.prefix(12)) but can't record it in \(pushLedger.path): \(error); the card's next push will be refused as someone else's branch") }
         return commit
+    }
+
+    var pushLedger: URL { stateDir.appending(path: "pushes.json") }
+
+    /// The push ledger, keyed by card id; empty when the file is missing or unreadable.
+    func readPushes() -> [String: PushRecord] {
+        (try? JSONDecoder().decode([String: PushRecord].self, from: Data(contentsOf: pushLedger))) ?? [:]
+    }
+
+    func writePushes(_ pushes: [String: PushRecord]) throws {
+        try JSONEncoder().encode(pushes).write(to: pushLedger, options: .atomic)
     }
 
     func finishStuck(_ spec: SlotSpec, card: Card, branch: String, base: String, blocker: String) async throws {

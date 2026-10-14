@@ -421,20 +421,71 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(try h.status().projects[0].slots[0].state == "idle")
     }
 
-    @Test func aReclaimedCardLeasesOnItsEarlierPush() async throws {
-        let h = try await spawned()
+    /// The card went stuck with a pushed commit, and a human sent it back to ready.
+    func requeuedAfterStuck(_ h: ManagerHarness) async throws {
         try h.writeOutcome(#"{"outcome":"stuck","blocker":"Which endpoint?"}"#)
         h.tmux.set("lw_g--app_0", alive: false)
         await h.cycle()
         #expect(h.backlog.card(id: "id-12")?.state == .stuck)
-        h.backlog.setState("id-12", .ready)  // a human answered and sent it back
+        #expect(h.git.pushedBranches == ["loopworker-12-fix-it"])
+        h.backlog.setState("id-12", .ready)
+    }
+
+    @Test func aRequeuedStuckCardResumesItsPushedBranch() async throws {  // B178
+        let h = try await spawned()
+        try await requeuedAfterStuck(h)
         await h.cycle()
         #expect(h.tmux.spawned.count == 2)
+        #expect(h.lifecycle.state.get.acquiredBases == ["main", "loopworker-12-fix-it"])
+        #expect(h.git.calls.contains("hasRemoteBranch loopworker-12-fix-it"))
+        #expect(h.log.contains("resuming g/app#12 from origin/loopworker-12-fix-it, which an earlier attempt pushed at commit-1", level: .info))
+        let brief = try String(contentsOf: h.stateDir().appending(path: "brief.md"), encoding: .utf8)
+        #expect(brief.contains("## Resuming"))
+        #expect(brief.contains("git log origin/main..HEAD"))
+
+        h.git.state { $0.defaultCommitsAhead = 1 }  // ahead of the project base, though no new commits
         try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
         h.tmux.set("lw_g--app_0", alive: false)
         await h.cycle()
         #expect(h.git.state.get.pushes.map(\.expected) == [nil, "commit-1"])
+        #expect(h.git.calls.filter { $0.hasPrefix("commitsAhead") }.last == "commitsAhead main")
         #expect(h.backlog.card(id: "id-12")?.state == .review)
+    }
+
+    @Test func aRequeuedCardWhoseBranchIsGoneStartsOverAndDropsItsLedgerEntry() async throws {  // B178
+        let h = try await spawned()
+        try await requeuedAfterStuck(h)
+        h.git.state { $0.remoteBranches = [] }  // a human deleted the branch on the forge
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 2)
+        #expect(h.lifecycle.state.get.acquiredBases == ["main", "main"])
+        #expect(h.log.contains("origin/loopworker-12-fix-it, which an earlier attempt of g/app#12 pushed, is gone from the forge; starting over from origin/main", level: .warning))
+        #expect(!(try String(contentsOf: h.stateDir().appending(path: "brief.md"), encoding: .utf8)).contains("## Resuming"))
+        let ledger = try Data(contentsOf: h.home.appending(path: "state/pushes.json"))
+        #expect(try JSONDecoder().decode([String: PushRecord].self, from: ledger)["id-12"] == nil)
+
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.git.state.get.pushes.map(\.expected) == [nil, nil])
+    }
+
+    @Test func aCardWithoutAPushStartsFresh() async throws {  // B178
+        let h = try await spawned()
+        #expect(h.lifecycle.state.get.acquiredBases == ["main"])
+        #expect(!h.git.calls.contains { $0.hasPrefix("hasRemoteBranch") })
+        #expect(!(try String(contentsOf: h.stateDir().appending(path: "brief.md"), encoding: .utf8)).contains("## Resuming"))
+    }
+
+    @Test func aFailedBranchCheckReleasesTheCardWithoutOverwritingTheBranch() async throws {  // B178
+        let h = try await spawned()
+        try await requeuedAfterStuck(h)
+        h.git.state { $0.failHasRemoteBranch = true }
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 1)
+        #expect(h.backlog.writes.last == .release("id-12", reason: "Couldn't start a worker: checking whether loopworker-12-fix-it is still on the forge: git rev-parse origin/loopworker-12-fix-it failed", countsAsAttempt: false))
+        let ledger = try Data(contentsOf: h.home.appending(path: "state/pushes.json"))
+        #expect(try JSONDecoder().decode([String: PushRecord].self, from: ledger)["id-12"] == PushRecord(branch: "loopworker-12-fix-it", commit: "commit-1"))
     }
 
     @Test func backendRejectionEndsTheCardStuck() async throws {  // B90

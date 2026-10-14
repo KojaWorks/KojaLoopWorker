@@ -129,7 +129,11 @@ that starts with `/` is escaped, so `/merge` or `/label` from a worker is shown,
 2. **Acquire.** A task resets the slot's worktree to the base branch, checks out
    a branch named from the contract's template (default `loopworker-{number}-{slug}`, flat so it
    can't collide with a branch named `loopworker`; a project whose commit hooks parse branch
-   names sets its own), and runs `reset.sh` (hot) or `provision.sh` (cold).
+   names sets its own), and runs `reset.sh` (hot) or `provision.sh` (cold). When the push ledger
+   says an earlier attempt of this card pushed that branch (it went stuck, and a human sent it
+   back to ready), the Manager fetches, and if the forge still has the branch, resets to it
+   instead, and the brief tells the worker to continue from that work. If the branch is gone, the
+   card starts over from the base and its ledger entry is dropped.
 3. **Spawn.** The Manager writes the snapshot, the brief and a launch script into the slot's
    state directory (never into the worktree) and starts `claude` in a tmux session. The worker
    gets `LOOPWORKER_OUTCOME`, the path where its outcome goes, and an MCP config that contains
@@ -280,6 +284,7 @@ $LOOPWORKER_HOME/
   state/PAUSED                host killswitch; state/projects/<key>/PAUSED per project
   state/tmux                  the Manager's own tmux server socket
   state/ci/<card id>.json     CI watch record of a verifying card (the id percent-encoded)
+  state/pushes.json           push ledger: the branch and commit last pushed per card id, the push lease
   slots/<key>/<n>/            brief, snapshot, launch script, outcome, MCP config, ci.md
 <clones_dir>/<key>/           the clone; its working tree tracks origin/<base>
 <clones_dir>/<key>.slots/<n>/ slot worktrees

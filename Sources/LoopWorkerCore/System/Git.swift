@@ -53,6 +53,11 @@ public protocol GitDriving: Sendable {
     /// next), and checks out a fresh `branch` there. Returns the resolved base commit.
     func resetWorktree(_ worktree: URL, url: String, base: String, branch: String, environment: [String: String]) async throws -> String
 
+    /// True when the tracking ref `origin/<branch>` exists in `repo` (a clone or any of its
+    /// worktrees, which share refs). Reads only local refs: fetch first for the forge's state.
+    /// - Throws: `GitError` when git fails for any reason other than a missing ref.
+    func hasRemoteBranch(_ repo: URL, branch: String) async throws -> Bool
+
     /// Number of commits on HEAD that `origin/<base>` doesn't have.
     func commitsAhead(_ worktree: URL, base: String) async throws -> Int
 
@@ -172,6 +177,14 @@ public struct Git: GitDriving {
         try await git(["-C", path, "clean", "-fdx", "--", ".claude", "CLAUDE.local.md"])
         try await git(["-C", path, "checkout", "-B", branch])
         return try await git(["-C", path, "rev-parse", "HEAD"]).output.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    public func hasRemoteBranch(_ repo: URL, branch: String) async throws -> Bool {
+        let arguments = ["-C", repo.path, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/\(branch)"]
+        let result = try await runner.run(Self.spec(arguments, Self.localTimeout, [:]))
+        if result.succeeded { return true }
+        if result.status == 1 && !result.timedOut { return false }  // --quiet: a missing ref exits 1
+        throw GitError(command: arguments.joined(separator: " "), result: result)
     }
 
     public func commitsAhead(_ worktree: URL, base: String) async throws -> Int {

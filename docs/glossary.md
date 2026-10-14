@@ -19,6 +19,7 @@ One term per concept. Code, docs, logs and commits use the term in the left colu
 | **Release** | The Manager returning a `working` card to `ready` after a crash, hang or auth failure, with a note on the card. | reclaim, unclaim, bail |
 | **Outcome** | The JSON file that a worker writes as its last act: `done` (with review request text) or `stuck` (with the blocker). The worker's only output channel to the Manager. | result, exit signal |
 | **Finish** | The Manager applying an outcome: pushing the branch, opening the review request and moving the card to `review` or `stuck`. | wind down, ship |
+| **Push ledger** | `state/pushes.json`: the branch and commit that the Manager last pushed for each card. A push leases on it, and a re-queued card whose branch is still on the forge resumes from it. | push record, lease file |
 | **Review request** | A forge's request to merge a branch: a GitLab merge request, a GitHub pull request. | MR, PR (except when naming one forge's object) |
 | **Trusted** | A card that the backlog identity itself vouched for: assigned and labelled by that user, with content that nobody else changed afterwards. Only trusted cards are claimed. | authorized, safe |
 | **Snapshot** | The trusted content of a card (description and comments) that the Manager renders to a file for the worker. Content that fails the trust check is left out. | card body, prompt |

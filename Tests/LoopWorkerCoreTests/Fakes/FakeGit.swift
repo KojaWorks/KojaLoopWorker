@@ -20,6 +20,9 @@ final class FakeGit: GitDriving, @unchecked Sendable {
         var failPushOnce = false
         var usesLFS = false
         var failLFSPushOnce = false
+        /// Branches on the forge; a push adds its branch.
+        var remoteBranches: Set<String> = []
+        var failHasRemoteBranch = false
     }
 
     let state = Guarded(State())
@@ -52,6 +55,14 @@ final class FakeGit: GitDriving, @unchecked Sendable {
         return "base123"
     }
 
+    func hasRemoteBranch(_ repo: URL, branch: String) async throws -> Bool {
+        try state {
+            $0.calls.append("hasRemoteBranch \(branch)")
+            if $0.failHasRemoteBranch { throw FakeError("git rev-parse origin/\(branch) failed") }
+            return $0.remoteBranches.contains(branch)
+        }
+    }
+
     func commitsAhead(_ worktree: URL, base: String) async throws -> Int {
         state {
             $0.calls.append("commitsAhead \(base)")
@@ -73,6 +84,7 @@ final class FakeGit: GitDriving, @unchecked Sendable {
             if let e = $0.pushFailure { $0.pushFailure = nil; throw e }
             $0.pushes.append((worktree, url, branch, expected, environment))
             $0.calls.append("push \(branch)")
+            $0.remoteBranches.insert(branch)
             return "commit-\($0.pushes.count)"
         }
     }
