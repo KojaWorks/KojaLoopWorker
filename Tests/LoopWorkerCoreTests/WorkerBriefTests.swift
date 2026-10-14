@@ -26,6 +26,8 @@ import Testing
         #expect(b.contains("/c/g--app.slots/0"))
         #expect(b.contains("$LOOPWORKER_OUTCOME"))
         #expect(!b.contains("storygrafter"))
+        #expect(b.contains("files into `/h/slots/g--app/0` (never into the worktree)"))  // B181
+        #expect(b.contains("`![after](attachment:after.png)`"))
     }
 
     @Test func guideStepOnlyWhenTheContractAsks() {
