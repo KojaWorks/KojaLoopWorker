@@ -12,6 +12,8 @@ struct CardRecord: Codable, Equatable {
     var claimedAt: Date
     /// Set for a CI fix round: its number, from 1.
     var ciRound: Int? = nil
+    /// Set for a CI fix round: the pushed commit whose pipeline failed.
+    var ciCommit: String? = nil
 
     static func read(_ file: URL) -> CardRecord? {
         guard let data = try? Data(contentsOf: file) else { return nil }
@@ -105,6 +107,7 @@ extension Manager {
             $0.branch = branch
             $0.base = base
             $0.ciRound = nil
+            $0.ciCommit = nil
             $0.spawnedAt = nil
             $0.pane = []
             $0.finishFailures = 0
@@ -128,7 +131,7 @@ extension Manager {
             }
             try CardRecord(ref: card.ref, project: spec.project.path, number: card.number, slot: spec.index,
                            branch: branch, base: base, claimedAt: clock.now(),
-                           ciRound: fix.map { $0.record.round + 1 }).write(cardRecordFile(spec))
+                           ciRound: fix.map { $0.record.round + 1 }, ciCommit: fix?.record.sha).write(cardRecordFile(spec))
         } catch {
             log.error("\(label(spec)): can't write \(dir.path): \(error); not claiming \(card.ref)")
             if fix != nil { ciWatches[card.ref.id]?.fixStarting = false }
@@ -312,6 +315,7 @@ extension Manager {
             $0.branch = nil
             $0.base = nil
             $0.ciRound = nil
+            $0.ciCommit = nil
             $0.spawnedAt = nil
             $0.finishFailures = 0
             $0.finishRetryAt = nil
@@ -479,7 +483,8 @@ extension Manager {
                 case .done(let title, let body, let guide):
                     do {
                         try await finishDone(spec, card: card, branch: branch, base: base, title: title, body: body, guide: guide,
-                                             ciRound: s.ciRound, waitForCI: projects[ref.key]?.contract?.ci.waitForCI ?? false)
+                                             ciRound: s.ciRound, ciCommit: s.ciCommit,
+                                             waitForCI: projects[ref.key]?.contract?.ci.waitForCI ?? false)
                     } catch let rejection as BackendRejection {
                         try await stuck(spec, card: card, blocker: "Couldn't finish: the forge or backlog refused: \(rejection)")
                     }
@@ -497,14 +502,18 @@ extension Manager {
         await recycle(ref, keepOutcome: true)
     }
 
-    /// - Parameter ciRound: set for a CI fix round, whose new commits count against the
-    ///   pushed card branch rather than the base.
+    /// - Parameters:
+    ///   - ciRound: set for a CI fix round.
+    ///   - ciCommit: set for a CI fix round: the failed commit, which the round's new commits
+    ///     count from. Not `origin/<branch>`, which any later fetch moves to the round's own push.
     func finishDone(
         _ spec: SlotSpec, card: Card, branch: String, base: String, title: String, body: String, guide: String?,
-        ciRound: Int? = nil, waitForCI: Bool = false
+        ciRound: Int? = nil, ciCommit: String? = nil, waitForCI: Bool = false
     ) async throws {
-        let since = ciRound == nil ? base : branch
-        let ahead = try await step("counting commits on \(branch)") { try await self.deps.git.commitsAhead(spec.worktree, base: since) }
+        let ahead = try await step("counting commits on \(branch)") {
+            if let ciCommit { try await self.deps.git.commitsSince(spec.worktree, commit: ciCommit) }
+            else { try await self.deps.git.commitsAhead(spec.worktree, base: base) }
+        }
         guard ahead > 0 else {
             let blocker = ciRound.map { "The worker reported done for CI fix round \($0), but made no commits on `\(branch)` after the failed pipeline." }
                 ?? "The worker reported done, but branch `\(branch)` has no commits ahead of `\(base)`."

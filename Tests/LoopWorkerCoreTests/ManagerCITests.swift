@@ -180,7 +180,7 @@ let reviewURL = URL(string: "https://forge.example/g/app/-/merge_requests/1")!
         try h.writeOutcome(#"{"outcome":"done","title":"Fix CI","body":"Fixed the test."}"#)
         h.tmux.set("lw_g--app_0", alive: false)
         await h.cycle()
-        #expect(h.git.calls.filter { $0.hasPrefix("commitsAhead") } == ["commitsAhead main", "commitsAhead loopworker-12-fix-it"])
+        #expect(h.git.calls.filter { $0.hasPrefix("commits") } == ["commitsAhead main", "commitsSince commit-1"])
         #expect(h.git.state.get.pushes.map(\.expected) == [nil, "commit-1"])
         #expect(h.forge.state.get.opened.count == 1)
         #expect(h.backlog.card(id: "id-12")?.state == .verifying)
@@ -188,10 +188,28 @@ let reviewURL = URL(string: "https://forge.example/g/app/-/merge_requests/1")!
         #expect(r.sha == "commit-2" && r.round == 1)
     }
 
+    @Test("B168: a retried fix-round finish counts from the failed commit, not the moved origin/<branch>")
+    func retriedFixRoundFinish() async throws {
+        let h = try await fixRound()
+        h.backlog.state { $0.failMarkVerifying = FakeError("502 Bad Gateway") }
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix CI","body":"b"}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.backlog.card(id: "id-12")?.state == .working)
+        // A refresh fetched the round's own push, so origin/<branch> is HEAD now.
+        h.git.state { $0.aheadOfBase["loopworker-12-fix-it"] = 0 }
+        h.backlog.state { $0.failMarkVerifying = nil }
+        h.clock.advance(31)
+        await h.cycle()
+        #expect(stuckBlocker(h) == nil)
+        #expect(h.backlog.card(id: "id-12")?.state == .verifying)
+        #expect(try record(h)?.round == 1)
+    }
+
     @Test("B168: a fix round without new commits is stuck")
     func fixRoundWithoutCommits() async throws {
         let h = try await fixRound()
-        h.git.state { $0.defaultCommitsAhead = 0 }
+        h.git.state { $0.commitsSince["commit-1"] = 0 }
         try h.writeOutcome(#"{"outcome":"done","title":"Fix CI","body":"b"}"#)
         h.tmux.set("lw_g--app_0", alive: false)
         await h.cycle()

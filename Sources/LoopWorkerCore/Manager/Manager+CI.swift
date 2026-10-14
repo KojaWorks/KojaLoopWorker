@@ -246,6 +246,7 @@ extension Manager {
             $0.branch = r.branch
             $0.base = r.base
             $0.ciRound = r.round + 1
+            $0.ciCommit = r.sha
             $0.spawnedAt = nil
             $0.pane = []
             $0.finishFailures = 0

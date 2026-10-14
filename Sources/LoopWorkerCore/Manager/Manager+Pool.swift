@@ -192,6 +192,7 @@ extension Manager {
             $0.branch = record.branch
             $0.base = record.base
             $0.ciRound = record.ciRound
+            $0.ciCommit = record.ciCommit
             $0.spawnedAt = record.claimedAt
             $0.prepared = true
         }

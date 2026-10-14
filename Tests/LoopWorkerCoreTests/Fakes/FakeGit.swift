@@ -12,6 +12,10 @@ final class FakeGit: GitDriving, @unchecked Sendable {
         var fetchEnvironments: [[String: String]] = []
         var commitsAhead: [String: Int] = [:]
         var defaultCommitsAhead = 1
+        /// `commitsAhead` per base branch, before `commitsAhead` per worktree.
+        var aheadOfBase: [String: Int] = [:]
+        /// `commitsSince` per commit; else `defaultCommitsAhead`.
+        var commitsSince: [String: Int] = [:]
         var failCloneOrFetch = false
         var failPushOnce = false
         var usesLFS = false
@@ -51,7 +55,14 @@ final class FakeGit: GitDriving, @unchecked Sendable {
     func commitsAhead(_ worktree: URL, base: String) async throws -> Int {
         state {
             $0.calls.append("commitsAhead \(base)")
-            return $0.commitsAhead[worktree.path] ?? $0.defaultCommitsAhead
+            return $0.aheadOfBase[base] ?? $0.commitsAhead[worktree.path] ?? $0.defaultCommitsAhead
+        }
+    }
+
+    func commitsSince(_ worktree: URL, commit: String) async throws -> Int {
+        state {
+            $0.calls.append("commitsSince \(commit)")
+            return $0.commitsSince[commit] ?? $0.defaultCommitsAhead
         }
     }
 

@@ -93,6 +93,8 @@ public actor Manager {
         var base: String?
         /// Set for a round that fixes the card's failed CI: that round's number, from 1.
         var ciRound: Int?
+        /// For a CI fix round: the pushed commit whose pipeline failed, where the round started.
+        var ciCommit: String?
         var spawnedAt: Date?
         var lastError: String?
         var lastAttemptFinished: Date?

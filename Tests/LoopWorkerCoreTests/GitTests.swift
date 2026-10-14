@@ -139,6 +139,10 @@ struct GitFixture {
         let second = try await f.git.push(slot, to: f.origin.path, branch: "loopworker-1-card", expected: first, environment: [:])
         #expect(try await remote().hasPrefix(second))
         #expect(second != first)
+
+        #expect(try await f.git.commitsSince(slot, commit: second) == 0)
+        try await f.commit(in: slot, file: "fix", "y\n")
+        #expect(try await f.git.commitsSince(slot, commit: second) == 1)
     }
 
     @Test("push never overwrites a branch that LoopWorker didn't push")
