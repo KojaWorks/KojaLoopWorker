@@ -45,7 +45,7 @@ let reviewURL = URL(string: "https://forge.example/g/app/-/merge_requests/1")!
         #expect(h.forge.state.get.pipelineCalls.isEmpty)
     }
 
-    @Test("B165: with wait_for_ci the card opens a draft, moves to verifying, frees its slot and gets a watch record")
+    @Test("B165, B171: with wait_for_ci the card opens a draft, moves to verifying, frees its slot and gets a watch record")
     func finishWaitsForCI() async throws {
         let h = try await verifying()
         #expect(h.forge.state.get.opened.map(\.draft) == [true])

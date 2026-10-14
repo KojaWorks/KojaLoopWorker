@@ -152,6 +152,20 @@ Status: `keep` ports the Python behavior as is; `fix` states the corrected behav
 | B93 | At startup, the Manager adopts each live session whose slot `card.json` names a card that the backlog still reports `working`, and reaps every other `lw_<key>_*` session on its tmux server before building the slot pool, so no unadopted worker holds a worktree that the pool resets. | changed | `manager.py:399-405`, `host.py:421-423`; `test_reap_orphans_at_startup` (release path untested) |
 | B94 | At startup and every 5 minutes, the Manager calls `working(in:)` and compares it with its slots. A `working` card named by a slot's `card.json` with an outcome file is finished; one without an outcome is released with reason "Manager restarted". A `working` card that no slot of this home names is released with reason "the Manager lost track of this card's worker", not counted as an attempt. A failed `working(in:)` read changes nothing. | fix | D1/scar 23, `base.py:33-36`, `patch.py:298-300` (dead code); untested |
 
+### Waiting for CI
+
+| ID | Behavior | Status | Origin |
+| --- | --- | --- | --- |
+| B164 | A project without `[review] wait_for_ci` moves a finished card to `review` right after opening the review request, and its CI is never read. | changed | none |
+| B165 | With `wait_for_ci`, finish opens the review request, writes the watch record `state/ci/<card id>.json` (card, project, branch, base, pushed commit, review request, round, push time) atomically, then moves the card to `verifying` and frees the slot. The record is written first, so a `verifying` card always has one. | changed | none |
+| B166 | The Manager polls every watched card every 120 s: it re-reads the card (a card that left `verifying` outside the loop stops the watch and deletes its record), then reads the newest pipeline for the pushed commit, so a re-run or a pipeline started by a branch push counts. | changed | none |
+| B167 | A passed pipeline (success, skipped, or only manual jobs left) moves the card to `review` with a note that links it. Still running `ci_timeout_minutes` after the push, no pipeline 15 min after the push, a canceled pipeline, or a forge that can't be read until the timeout marks the card stuck, naming the commit and linking the pipeline and the review request. Every exit deletes the watch record. | changed | none |
+| B168 | A failed pipeline with fix rounds left queues a fix round. Fill starts queued fix rounds before new claims, within the same budget and `max_concurrent_workers`. The round calls `resumeFix` (false: a human moved the card, so the round is dropped and logged), resets a slot to the pushed card branch, writes `ci.md` and spawns the worker with the fix-round brief. Its finish requires commits since the failed push, pushes under the same lease ledger, reuses the open review request and returns the card to `verifying` with the new commit and round + 1. A crash in a fix round releases the card like any crash. | changed | none |
+| B169 | A pipeline that fails after `ci_fix_attempts` fix rounds marks the card stuck with each failed job linked. | changed | none |
+| B170 | At startup and with every stranded-card sweep, each `verifying` card with a watch record is watched again; one without a record (or with an unreadable one) is marked stuck, because nothing else would move it on. The stranded-card sweep never releases a `verifying` card, and a failed read of `verifying` cards changes nothing. | changed | none |
+| B171 | The status file lists each watched card (card, round, short commit, pipeline state or fix-round state, push time, pipeline or review request URL), and `loopworker status` prints them under "waiting for CI". | changed | none |
+| B175 | `ci.md` holds each failed job's name, stage, URL and the last 200 lines of its log, redacted and fenced with more backticks than the log contains, under a header that calls it untrusted CI output and not instructions. The fix-round brief names the review request, the failed commit, `ci.md` and the round, and tells the worker that the Manager keeps the existing review request. | changed | none |
+
 ### Auth gate
 
 | ID | Behavior | Status | Origin |
@@ -210,6 +224,7 @@ Status: `keep` ports the Python behavior as is; `fix` states the corrected behav
 | B121 | A missing project manifest is an error that names the path. A lifecycle timeout <= 0 is rejected at load. | keep | `config.py:43-53`; `test_missing_manifest_raises`, `test_nonpositive_script_timeout_rejected_at_load` |
 | B122 | A project's `contract` overlay replaces the repo's `.loopworker/` entirely. | changed | none |
 | B161 | The contract's `[lfs]` table is optional: `pull` (default true), `include` and `exclude` (git-lfs path patterns, default empty), `pull_timeout_minutes` (default 60). A timeout <= 0, or a pattern containing a comma (git-lfs's list separator), is rejected at load. | changed | none |
+| B163 | The contract's `[review]` table may set `wait_for_ci` (default false), `ci_timeout_minutes` (default 120, must be > 0) and `ci_fix_attempts` (default 2, must be >= 0); an invalid value names the key and the file. | changed | none |
 | B123 | A malformed config file is reported as malformed (with the decoder's message and the file path), never as missing, and never as a raw stack trace. | fix | `__main__.py:43-47`, `config.py:198` (KeyError); `test_doctor_surfaces_malformed_config_not_missing`, `test_host_config_missing_file` |
 
 ## GitLabBacklog and GitLabForge
@@ -229,6 +244,13 @@ Status: `keep` ports the Python behavior as is; `fix` states the corrected behav
 | B134 | `gitEnvironment` supplies the token through `GIT_ASKPASS`; `cloneURL` contains no credentials. | changed | none |
 | B135 | `openReviewRequest` returns the open merge request for the source branch if one exists, and otherwise opens one. | changed | none |
 | B136 | `attach` uploads the file to the project and returns its markdown URL. | changed | none |
+| B172 | `verifying` is the `<prefix>ci` label; in `labels` and `work_item_status` mode its status defaults to the `working` status name (`[backlog.gitlab.status] verifying`). `markVerifying` needs a `working` card, `resumeFix` returns false unless the card is `verifying`, and `markReview` and `markStuck` accept both. `pipeline` reads the newest pipeline for the commit (`success`, `skipped` and `manual` pass; `failed`, `canceled`; anything else runs) and, for a failed one, the failed jobs that aren't `allow_failure` with the last 200 lines of each trace, color codes stripped. | changed | none |
+
+## GitHubForge
+
+| ID | Behavior | Status | Origin |
+| --- | --- | --- | --- |
+| B173 | `pipeline` folds the commit's latest check runs into one pipeline: none is nil; any run not completed is running; any `failure` or `timed_out` is failed, with each failing run as a job and its output text (else summary) as the log tail; any `cancelled` is canceled; all `success`, `neutral` or `skipped` pass; anything else counts as running. Pages are followed to `total_count`. The older commit status API is not read. | changed | none |
 
 ## PatchBacklog (round 2)
 
@@ -245,6 +267,7 @@ Status: `keep` ports the Python behavior as is; `fix` states the corrected behav
 | B145 | Reads page through PostgREST ranges until a short page, so a `max-rows` cap can't truncate the result. | patch | scar 50, `patch.py:235`, `patch.py:252`; untested |
 | B146 | `release` and `markStuck` write their reason into the card's page body. | patch | D9, `patch.py:363-371`; untested |
 | B147 | Constructing the backend does no network I/O and reads no global environment; the token exchange happens on first use. | patch | 3b, `patch.py` `__init__`; `test_manager_integration.py:59-63` |
+| B174 | `verifying` is its own status, `[backlog.patch.status] verifying` (default `Verifying`); every state's status must differ, and a duplicate names both keys. `resumeFix` is one PATCH filtered on the verifying status. `markVerifying` writes the review link field like `markReview`. | patch | none |
 
 ## CLI and doctor
 

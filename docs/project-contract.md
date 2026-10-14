@@ -92,6 +92,12 @@ wallclock_cap_minutes = 90
 [review]
 # Ask the worker to write a storygrafter review guide, attached to the review request.
 guide = false
+# Move the card to review only once the pushed commit's CI passes (see below).
+wait_for_ci = false
+# Mark the card stuck when CI hasn't finished this long after a push.
+ci_timeout_minutes = 120
+# Worker rounds that fix a failed pipeline before the card is marked stuck.
+ci_fix_attempts = 2
 
 [lfs]
 # Pull Git LFS content into the slot when the repo uses LFS. false leaves pointer files.
@@ -104,6 +110,17 @@ pull_timeout_minutes = 60
 
 Which environment variables reach a worker is host config (`worker_env` on the project in
 `config.toml`), not contract, so a repo can't widen it.
+
+## Waiting for CI
+
+With `wait_for_ci = true`, `verify.sh` can be a light local gate and the review request's CI the
+full verification. After opening the review request, the Manager moves the card to `verifying`,
+frees the slot and polls the newest pipeline for the pushed commit every 2 minutes. A pass moves
+the card to review. A failure starts a fix round: a worker on the same branch gets the failed
+jobs' log tails in `ci.md` and pushes a fix, which the Manager watches again, up to
+`ci_fix_attempts` times. A timeout, a cancel, no pipeline within 15 minutes, or a failure after
+the last fix round marks the card stuck. CI must run for the card branch's commits, on branch
+pushes or merge request pipelines; GitHub forges read the commit's check runs.
 
 ## Git LFS
 

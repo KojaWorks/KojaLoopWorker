@@ -11,7 +11,10 @@ One term per concept. Code, docs, logs and commits use the term in the left colu
 | **Forge** | Where code is pushed and reviewed: GitLab, GitHub. A pluggable backend behind the `Forge` protocol, independent of the backlog. | host, remote, SCM |
 | **Card** | One unit of work in a backlog: a GitLab issue, a Patch roadmap row. | ticket, issue (except when naming GitLab's own object), row, item |
 | **Card ref** | A card's stable identity, opaque to the Manager and owned by its backlog (`group/project#12`, `~802`). | card num, id |
-| **Card state** | The Manager's normalized view of a card: `ready`, `working`, `review`, `stuck`, or `other`. Each backlog maps its own statuses and labels onto it. | status (except a backlog's own field) |
+| **Card state** | The Manager's normalized view of a card: `ready`, `working`, `verifying`, `review`, `stuck`, or `other`. Each backlog maps its own statuses and labels onto it. | status (except a backlog's own field) |
+| **Verifying** | The card state between opening the review request and its CI passing, for projects that set `wait_for_ci`. No worker runs and no slot is held; the Manager polls the pipeline of the pushed commit. | waiting for CI, CI pending |
+| **Fix round** | A worker run that fixes a `verifying` card's failed CI on its existing branch and review request. | CI retry, rework |
+| **Pipeline** | The forge's CI run for one commit: a GitLab pipeline, or a GitHub commit's check runs taken together. | CI job (that is one part of it), build |
 | **Claim** | The Manager moving a ready card to `working` before it spawns a worker. | pick, take, assign |
 | **Release** | The Manager returning a `working` card to `ready` after a crash, hang or auth failure, with a note on the card. | reclaim, unclaim, bail |
 | **Outcome** | The JSON file that a worker writes as its last act: `done` (with review request text) or `stuck` (with the blocker). The worker's only output channel to the Manager. | result, exit signal |
