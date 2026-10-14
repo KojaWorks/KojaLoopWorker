@@ -247,6 +247,20 @@ extension Manager {
         }
     }
 
+    /// CI-derived text as one line of literal markdown: line breaks become spaces, and
+    /// backslashes, brackets and parentheses are escaped so it can't close or forge a link.
+    static func inlineMarkdown(_ text: String) -> String {
+        var out = ""
+        for c in text {
+            switch c {
+            case "\n", "\r", "\r\n": out.append(" ")
+            case "\\", "[", "]", "(", ")": out.append("\\"); out.append(c)
+            default: out.append(c)
+            }
+        }
+        return out
+    }
+
     func ciBlocker(_ reason: CIStuckReason, _ r: CIWatchRecord, pipeline: PipelineStatus?, ci: ProjectContract.CI) -> String {
         let sha = "`\(r.sha.prefix(12))`"
         let link = (pipeline?.url ?? r.review.url).absoluteString
@@ -261,8 +275,8 @@ extension Manager {
             return "Couldn't read the CI status of \(sha) for \(Int(ci.timeoutMinutes)) min: \(why)"
         case .failedAfterFixes:
             let jobs = (pipeline?.failedJobs ?? []).map { job in
-                let name = job.name.replacingOccurrences(of: "\n", with: " ")
-                let stage = job.stage.isEmpty ? "" : " (stage \(job.stage))"
+                let name = Self.inlineMarkdown(job.name)
+                let stage = job.stage.isEmpty ? "" : " (stage \(Self.inlineMarkdown(job.stage)))"
                 return job.url.map { "- [\(name)](\($0.absoluteString))\(stage)" } ?? "- \(name)\(stage)"
             }
             let rounds = r.round == 1 ? "1 fix round" : "\(r.round) fix rounds"

@@ -373,6 +373,27 @@ let reviewURL = URL(string: "https://forge.example/g/app/-/merge_requests/1")!
         #expect(h.backlog.card(id: "id-12")?.state == .review)
     }
 
+    @Test("B169: CI-derived job and stage names are one escaped line in the blocker")
+    func blockerEscapesJobNames() async throws {
+        let h = try await verifying()
+        h.forge.state {
+            $0.pipelines["commit-1"] = PipelineStatus(state: .failed, url: pipelineURL, failedJobs: [
+                CIJob(name: "x](https://evil.example)\n/merge", stage: "a\r\nb [c] \\(d)", url: URL(string: "https://forge.example/jobs/3"), logTail: ""),
+            ])
+        }
+        h.clock.advance(121)
+        await h.cycle()
+        await h.cycle()  // the fix round starts; ci_fix_attempts = 1
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix CI","body":"b"}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        h.clock.advance(121)
+        h.forge.state { $0.pipelines["commit-2"] = $0.pipelines["commit-1"] }
+        await h.cycle()
+        let blocker = try #require(stuckBlocker(h))
+        #expect(blocker.contains(#"- [x\]\(https://evil.example\) /merge](https://forge.example/jobs/3) (stage a b \[c\] \\\(d\))"#))
+    }
+
     @Test("B168: a fix round for a card a human moved out of verifying is dropped")
     func resumeFixFalseDropsTheRound() async throws {
         let h = try await verifying()
