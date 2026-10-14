@@ -1,7 +1,7 @@
 import Foundation
 import LoopWorkerCore
 
-/// GitLab issues as a backlog. Card state lives in `<prefix>next|working|review|stuck` labels;
+/// GitLab issues as a backlog. Card state lives in `<prefix>next|working|ci|review|stuck` labels;
 /// only issues that the token's user vouched for are ever `ready` (DESIGN.md "Trust").
 ///
 /// `CardRef.id` is `<project id>/<issue iid>`, `display` is `<project path>#<iid>`.
@@ -29,6 +29,10 @@ public actor GitLabBacklog: Backlog {
 
     public func working(in projects: [ProjectSpec]) async throws -> [Card] {
         try await list(label: .working, in: projects)
+    }
+
+    public func verifying(in projects: [ProjectSpec]) async throws -> [Card] {
+        try await list(label: .verifying, in: projects)
     }
 
     public func card(_ ref: CardRef) async throws -> Card? {
@@ -107,7 +111,7 @@ public actor GitLabBacklog: Backlog {
 
     private func labelState(_ issue: GLIssue, display: String) -> CardState {
         guard issue.state == "opened" else { return .other }
-        let states = [CardState.ready, .working, .review, .stuck].filter { issue.labels.contains(settings.label($0)!) }
+        let states = Self.labelledStates.filter { issue.labels.contains(settings.label($0)!) }
         if states.count > 1 {
             logOnce(display, "has \(states.map { settings.label($0)! }.joined(separator: " and ")); treating it as not LoopWorker's")
             return .other
@@ -200,20 +204,35 @@ public actor GitLabBacklog: Backlog {
         return true
     }
 
-    public func markReview(_ card: Card, review: ReviewRequest) async throws {
-        let read = try await requireWorking(card, for: "markReview")
-        try await postNote(read, "Review request: \(review.url.absoluteString)")
+    public func markReview(_ card: Card, review: ReviewRequest, note: String?) async throws {
+        let read = try await require(card, in: [.working, .verifying], for: "markReview")
+        try await postNote(read, "Review request: \(review.url.absoluteString)" + (note.map { "\n\n\($0)" } ?? ""))
         try await move(read, to: .review)
     }
 
+    public func markVerifying(_ card: Card, review: ReviewRequest) async throws {
+        let read = try await require(card, in: [.working], for: "markVerifying")
+        try await postNote(read, "Review request: \(review.url.absoluteString)\n\nWaiting for CI before review.")
+        try await move(read, to: .verifying)
+    }
+
+    public func resumeFix(_ card: Card) async throws -> Bool {
+        guard let read = try await read(card.ref), read.card.state == .verifying else {
+            log.info("CI fix round for \(card.ref.display) dropped: it is no longer \(settings.label(.verifying)!)")
+            return false
+        }
+        try await move(read, to: .working)
+        return true
+    }
+
     public func markStuck(_ card: Card, blocker: String) async throws {
-        let read = try await requireWorking(card, for: "markStuck")
+        let read = try await require(card, in: [.working, .verifying], for: "markStuck")
         try await postNote(read, "LoopWorker is stuck on this card:\n\n\(blocker)")
         try await move(read, to: .stuck)
     }
 
     public func release(_ card: Card, reason: String, countsAsAttempt: Bool) async throws {
-        let read = try await requireWorking(card, for: "release")
+        let read = try await require(card, in: [.working], for: "release")
         let me = try await client.me()
         let events: [GLLabelEvent] = try await client.getAll(eventsPath(read.issue))
         let cutoff: Date
@@ -228,19 +247,31 @@ public actor GitLabBacklog: Backlog {
         try await move(read, to: .ready)
     }
 
-    private func requireWorking(_ card: Card, for call: String) async throws -> Read {
+    private func require(_ card: Card, in states: [CardState], for call: String) async throws -> Read {
+        let expected = states.map(\.rawValue).joined(separator: " or ")
         guard let read = try await read(card.ref) else {
-            throw GitLabError("\(call) \(card.ref.display): expected working, but the issue is gone or no longer served")
+            throw GitLabError("\(call) \(card.ref.display): expected \(expected), but the issue is gone or no longer served")
         }
-        guard read.card.state == .working else {
-            throw GitLabError("\(call) \(card.ref.display): expected working, found \(read.card.state.rawValue)")
+        guard states.contains(read.card.state) else {
+            throw GitLabError("\(call) \(card.ref.display): expected \(expected), found \(read.card.state.rawValue)")
         }
         return read
     }
 
     /// Posts a Manager note. Everything after the markers passes through quick-action neutralization.
+    /// Skips the post when my newest note already has this body and no label changed since:
+    /// a retry after a write whose note landed but whose label change failed.
     private func postNote(_ read: Read, _ text: String, markers: String = "") async throws {
         let body = Trust.managerMarker + "\n" + markers + "\n" + Trust.neutralizeQuickActions(text)
+        let me = try await client.me()
+        if let last = read.notes.filter({ $0.author.id == me.id && !$0.system }).max(by: { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }),
+           last.body == body {
+            let events: [GLLabelEvent] = try await client.getAll(eventsPath(read.issue))
+            if !events.contains(where: { $0.createdAt >= last.createdAt }) {
+                log.info("\(read.card.ref.display): note \(last.id) already says this; not posting it again")
+                return
+            }
+        }
         let _: GLNote = try await client.send("POST", notesPath(read.issue), body: ["body": body], idempotent: false)
     }
 
@@ -256,9 +287,11 @@ public actor GitLabBacklog: Backlog {
         }
     }
 
+    static let labelledStates: [CardState] = [.ready, .working, .verifying, .review, .stuck]
+
     /// The labels to add and remove to move any card to `target`.
     func labelChange(to target: CardState) -> (add: [String], remove: [String]) {
-        let states: [CardState] = [.ready, .working, .review, .stuck]
+        let states = Self.labelledStates
         var add = [settings.label(target)!]
         var remove = states.filter { $0 != target }.map { settings.label($0)! }
         if settings.statusMode == .labels, let name = settings.statusNames[target] {

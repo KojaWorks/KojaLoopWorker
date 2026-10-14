@@ -56,6 +56,10 @@ public protocol GitDriving: Sendable {
     /// Number of commits on HEAD that `origin/<base>` doesn't have.
     func commitsAhead(_ worktree: URL, base: String) async throws -> Int
 
+    /// Number of commits on HEAD that `commit` doesn't have. Unlike `commitsAhead`, the answer
+    /// doesn't change when a fetch moves a tracking ref.
+    func commitsSince(_ worktree: URL, commit: String) async throws -> Int
+
     /// Pushes HEAD to `branch` at `url` without running hooks, and returns the pushed commit.
     /// - Parameter expected: the commit that `branch` must be at on the forge, the one the
     ///   Manager last pushed for this card; nil means the branch must not exist yet. A branch
@@ -171,7 +175,15 @@ public struct Git: GitDriving {
     }
 
     public func commitsAhead(_ worktree: URL, base: String) async throws -> Int {
-        let command = ["-C", worktree.path, "rev-list", "--count", "origin/\(base)..HEAD"]
+        try await countCommits(worktree, "origin/\(base)..HEAD")
+    }
+
+    public func commitsSince(_ worktree: URL, commit: String) async throws -> Int {
+        try await countCommits(worktree, "\(commit)..HEAD")
+    }
+
+    private func countCommits(_ worktree: URL, _ range: String) async throws -> Int {
+        let command = ["-C", worktree.path, "rev-list", "--count", range]
         let result = try await git(command)
         guard let count = Int(result.output.trimmingCharacters(in: .whitespacesAndNewlines)) else {
             throw GitError(command: command.joined(separator: " "), result: result)

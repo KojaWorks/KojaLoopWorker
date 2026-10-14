@@ -57,6 +57,12 @@ public enum StatusReport {
                 if let last = slot.pane.last { out.append("    > \(last)") }
             }
         }
+        if let ci = s.ci, !ci.isEmpty {
+            out.append("waiting for CI:")
+            for c in ci {
+                out.append("  \(c.card) round \(c.round) at \(c.commit): \(c.state), pushed \(duration(now.timeIntervalSince(c.since))) ago, \(c.url.absoluteString)")
+            }
+        }
         if !s.log.isEmpty {
             out.append("recent log:")
             out += s.log.suffix(10).map { "  \($0)" }

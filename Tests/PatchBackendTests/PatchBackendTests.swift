@@ -81,8 +81,19 @@ private func make(_ fake: FakePatch, _ patchKeys: String = "", log: LogRecorder 
     }
 
     @Test func statusesMustBeDistinct() throws {
-        #expect(throws: ConfigError.self) {
+        #expect(throws: ConfigError("config.toml: [backlog.patch.status] ready and stuck are both \"Backlog\"; every state needs its own status")) {
             try PatchConfig.from(hostConfig(status: "[backlog.patch.status]\nstuck = \"Backlog\""))
+        }
+    }
+
+    @Test("B174: verifying defaults to Verifying and must differ from the other statuses")
+    func verifyingStatus() throws {
+        #expect(try PatchConfig.from(hostConfig()).status.verifying == "Verifying")
+        #expect(throws: ConfigError("config.toml: [backlog.patch.status] verifying and review are both \"In review\"; every state needs its own status")) {
+            try PatchConfig.from(hostConfig(status: "[backlog.patch.status]\nverifying = \"In review\""))
+        }
+        #expect(throws: ConfigError("config.toml: [backlog.patch.status] verifying must not be empty")) {
+            try PatchConfig.from(hostConfig(status: "[backlog.patch.status]\nverifying = \"\""))
         }
     }
 }
@@ -289,11 +300,12 @@ private func make(_ fake: FakePatch, _ patchKeys: String = "", log: LogRecorder 
         fake.rows["roadmap"] = [
             card(1, status: ""), card(2, status: "In progress"), card(3, status: "In review"),
             card(4, status: "Needs refinement"), card(5, status: "Idea"), card(6, status: "Backlog", ["created_by": .string("stranger")]),
+            card(7, status: "Verifying"),
         ]
         let backlog = try make(fake)
         var states: [CardState] = []
-        for n in 1...6 { states.append(try #require(try await backlog.card(CardRef(id: "u\(n)", display: ""))).state) }
-        #expect(states == [.ready, .working, .review, .stuck, .other, .other])
+        for n in 1...7 { states.append(try #require(try await backlog.card(CardRef(id: "u\(n)", display: ""))).state) }
+        #expect(states == [.ready, .working, .review, .stuck, .other, .other, .verifying])
     }
 
     @Test func workingListsInProgressCardsOfServedProjects() async throws {
@@ -401,10 +413,54 @@ private func make(_ fake: FakePatch, _ patchKeys: String = "", log: LogRecorder 
         fake.rows["roadmap"] = [card(1, status: "Shipped")]
         let backlog = try make(fake)
         let c = try #require(try await backlog.card(CardRef(id: "u1", display: "~1")))
-        await #expect(throws: PatchError.unexpectedState(card: "~1", expected: "In progress", actual: "Shipped")) {
+        await #expect(throws: PatchError.unexpectedState(card: "~1", expected: "In progress or Verifying", actual: "Shipped")) {
             try await backlog.markStuck(c, blocker: "x")
         }
+        await #expect(throws: PatchError.unexpectedState(card: "~1", expected: "In progress", actual: "Shipped")) {
+            try await backlog.release(c, reason: "x", countsAsAttempt: false)
+        }
         #expect(fake.rows["patch_blocks"]!.isEmpty)
+    }
+
+    @Test("B174: markVerifying links the review request and moves working to verifying")
+    func markVerifying() async throws {
+        let fake = FakePatch()
+        fake.rows["roadmap"] = [card(1, status: "In progress")]
+        let backlog = try make(fake, "review_link_field = \"solved_in_pr\"")
+        let c = try #require(try await backlog.card(CardRef(id: "u1", display: "~1")))
+        let pr = ReviewRequest(url: URL(string: "https://github.com/owner/app/pull/7")!, display: "owner/app#7")
+        try await backlog.markVerifying(c, review: pr)
+        #expect(fake.rows["roadmap"]![0]["status"] == .string("Verifying"))
+        #expect(fake.rows["roadmap"]![0]["solved_in_pr"] == .string("https://github.com/owner/app/pull/7"))
+        #expect(fake.rows["patch_blocks"]!.first?["content"]?["text"]
+            == .string("Review request: [owner/app#7](https://github.com/owner/app/pull/7)\n\nWaiting for CI before review."))
+        #expect(try await backlog.verifying(in: [app]).map(\.number) == ["1"])
+        #expect(try await backlog.verifying(in: [other]).isEmpty)
+
+        try await backlog.markReview(c, review: pr, note: "CI passed: https://ci.example/1")
+        #expect(fake.rows["roadmap"]![0]["status"] == .string("In review"))
+        #expect(fake.rows["patch_blocks"]!.last?["content"]?["text"]
+            == .string("Review request: [owner/app#7](https://github.com/owner/app/pull/7)\n\nCI passed: https://ci.example/1"))
+        let patch = try #require(fake.requests("PATCH", "/rest/v1/roadmap").last)
+        #expect(URLComponents(url: patch.url!, resolvingAgainstBaseURL: false)!.queryItems!
+            .contains(URLQueryItem(name: "status", value: "eq.Verifying")))
+    }
+
+    @Test("B174: resumeFix is one PATCH filtered on verifying, and false once a human moved the card")
+    func resumeFix() async throws {
+        let fake = FakePatch()
+        fake.rows["roadmap"] = [card(1, status: "Verifying")]
+        let backlog = try make(fake)
+        let c = try #require(try await backlog.card(CardRef(id: "u1", display: "~1")))
+        #expect(try await backlog.resumeFix(c))
+        #expect(fake.rows["roadmap"]![0]["status"] == .string("In progress"))
+        let patch = try #require(fake.requests("PATCH", "/rest/v1/roadmap").first)
+        #expect(URLComponents(url: patch.url!, resolvingAgainstBaseURL: false)!.queryItems!
+            .contains(URLQueryItem(name: "status", value: "eq.Verifying")))
+
+        fake.rows["roadmap"]![0]["status"] = .string("Shipped")
+        #expect(try await backlog.resumeFix(c) == false)
+        #expect(fake.rows["roadmap"]![0]["status"] == .string("Shipped"))
     }
 
     @Test func aRejectedWriteIsABackendRejection() async throws {

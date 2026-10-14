@@ -10,6 +10,10 @@ struct CardRecord: Codable, Equatable {
     var branch: String
     var base: String
     var claimedAt: Date
+    /// Set for a CI fix round: its number, from 1.
+    var ciRound: Int? = nil
+    /// Set for a CI fix round: the pushed commit whose pipeline failed.
+    var ciCommit: String? = nil
 
     static func read(_ file: URL) -> CardRecord? {
         guard let data = try? Data(contentsOf: file) else { return nil }
@@ -61,6 +65,13 @@ extension Manager {
         }
         guard !candidates.isEmpty else { return }
 
+        // A queued fix round finishes a card already in flight, so it goes before new claims.
+        for c in candidates {
+            guard let id = queuedFix(for: c.key, at: now), let slot = projects[c.key]?.slots.first(where: { $0.id == c.slot }), isFree(slot) else { continue }
+            startFixRound(id, on: SlotRef(key: c.key, id: c.slot))
+            return
+        }
+
         lastFill = now
         fillSoon = false
         let cards: [Card]
@@ -95,6 +106,8 @@ extension Manager {
             $0.card = card
             $0.branch = branch
             $0.base = base
+            $0.ciRound = nil
+            $0.ciCommit = nil
             $0.spawnedAt = nil
             $0.pane = []
             $0.finishFailures = 0
@@ -105,20 +118,42 @@ extension Manager {
         track { await self.startTask(ref, card: card, contract: contract, base: base, branch: branch) }
     }
 
-    func startTask(_ ref: SlotRef, card: Card, contract: ProjectContract, base: String, branch: String) async {
+    /// Claims the card (or, for a fix round, moves it back to working), acquires the slot and
+    /// spawns the worker.
+    func startTask(_ ref: SlotRef, card: Card, contract: ProjectContract, base: String, branch: String, fix queued: FixRound? = nil) async {
         guard let spec = slot(ref)?.spec else { return }
+        var fix = queued
+        if let queued {
+            guard let current = await recheckPipeline(queued, card: card) else {
+                free(ref)
+                return
+            }
+            fix = current
+        }
         let fm = FileManager.default
         let dir = spec.stateDir
         do {
             try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-            for name in ["outcome.json", "card.md", "brief.md", "launch.sh", "mcp.json", "worker.env", "guide.html"] {
+            for name in ["outcome.json", "card.md", "brief.md", "launch.sh", "mcp.json", "worker.env", "guide.html", "ci.md"] {
                 try? fm.removeItem(at: dir.appending(path: name))
             }
             try CardRecord(ref: card.ref, project: spec.project.path, number: card.number, slot: spec.index,
-                           branch: branch, base: base, claimedAt: clock.now()).write(cardRecordFile(spec))
+                           branch: branch, base: base, claimedAt: clock.now(),
+                           ciRound: fix.map { $0.record.round + 1 }, ciCommit: fix?.record.sha).write(cardRecordFile(spec))
         } catch {
-            log.error("\(label(spec)): can't write \(dir.path): \(error); not claiming \(card.ref)")
+            if fix != nil { fixStartFailed(card.ref.id, "can't write \(dir.path): \(error)") }
+            else { log.error("\(label(spec)): can't write \(dir.path): \(error); not claiming \(card.ref)") }
             free(ref)
+            return
+        }
+
+        if let fix {
+            guard await resumeForFix(spec, card: card, fix: fix) else {
+                try? fm.removeItem(at: cardRecordFile(spec))
+                free(ref)
+                return
+            }
+            await acquireAndSpawn(ref, spec: spec, card: card, contract: contract, base: base, branch: branch, fix: fix)
             return
         }
 
@@ -143,23 +178,29 @@ extension Manager {
             return
         }
 
+        await acquireAndSpawn(ref, spec: spec, card: card, contract: contract, base: base, branch: branch, fix: nil)
+    }
+
+    /// A fix round resets the slot to the pushed card branch instead of the base branch.
+    func acquireAndSpawn(_ ref: SlotRef, spec: SlotSpec, card: Card, contract: ProjectContract, base: String, branch: String, fix: FixRound?) async {
+        let dir = spec.stateDir
         let baseCommit: String
-        do { baseCommit = try await deps.lifecycle.acquire(spec, contract: contract, base: base, branch: branch) }
+        do { baseCommit = try await deps.lifecycle.acquire(spec, contract: contract, base: fix == nil ? base : branch, branch: branch) }
         catch {
-            await abortStart(ref, card: card, contract: contract, why: "preparing the slot failed: \(error)", broken: error)
+            await abortStart(ref, card: card, contract: contract, why: "preparing the slot failed: \(error)", broken: error, fix: fix)
             return
         }
 
         do {
-            try await writeWorkerFiles(spec, card: card, contract: contract, base: base, branch: branch)
+            try await writeWorkerFiles(spec, card: card, contract: contract, base: base, branch: branch, fix: fix)
         } catch {
-            await abortStart(ref, card: card, contract: contract, why: "\(error)", broken: nil)
+            await abortStart(ref, card: card, contract: contract, why: "\(error)", broken: nil, fix: fix)
             return
         }
         do { try await deps.tmux.spawn(session: spec.session, directory: spec.worktree, script: dir.appending(path: "launch.sh")) }
         catch {
             await abortStart(ref, card: card, contract: contract, why: "starting the tmux session failed: \(error)",
-                             broken: SlotFailure("tmux spawn failed: \(error)"))
+                             broken: SlotFailure("tmux spawn failed: \(error)"), fix: fix)
             return
         }
 
@@ -168,11 +209,13 @@ extension Manager {
             $0.task = nil
             $0.spawnedAt = clock.now()
         }
-        log.info("\(label(spec)): spawned worker for \(card.ref) on \(branch) at \(baseCommit.prefix(12)), base \(base), model \(model ?? "default")")
+        if fix != nil { unwatch(card.ref.id) }
+        let round = fix.map { " for CI fix round \($0.record.round + 1)" } ?? ""
+        log.info("\(label(spec)): spawned worker\(round) for \(card.ref) on \(branch) at \(baseCommit.prefix(12)), base \(base), model \(model ?? "default")")
         watchFolderTrust(spec.session)
     }
 
-    func writeWorkerFiles(_ spec: SlotSpec, card: Card, contract: ProjectContract, base: String, branch: String) async throws {
+    func writeWorkerFiles(_ spec: SlotSpec, card: Card, contract: ProjectContract, base: String, branch: String, fix: FixRound? = nil) async throws {
         let dir = spec.stateDir
         let snapshot: CardSnapshot
         do { snapshot = try await deps.backlog.snapshot(card) }
@@ -183,8 +226,13 @@ extension Manager {
             markdown += "\n\n## Withheld\n\n" + snapshot.excluded.map { "- \($0)" }.joined(separator: "\n") + "\n"
         }
         let snapshotFile = dir.appending(path: "card.md")
+        let ciFile = dir.appending(path: "ci.md")
+        let ciFix = fix.map {
+            WorkerBrief.CIFix(review: $0.record.review, commit: $0.record.sha, ciFile: ciFile,
+                              round: $0.record.round + 1, rounds: contract.ci.fixAttempts)
+        }
         let brief = WorkerBrief(card: card, project: spec.project, slot: spec, baseBranch: base, branch: branch,
-                                snapshotFile: snapshotFile, excluded: snapshot.excluded, contract: contract).render()
+                                snapshotFile: snapshotFile, excluded: snapshot.excluded, contract: contract, ciFix: ciFix).render()
 
         var env: [(name: String, value: String)] = []
         for name in ["CLAUDE_CODE_OAUTH_TOKEN"] + spec.project.workerEnv where !env.contains(where: { $0.name == name }) {
@@ -206,6 +254,7 @@ extension Manager {
         let fm = FileManager.default
         do {
             try Data(markdown.utf8).write(to: snapshotFile)
+            if let fix { try Data(ciReport(fix, card: card).utf8).write(to: ciFile) }
             try Data(brief.utf8).write(to: dir.appending(path: "brief.md"))
             try mcp.write(to: dir.appending(path: "mcp.json"))
             let envFile = dir.appending(path: "worker.env")
@@ -225,14 +274,19 @@ extension Manager {
     }
 
     /// A start failed after the claim: release the card (not counted against it: the host
-    /// failed), mark the slot broken when `broken` is set, and recycle it.
-    func abortStart(_ ref: SlotRef, card: Card, contract: ProjectContract, why: String, broken: (any Error)?) async {
+    /// failed), or for a fix round return it to `verifying`, mark the slot broken when
+    /// `broken` is set, and recycle it.
+    func abortStart(_ ref: SlotRef, card: Card, contract: ProjectContract, why: String, broken: (any Error)?, fix: FixRound? = nil) async {
         guard let spec = slot(ref)?.spec else { return }
         log.error("\(label(spec)): couldn't start a worker for \(card.ref): \(why)")
-        do {
-            try await deps.backlog.release(card, reason: "Couldn't start a worker: \(why)", countsAsAttempt: false)
-        } catch {
-            log.error("\(label(spec)): can't release \(card.ref): \(error); the stranded-card sweep retries")
+        if let fix {
+            await returnToVerifying(card, fix, why: why)
+        } else {
+            do {
+                try await deps.backlog.release(card, reason: "Couldn't start a worker: \(why)", countsAsAttempt: false)
+            } catch {
+                log.error("\(label(spec)): can't release \(card.ref): \(error); the stranded-card sweep retries")
+            }
         }
         if broken != nil || !spec.project.hot { await deps.lifecycle.recycle(spec, contract: contract) }
         try? FileManager.default.removeItem(at: cardRecordFile(spec))
@@ -274,6 +328,8 @@ extension Manager {
             $0.card = nil
             $0.branch = nil
             $0.base = nil
+            $0.ciRound = nil
+            $0.ciCommit = nil
             $0.spawnedAt = nil
             $0.finishFailures = 0
             $0.finishRetryAt = nil
@@ -440,7 +496,9 @@ extension Manager {
                 switch Outcome.parse(data) {
                 case .done(let title, let body, let guide):
                     do {
-                        try await finishDone(spec, card: card, branch: branch, base: base, title: title, body: body, guide: guide)
+                        try await finishDone(spec, card: card, branch: branch, base: base, title: title, body: body, guide: guide,
+                                             ciRound: s.ciRound, ciCommit: s.ciCommit,
+                                             waitForCI: projects[ref.key]?.contract?.ci.waitForCI ?? false)
                     } catch let rejection as BackendRejection {
                         try await stuck(spec, card: card, blocker: "Couldn't finish: the forge or backlog refused: \(rejection)")
                     }
@@ -458,13 +516,25 @@ extension Manager {
         await recycle(ref, keepOutcome: true)
     }
 
-    func finishDone(_ spec: SlotSpec, card: Card, branch: String, base: String, title: String, body: String, guide: String?) async throws {
-        let ahead = try await step("counting commits on \(branch)") { try await self.deps.git.commitsAhead(spec.worktree, base: base) }
+    /// - Parameters:
+    ///   - ciRound: set for a CI fix round.
+    ///   - ciCommit: set for a CI fix round: the failed commit, which the round's new commits
+    ///     count from. Not `origin/<branch>`, which any later fetch moves to the round's own push.
+    func finishDone(
+        _ spec: SlotSpec, card: Card, branch: String, base: String, title: String, body: String, guide: String?,
+        ciRound: Int? = nil, ciCommit: String? = nil, waitForCI: Bool = false
+    ) async throws {
+        let ahead = try await step("counting commits on \(branch)") {
+            if let ciCommit { try await self.deps.git.commitsSince(spec.worktree, commit: ciCommit) }
+            else { try await self.deps.git.commitsAhead(spec.worktree, base: base) }
+        }
         guard ahead > 0 else {
-            try await stuck(spec, card: card, blocker: "The worker reported done, but branch `\(branch)` has no commits ahead of `\(base)`.")
+            let blocker = ciRound.map { "The worker reported done for CI fix round \($0), but made no commits on `\(branch)` after the failed pipeline." }
+                ?? "The worker reported done, but branch `\(branch)` has no commits ahead of `\(base)`."
+            try await stuck(spec, card: card, blocker: blocker)
             return
         }
-        try await pushBranch(spec, card: card, branch: branch)
+        let commit = try await pushBranch(spec, card: card, branch: branch)
         var guideLink: URL?
         if let guide, let file = resolveGuide(guide, in: spec) {
             do { guideLink = try await step("attaching \(guide)") { try await self.deps.forge.attach(file, to: spec.project) } }
@@ -478,14 +548,28 @@ extension Manager {
             project: spec.project, card: card, sourceBranch: branch, targetBranch: base, title: title,
             body: "\(body)\n\n---\n\(cardLine)\(guideLine)\n", draft: spec.project.draftReviewRequests)
         let review = try await step("opening the review request") { try await self.deps.forge.openReviewRequest(draft) }
-        try await step("moving \(card.ref) to review") { try await self.deps.backlog.markReview(card, review: review) }
-        log.info("\(label(spec)): finished \(card.ref): \(review.display) \(review.url.absoluteString)")
+        guard waitForCI else {
+            try await step("moving \(card.ref) to review") { try await self.deps.backlog.markReview(card, review: review) }
+            log.info("\(label(spec)): finished \(card.ref): \(review.display) \(review.url.absoluteString)")
+            return
+        }
+        // Written before the move, so a verifying card always has its record.
+        let record = CIWatchRecord(card: card.ref, project: spec.project.path, number: card.number, branch: branch, base: base,
+                                   sha: commit, review: review, round: ciRound ?? 0, pushedAt: clock.now())
+        do { try record.write(stateDir: stateDir) }
+        catch { throw StepError(step: "writing the CI watch record", error: error) }
+        try await step("moving \(card.ref) to verifying") { try await self.deps.backlog.markVerifying(card, review: review) }
+        var verifying = card
+        verifying.state = .verifying
+        watch(record, card: verifying, lastPoll: clock.now())
+        log.info("\(label(spec)): \(card.ref) waits for CI on \(commit.prefix(12)): \(review.display) \(review.url.absoluteString)")
     }
 
     /// Pushes the card branch with a lease on the commit the Manager last pushed for this
     /// card (none: the branch must not exist yet), so a branch that someone else made is never
     /// overwritten, then records the new commit. Uploads the branch's LFS objects first.
-    func pushBranch(_ spec: SlotSpec, card: Card, branch: String) async throws {
+    @discardableResult
+    func pushBranch(_ spec: SlotSpec, card: Card, branch: String) async throws -> String {
         let ledger = stateDir.appending(path: "pushes.json")
         var pushes = (try? JSONDecoder().decode([String: PushRecord].self, from: Data(contentsOf: ledger))) ?? [:]
         let last = pushes[card.ref.id].flatMap { $0.branch == branch ? $0.commit : nil }
@@ -501,6 +585,7 @@ extension Manager {
         // Failing the finish here would retry the push against a stale lease.
         do { try JSONEncoder().encode(pushes).write(to: ledger, options: .atomic) }
         catch { log.error("\(label(spec)): pushed \(branch) at \(commit.prefix(12)) but can't record it in \(ledger.path): \(error); the card's next push will be refused as someone else's branch") }
+        return commit
     }
 
     func finishStuck(_ spec: SlotSpec, card: Card, branch: String, base: String, blocker: String) async throws {
@@ -515,6 +600,7 @@ extension Manager {
 
     func stuck(_ spec: SlotSpec, card: Card, blocker: String) async throws {
         try await step("marking \(card.ref) stuck") { try await self.deps.backlog.markStuck(card, blocker: blocker) }
+        unwatch(card.ref.id)  // a finish that wrote a CI watch record and then failed
         log.warning("\(label(spec)): marked \(card.ref) stuck: \(blocker.prefix(200))")
         notify(key: "stuck-\(card.ref.id)", "LoopWorker: \(card.ref) is stuck: \(blocker.prefix(300))")
     }

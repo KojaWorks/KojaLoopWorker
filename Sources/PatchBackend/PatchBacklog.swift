@@ -59,6 +59,12 @@ public actor PatchBacklog: Backlog {
         return try await cards(rows.filter { $0.project.map(served.contains) ?? false }, trusted: trustedAuthors())
     }
 
+    public func verifying(in projects: [ProjectSpec]) async throws -> [Card] {
+        let served = Set(projects.compactMap(config.patchID(for:)))
+        let rows = try await allRows([URLQueryItem(name: "status", value: "eq.\(config.status.verifying)")])
+        return try await cards(rows.filter { $0.project.map(served.contains) ?? false }, trusted: trustedAuthors())
+    }
+
     public func card(_ ref: CardRef) async throws -> Card? {
         guard let row = try await row(ref.id), row.project.flatMap({ config.projectPaths[$0] }) != nil else { return nil }
         return try await cards([row], trusted: trustedAuthors()).first
@@ -92,14 +98,33 @@ public actor PatchBacklog: Backlog {
         return !changed.isEmpty
     }
 
-    public func markReview(_ card: Card, review: ReviewRequest) async throws {
+    public func markReview(_ card: Card, review: ReviewRequest, note: String?) async throws {
         var fields: [String: JSON] = ["status": .string(config.status.review)]
         if let field = config.reviewLinkField { fields[field] = .string(review.url.absoluteString) }
-        try await move(card, note: "Review request: [\(review.display)](\(review.url.absoluteString))", kind: "note", fields: fields)
+        try await move(card, from: [config.status.working, config.status.verifying],
+                       note: "Review request: [\(review.display)](\(review.url.absoluteString))" + (note.map { "\n\n\($0)" } ?? ""),
+                       kind: "note", fields: fields)
+    }
+
+    public func markVerifying(_ card: Card, review: ReviewRequest) async throws {
+        var fields: [String: JSON] = ["status": .string(config.status.verifying)]
+        if let field = config.reviewLinkField { fields[field] = .string(review.url.absoluteString) }
+        try await move(card, note: "Review request: [\(review.display)](\(review.url.absoluteString))\n\nWaiting for CI before review.",
+                       kind: "note", fields: fields)
+    }
+
+    /// One PATCH filtered on the verifying status, so a card that a human moved stays put.
+    public func resumeFix(_ card: Card) async throws -> Bool {
+        let changed = try await client.patch(config.roadmapTable, [
+            URLQueryItem(name: "id", value: "eq.\(card.ref.id)"),
+            URLQueryItem(name: "status", value: "eq.\(config.status.verifying)"),
+        ], .object(["status": .string(config.status.working)]))
+        return !changed.isEmpty
     }
 
     public func markStuck(_ card: Card, blocker: String) async throws {
-        try await move(card, note: "LoopWorker is stuck on this card:\n\n\(blocker)", kind: "note",
+        try await move(card, from: [config.status.working, config.status.verifying],
+                       note: "LoopWorker is stuck on this card:\n\n\(blocker)", kind: "note",
                        fields: ["status": .string(config.status.stuck)])
     }
 
@@ -110,14 +135,17 @@ public actor PatchBacklog: Backlog {
                        fields: ["status": .string(config.status.ready), "assignee": .null])
     }
 
-    /// Checks that the card is working, appends the note, then writes `fields` in a PATCH
-    /// filtered on the working status, so a card that a human moved meanwhile is left alone.
-    private func move(_ card: Card, note: String, kind: String, fields: [String: JSON]) async throws {
+    /// Checks that the card has one of the `from` statuses (default: working), appends the
+    /// note, then writes `fields` in a PATCH filtered on the status it read, so a card that a
+    /// human moved meanwhile is left alone.
+    private func move(_ card: Card, from: [String]? = nil, note: String, kind: String, fields: [String: JSON]) async throws {
+        let from = from ?? [config.status.working]
+        let expected = from.joined(separator: " or ")
         guard let r = try await row(card.ref.id) else {
-            throw PatchError.unexpectedState(card: card.ref.display, expected: config.status.working, actual: "(deleted)")
+            throw PatchError.unexpectedState(card: card.ref.display, expected: expected, actual: "(deleted)")
         }
-        guard r.status == config.status.working else {
-            throw PatchError.unexpectedState(card: card.ref.display, expected: config.status.working, actual: r.status ?? "")
+        guard let status = r.status, from.contains(status) else {
+            throw PatchError.unexpectedState(card: card.ref.display, expected: expected, actual: r.status ?? "")
         }
         let owner = try await client.owner()
         try await client.insert("patch_blocks", .object([
@@ -127,10 +155,10 @@ public actor PatchBacklog: Backlog {
         ]))
         let changed = try await client.patch(config.roadmapTable, [
             URLQueryItem(name: "id", value: "eq.\(r.id)"),
-            URLQueryItem(name: "status", value: "eq.\(config.status.working)"),
+            URLQueryItem(name: "status", value: "eq.\(status)"),
         ], .object(fields))
         if changed.isEmpty {
-            throw PatchError.unexpectedState(card: card.ref.display, expected: config.status.working, actual: "(changed during the write)")
+            throw PatchError.unexpectedState(card: card.ref.display, expected: status, actual: "(changed during the write)")
         }
     }
 
@@ -174,6 +202,7 @@ public actor PatchBacklog: Backlog {
         switch r.status {
         case _ where isReady(r.status): r.createdBy.map(trusted.contains) == true ? .ready : .other
         case config.status.working: .working
+        case config.status.verifying: .verifying
         case config.status.review: .review
         case config.status.stuck: .stuck
         default: .other

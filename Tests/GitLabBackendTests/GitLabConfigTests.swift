@@ -18,7 +18,7 @@ import Testing
         #expect(s.allowed == ["mygroup/"])
         #expect(s.labelPrefix == "loopworker:")
         #expect(s.statusMode == StatusMode.none)
-        #expect(s.statusNames == [.ready: "To do", .working: "In progress", .review: "In review", .stuck: "To do"])
+        #expect(s.statusNames == [.ready: "To do", .working: "In progress", .verifying: "In progress", .review: "In review", .stuck: "To do"])
         #expect(s.isAllowed("mygroup/App"))
         #expect(!s.isAllowed("other/app"))
     }
@@ -50,6 +50,7 @@ import Testing
         #expect(s.connection.baseURL.absoluteString == "https://gitlab.example.com")
         #expect(s.statusMode == .labels)
         #expect(s.statusNames[.working] == "Doing")
+        #expect(s.statusNames[.verifying] == "Doing")
         #expect(s.statusNames[.ready] == "To do")
     }
 

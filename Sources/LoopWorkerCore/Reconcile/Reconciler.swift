@@ -74,3 +74,56 @@ public enum Reconciler {
         return .keep
     }
 }
+
+/// What one CI poll read for a watched card's pushed commit.
+enum CIObservation: Sendable, Equatable {
+    /// The latest pipeline for the commit, or nil when none exists yet.
+    case pipeline(PipelineStatus?)
+    /// The forge couldn't be read; the string says why.
+    case unreadable(String)
+}
+
+enum CIStuckReason: Sendable, Equatable {
+    case timedOut
+    case noPipeline
+    case canceled
+    case failedAfterFixes
+    case unreadable(String)
+}
+
+enum CIDecision: Sendable, Equatable {
+    case wait
+    /// Move the card to `review`.
+    case passed
+    /// Queue a worker round that fixes the failed pipeline.
+    case fix
+    case stuck(CIStuckReason)
+}
+
+struct CIPolicy: Sendable {
+    var timeout: TimeInterval
+    /// Fix rounds allowed after the first pipeline.
+    var fixAttempts: Int
+    var noPipelineAfter: TimeInterval = 15 * 60
+}
+
+extension Reconciler {
+    /// - Parameters:
+    ///   - sincePush: seconds since the Manager pushed the watched commit.
+    ///   - round: 0 for the first push, n after the n-th fix round.
+    static func decideCI(_ o: CIObservation, sincePush: TimeInterval, round: Int, policy: CIPolicy) -> CIDecision {
+        switch o {
+        case .unreadable(let why):
+            return sincePush >= policy.timeout ? .stuck(.unreadable(why)) : .wait
+        case .pipeline(nil):
+            return sincePush >= policy.noPipelineAfter ? .stuck(.noPipeline) : .wait
+        case .pipeline(let p?):
+            switch p.state {
+            case .running: return sincePush >= policy.timeout ? .stuck(.timedOut) : .wait
+            case .passed: return .passed
+            case .canceled: return .stuck(.canceled)
+            case .failed: return round < policy.fixAttempts ? .fix : .stuck(.failedAfterFixes)
+            }
+        }
+    }
+}

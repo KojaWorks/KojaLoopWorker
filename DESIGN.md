@@ -56,9 +56,12 @@ public protocol Backlog: Sendable {
     func workable(in projects: [ProjectSpec]) async throws -> [Card]  // ready + trusted, best first
     func card(_ ref: CardRef) async throws -> Card?                  // nil: the card is gone
     func working(in projects: [ProjectSpec]) async throws -> [Card]   // for stranded-card recovery
+    func verifying(in projects: [ProjectSpec]) async throws -> [Card] // to resume CI watches
     func claim(_ card: Card) async throws -> Bool                     // false: lost a race, skip
     func snapshot(_ card: Card) async throws -> CardSnapshot
-    func markReview(_ card: Card, review: ReviewRequest) async throws
+    func markReview(_ card: Card, review: ReviewRequest, note: String?) async throws
+    func markVerifying(_ card: Card, review: ReviewRequest) async throws
+    func resumeFix(_ card: Card) async throws -> Bool                 // false: a human moved it
     func markStuck(_ card: Card, blocker: String) async throws
     func release(_ card: Card, reason: String, countsAsAttempt: Bool) async throws
 }
@@ -68,6 +71,7 @@ public protocol Forge: Sendable {
     func cloneURL(for project: ProjectSpec) -> String
     func openReviewRequest(_ draft: ReviewRequestDraft) async throws -> ReviewRequest  // idempotent per branch
     func attach(_ file: URL, to project: ProjectSpec) async throws -> URL?           // nil: forge has no attachments
+    func pipeline(for project: ProjectSpec, commit: String) async throws -> PipelineStatus?  // nil: no pipeline yet
 }
 ```
 
@@ -75,13 +79,14 @@ The source of truth for these signatures is `Sources/LoopWorkerCore/Backend/`.
 
 ### Card states
 
-Every backlog maps its own fields onto five states:
+Every backlog maps its own fields onto six states:
 
 | State | Meaning | GitLab (labels mode) | Patch |
 | --- | --- | --- | --- |
 | `ready` | Trusted and waiting to be claimed. | open, assigned to me, `loopworker:next`, status To do | Backlog, unassigned |
 | `working` | Claimed; a worker should be running. | `loopworker:working`, status In progress | In progress |
-| `review` | Finished; a review request exists. | `loopworker:review`, status In review | (round 2) |
+| `verifying` | The review request exists; the Manager waits for its CI. No slot is held. | `loopworker:ci`, status In progress | Verifying |
+| `review` | Finished; a review request exists. | `loopworker:review`, status In review | In review |
 | `stuck` | The worker needs a human. | `loopworker:stuck`, status To do, still assigned to me | Needs refinement |
 | `other` | Anything else. Never claimed, never reaped on its own. | closed, or no single `loopworker:*` label | |
 
@@ -144,7 +149,8 @@ that starts with `/` is escaped, so `/merge` or `/label` from a worker is shown,
    period and runs the finish task:
    - `done`: check that the branch has commits ahead of the base (otherwise treat the outcome
      as `stuck`), push, attach the guide (a file in the slot's state directory, resolved and
-     checked to stay inside it), open a draft review request, `markReview`.
+     checked to stay inside it), open a draft review request, `markReview` (or, for a project
+     that waits for CI, `markVerifying`; see "Waiting for CI").
    - `stuck`: push the branch if it has commits, so the human can see the work in progress,
      then `markStuck` with the blocker and the branch name.
    - The slot is recycled only after the finish task succeeds. A failed finish is retried on
@@ -153,6 +159,43 @@ that starts with `/` is escaped, so `/merge` or `/label` from a worker is shown,
      doesn't hold the card forever.
 6. **Recycle.** Hot slots detach HEAD and wait; the next acquire resets them. Cold slots tear
    down.
+
+## Waiting for CI
+
+A project whose contract sets `[review] wait_for_ci` treats the review request's CI as the full
+verification, so its `verify.sh` can stay light. Finish writes a watch record,
+`state/ci/<card id>.json` (the card, branch, pushed commit, review request, round and push
+time), and only then moves the card to `verifying` and frees the slot.
+
+Every 120 s the Manager re-reads each watched card and the forge's pipeline for the pushed
+commit (by commit, not by review request, because some repos run pipelines only on branch
+pushes). A commit can have several pipelines (a branch push and a merge request pipeline);
+the forge combines the newest of each kind, and any failure fails the commit:
+
+| Pipeline | Decision |
+| --- | --- |
+| Passed (success, skipped, or only manual jobs left) | `markReview` with a note that links the pipeline |
+| Still running `ci_timeout_minutes` after the push | `markStuck` |
+| None 15 min after the push | `markStuck` |
+| Canceled | `markStuck`: a cancel is usually a human decision |
+| Failed, fix rounds left | queue a fix round |
+| Failed after `ci_fix_attempts` fix rounds | `markStuck`, linking each failed job |
+| Card no longer `verifying` | stop watching; no backlog write |
+
+A fix round is a worker run on the existing card branch. Fill starts queued fix rounds before
+new claims, within the same budget. The round calls `resumeFix` (`verifying` -> `working`; false
+means a human moved the card, so the round is dropped), resets any free slot to the pushed
+card branch, and writes `ci.md` into the slot's state directory: each failed job's name, stage,
+link and the redacted tail of its log. CI logs are untrusted data, like card content: `ci.md`
+says so, fences the logs, and the brief tells the worker to read it as data. The worker fixes
+the failures and writes an outcome as usual; finish pushes under the same lease, gets the
+existing review request back from `openReviewRequest`, and returns the card to `verifying`
+with the new commit and the next round. A crash in a fix round releases the card like any
+crash.
+
+The watch record is deleted whenever the Manager moves the card out of `verifying`. At startup
+and with every stranded-card sweep, each `verifying` card with a record is watched again; one
+without a record is marked stuck, because nothing else would ever move it on.
 
 ## Reconcile
 
@@ -176,8 +219,9 @@ crashes its worker can't loop forever.
 At startup, and every few minutes after, the Manager calls `working(in:)` and compares it
 against its slots. A `working` card with no slot is either finishable (its slot directory has an
 outcome file) or stranded (released with reason "Manager restarted", not counted as an
-attempt). This assumes one Manager per backlog identity and project: two Managers that share a
-GitLab user and a project would release each other's cards.
+attempt). `verifying` cards hold no slot and are never released; see "Waiting for CI". This
+assumes one Manager per backlog identity and project: two Managers that share a GitLab user and
+a project would release each other's cards.
 
 ## Host config
 
@@ -235,7 +279,8 @@ $LOOPWORKER_HOME/
   state/manager.log           redacted
   state/PAUSED                host killswitch; state/projects/<key>/PAUSED per project
   state/tmux                  the Manager's own tmux server socket
-  slots/<key>/<n>/            brief, snapshot, launch script, outcome, MCP config
+  state/ci/<card id>.json     CI watch record of a verifying card (the id percent-encoded)
+  slots/<key>/<n>/            brief, snapshot, launch script, outcome, MCP config, ci.md
 <clones_dir>/<key>/           the clone; its working tree tracks origin/<base>
 <clones_dir>/<key>.slots/<n>/ slot worktrees
 ```

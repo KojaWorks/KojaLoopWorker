@@ -25,6 +25,9 @@ public enum CardState: String, Sendable, Codable, CaseIterable {
     case ready
     /// Claimed by this Manager; a worker should be running for it.
     case working
+    /// The review request exists and the Manager waits for its CI before moving the card to
+    /// `review` (projects with `[review] wait_for_ci`). No worker runs and no slot is held.
+    case verifying
     /// Finished; a review request exists.
     case review
     /// A worker gave up and needs a human.

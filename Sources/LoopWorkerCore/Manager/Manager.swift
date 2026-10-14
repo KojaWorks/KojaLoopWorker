@@ -91,6 +91,10 @@ public actor Manager {
         var card: Card?
         var branch: String?
         var base: String?
+        /// Set for a round that fixes the card's failed CI: that round's number, from 1.
+        var ciRound: Int?
+        /// For a CI fix round: the pushed commit whose pipeline failed, where the round started.
+        var ciCommit: String?
         var spawnedAt: Date?
         var lastError: String?
         var lastAttemptFinished: Date?
@@ -159,6 +163,8 @@ public actor Manager {
     var lastReloadCheck: Date?
     var configModified: Date?
     var lastStatusError: String?
+    /// `verifying` cards whose CI the Manager watches, by card id.
+    var ciWatches: [String: CIWatch] = [:]
 
     public init(config: HostConfig, dependencies: ManagerDependencies, clock: any ManagerClock = SystemClock()) {
         self.config = config
@@ -195,9 +201,11 @@ public actor Manager {
         for key in order { adopted.formUnion(await adoptPreviousWorkers(key)) }
         await reapUnadoptedSessions(adopted)
         reportUnconfiguredCards()
+        reportUnconfiguredCIWatches()
         for key in order { startRefresh(key) }
         lastSweep = clock.now()
         sweepStranded()
+        sweepVerifying()
         if await notifier.enabled {
             notify(key: "started", "LoopWorker started on \(hostName)")
         } else {
@@ -280,7 +288,9 @@ public actor Manager {
         if let last = lastSweep, now.timeIntervalSince(last) >= Self.sweepInterval {
             lastSweep = now
             sweepStranded()
+            sweepVerifying()
         }
+        pollCI(now)
         if authGate.needsCheck(at: now) { startAuthPreflight() }
         if fillSoon || lastFill.map({ now.timeIntervalSince($0) >= Self.fillInterval }) ?? true {
             await fill(now)
@@ -404,6 +414,7 @@ public actor Manager {
                               finishFailing: s.finishFailures >= 3, retiring: s.retiring)
                     })
             },
+            ci: ciStatus(),
             log: Array(deps.recentLines().suffix(50)))
         do {
             try status.write(to: ManagerStatus.file(stateDir: stateDir))

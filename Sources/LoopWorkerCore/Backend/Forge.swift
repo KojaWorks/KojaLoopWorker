@@ -18,6 +18,13 @@ public protocol Forge: Sendable {
     /// Manager restart never opens a duplicate.
     func openReviewRequest(_ draft: ReviewRequestDraft) async throws -> ReviewRequest
 
+    /// The latest CI pipeline for `commit` in `project`, whatever triggered it (a push of the
+    /// branch or the review request), or nil when none exists yet. A re-run or a newer
+    /// pipeline for the same commit replaces an older one. Fetches failed jobs and their log
+    /// tails only when the pipeline failed.
+    /// - Throws: when the forge can't be read; a later poll retries.
+    func pipeline(for project: ProjectSpec, commit: String) async throws -> PipelineStatus?
+
     /// Uploads a file and returns a URL that the review request body can link to, or nil
     /// when the forge has no attachments. The Manager then leaves the link out.
     func attach(_ file: URL, to project: ProjectSpec) async throws -> URL?

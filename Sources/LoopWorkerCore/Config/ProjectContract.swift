@@ -23,6 +23,8 @@ public struct ProjectContract: Sendable, Equatable {
     public var branchTemplate: String
     /// How the Manager pulls Git LFS content into a slot.
     public var lfs: LFS
+    /// Whether and how long the Manager waits for the review request's CI.
+    public var ci: CI
 
     public static let defaultBranchTemplate = "loopworker-{number}-{slug}"
 
@@ -50,10 +52,24 @@ public struct ProjectContract: Sendable, Equatable {
         public init() {}
     }
 
+    /// The CI keys of the `[review]` table.
+    public struct CI: Sendable, Equatable {
+        /// Move the card to `verifying` after opening the review request, and to `review`
+        /// only once the pushed commit's CI passes. False moves it to `review` at once.
+        public var waitForCI = false
+        /// How long after a push the pipeline may run before the card is marked stuck.
+        public var timeoutMinutes: Double = 120
+        /// Worker rounds that fix a failed pipeline, after the first one, before the card is
+        /// marked stuck.
+        public var fixAttempts = 2
+        public init() {}
+    }
+
     public init(
         directory: URL, scripts: Scripts = Scripts(),
         wallclockCapMinutes: Double = 90, mcpConfig: String? = nil, reviewGuide: Bool = false,
-        brief: String? = nil, branchTemplate: String = ProjectContract.defaultBranchTemplate, lfs: LFS = LFS()
+        brief: String? = nil, branchTemplate: String = ProjectContract.defaultBranchTemplate, lfs: LFS = LFS(),
+        ci: CI = CI()
     ) {
         self.directory = directory
         self.scripts = scripts
@@ -63,6 +79,7 @@ public struct ProjectContract: Sendable, Equatable {
         self.brief = brief
         self.branchTemplate = branchTemplate
         self.lfs = lfs
+        self.ci = ci
     }
 
     /// The directory to read for `project` with its clone at `clone`.
@@ -113,6 +130,18 @@ public struct ProjectContract: Sendable, Equatable {
                 lfs.pullTimeout = .seconds(m * 60)
             }
         }
+        var ci = CI()
+        if let r = raw.review {
+            ci.waitForCI = r.wait_for_ci ?? ci.waitForCI
+            if let m = r.ci_timeout_minutes {
+                guard m > 0 else { throw ConfigError("\(file.path): [review] ci_timeout_minutes must be > 0") }
+                ci.timeoutMinutes = m
+            }
+            if let n = r.ci_fix_attempts {
+                guard n >= 0 else { throw ConfigError("\(file.path): [review] ci_fix_attempts must be >= 0") }
+                ci.fixAttempts = n
+            }
+        }
         let brief = try? String(contentsOf: directory.appending(path: "BRIEF.md"), encoding: .utf8)
         let branch = raw.worker?.branch ?? defaultBranchTemplate
         guard branch.contains("{number}") else {
@@ -128,7 +157,8 @@ public struct ProjectContract: Sendable, Equatable {
             reviewGuide: raw.review?.guide ?? false,
             brief: brief,
             branchTemplate: branch,
-            lfs: lfs)
+            lfs: lfs,
+            ci: ci)
     }
 
     // Field names mirror the TOML keys.
@@ -152,7 +182,12 @@ public struct ProjectContract: Sendable, Equatable {
         var mcp_config: String?
         var branch: String?
     }
-    private struct RawReview: Decodable { var guide: Bool? }
+    private struct RawReview: Decodable {
+        var guide: Bool?
+        var wait_for_ci: Bool?
+        var ci_timeout_minutes: Double?
+        var ci_fix_attempts: Int?
+    }
     private struct RawLFS: Decodable {
         var pull: Bool?
         var include: [String]?

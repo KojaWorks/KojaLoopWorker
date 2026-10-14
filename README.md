@@ -63,6 +63,7 @@ ready   = "To do"
 working = "In progress"
 review  = "In review"
 stuck   = "To do"
+# verifying = "In progress"                   # waiting for CI; defaults to the working name
 
 [forge]
 kind = "gitlab"                               # [forge.gitlab] may override base_url and token_env
@@ -126,13 +127,15 @@ Later edits or comments by anyone else are withheld from the worker and named in
 colleague assigned you, re-assign yourself before adding the label.
 
 Create the labels `loopworker:next`, `loopworker:working`, `loopworker:review` and
-`loopworker:stuck` once in the group. The Manager moves a card between them:
+`loopworker:stuck` once in the group, and `loopworker:ci` if a project waits for CI. The Manager
+moves a card between them:
 
 | Label | Meaning | What happened on the issue |
 | --- | --- | --- |
 | `loopworker:next` | Ready to claim. | You added it, or the Manager released the card with a note saying why (a crash, a hang, an auth failure). |
 | `loopworker:working` | A worker is on it. | The Manager claimed it. |
-| `loopworker:review` | Done. | The Manager pushed the branch, opened a merge request and linked it in a note. |
+| `loopworker:ci` | Waiting for CI. Only for projects whose contract sets `[review] wait_for_ci`. | The Manager pushed the branch, opened a merge request, linked it in a note and is watching its pipeline. No worker runs. If CI fails, a worker fixes it on the same branch (the card shows `loopworker:working` meanwhile); if it keeps failing, times out or is canceled, the card becomes stuck. `loopworker status` lists these cards under "waiting for CI". |
+| `loopworker:review` | Done. | The Manager pushed the branch, opened a merge request and linked it in a note (and, after CI, the pipeline that passed). |
 | `loopworker:stuck` | The worker needs a human. | A note says what blocks it. You stay assigned, so it stays in your queue; answer it on the issue, then replace `loopworker:stuck` with `loopworker:next`. A card with two `loopworker:*` labels is ignored. |
 
 A card that crashes `max_attempts` times becomes stuck. Closing an issue or removing its

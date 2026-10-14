@@ -8,6 +8,7 @@ final class FakeLifecycle: SlotLifecycle, @unchecked Sendable {
         var acquireFailure: SlotFailure?
         var prepareFailure: SlotFailure?
         var acquiredBranches: [String] = []
+        var acquiredBases: [String] = []
         /// When set, `prepare` waits on it after recording the call.
         var prepareGate: Gate?
         /// The teardown script name of the contract each `recycle` got.
@@ -32,6 +33,7 @@ final class FakeLifecycle: SlotLifecycle, @unchecked Sendable {
         let failure: SlotFailure? = state {
             $0.calls.append("acquire \(id(slot))")
             $0.acquiredBranches.append(branch)
+            $0.acquiredBases.append(base)
             return $0.acquireFailure
         }
         if let failure { throw failure }

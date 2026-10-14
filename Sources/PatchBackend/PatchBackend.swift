@@ -19,6 +19,7 @@ public enum PatchBackend {
     /// [backlog.patch.status]                        # defaults shown
     /// ready   = "Backlog"                           # an empty status also counts as ready
     /// working = "In progress"
+    /// verifying = "Verifying"                       # waiting for CI (projects with wait_for_ci)
     /// review  = "In review"
     /// stuck   = "Needs refinement"
     /// shipped = "Shipped"                           # what a blocked_by target must reach

@@ -29,7 +29,8 @@ struct GitLabBacklogSettings: Sendable, Equatable {
     var allowed: [String]
     var labelPrefix: String
     var statusMode: StatusMode
-    /// Status names per state, for `labels` and `work_item_status` modes.
+    /// Status names per state, for `labels` and `work_item_status` modes. `verifying`
+    /// defaults to the `working` name.
     var statusNames: [CardState: String]
 
     func label(_ state: CardState) -> String? {
@@ -38,6 +39,7 @@ struct GitLabBacklogSettings: Sendable, Equatable {
         case .working: labelPrefix + "working"
         case .review: labelPrefix + "review"
         case .stuck: labelPrefix + "stuck"
+        case .verifying: labelPrefix + "ci"
         case .other: nil
         }
     }
@@ -75,6 +77,7 @@ enum GitLabConfig {
                 if let value { names[state] = value }
             }
         }
+        names[.verifying] = section.status?.verifying ?? names[.working]
         if let empty = names.first(where: { $0.value.isEmpty }) {
             throw ConfigError("config.toml: \(key).status \(empty.key.rawValue) must not be empty")
         }
@@ -140,5 +143,6 @@ enum GitLabConfig {
         var working: String?
         var review: String?
         var stuck: String?
+        var verifying: String?
     }
 }

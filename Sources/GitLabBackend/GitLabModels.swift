@@ -54,6 +54,24 @@ struct GLMergeRequest: Decodable, Sendable {
     var webUrl: String
 }
 
+struct GLPipeline: Decodable, Sendable {
+    var id: Int
+    /// `created`, `pending`, `running`, `success`, `failed`, `canceled`, `skipped`, `manual`, ...
+    var status: String
+    var webUrl: String
+    var ref: String?
+    /// What triggered it: `push`, `merge_request_event`, `parent_pipeline` (a child), ...
+    var source: String?
+}
+
+struct GLJob: Decodable, Sendable {
+    var id: Int
+    var name: String
+    var stage: String
+    var webUrl: String
+    var allowFailure: Bool
+}
+
 struct GLUpload: Decodable, Sendable {
     /// Relative to the project, e.g. `/uploads/<secret>/shot.png`.
     var url: String

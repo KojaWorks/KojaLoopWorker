@@ -160,6 +160,50 @@ public struct GitHubForge: Forge {
         }
     }
 
+    /// The commit's latest check runs (GitHub Actions and other apps), read as one pipeline:
+    /// none is nil; any run not completed is running; any `failure` or `timed_out` is failed;
+    /// any `cancelled` is canceled; all `success`, `neutral` or `skipped` pass. Other
+    /// conclusions (`action_required`, `stale`) count as running, so the Manager's CI timeout
+    /// ends the wait. Commit statuses from the older status API are not read. `url` is the
+    /// commit's checks page.
+    public func pipeline(for project: ProjectSpec, commit: String) async throws -> PipelineStatus? {
+        struct Page: Decodable {
+            var total_count: Int
+            var check_runs: [Run]
+        }
+        struct Run: Decodable {
+            var name: String
+            var status: String
+            var conclusion: String?
+            var html_url: URL?
+            var output: Output?
+            struct Output: Decodable {
+                var summary: String?
+                var text: String?
+            }
+        }
+        var runs: [Run] = []
+        for page in 1... {
+            let p = try await request("GET", "repos/\(project.path)/commits/\(commit)/check-runs", query: [
+                URLQueryItem(name: "per_page", value: "100"), URLQueryItem(name: "page", value: "\(page)"),
+            ], as: Page.self)
+            runs += p.check_runs
+            if p.check_runs.isEmpty || runs.count >= p.total_count { break }
+        }
+        guard !runs.isEmpty else { return nil }
+        let url = URL(string: "\(webBase)/\(project.path)/commit/\(commit)/checks")
+        if runs.contains(where: { $0.status != "completed" }) { return PipelineStatus(state: .running, url: url) }
+        let failed = runs.filter { $0.conclusion == "failure" || $0.conclusion == "timed_out" }
+        if !failed.isEmpty {
+            return PipelineStatus(state: .failed, url: url, failedJobs: failed.map {
+                CIJob(name: $0.name, stage: "", url: $0.html_url, logTail: CIJob.tail($0.output?.text ?? $0.output?.summary ?? ""))
+            })
+        }
+        if runs.contains(where: { $0.conclusion == "cancelled" }) { return PipelineStatus(state: .canceled, url: url) }
+        let passing: Set<String?> = ["success", "neutral", "skipped"]
+        return PipelineStatus(state: runs.allSatisfy { passing.contains($0.conclusion) } ? .passed : .running, url: url)
+    }
+
     /// Always nil: GitHub's API has no way to attach a file to a pull request.
     public func attach(_ file: URL, to project: ProjectSpec) async throws -> URL? { nil }
 
