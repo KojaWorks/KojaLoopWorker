@@ -18,9 +18,9 @@ public protocol TmuxDriving: Sendable {
     /// detection and for the status file.
     func capture(_ session: String, lines: Int) async throws -> String
 
-    /// Presses Enter in the session. Used only to accept claude's folder-trust dialog after
-    /// `capture` showed it.
-    func sendEnter(_ session: String) async throws
+    /// Presses `keys` (tmux key names such as `Down` and `Enter`) in the session. Used only to
+    /// accept claude's folder-trust dialog after `capture` showed it.
+    func sendKeys(_ session: String, _ keys: [String]) async throws
 
     /// Kills the session. Killing a session that doesn't exist is not an error.
     func kill(_ session: String) async throws
@@ -96,8 +96,8 @@ public struct Tmux: TmuxDriving {
         try await check(["capture-pane", "-p", "-t", Self.pane(session), "-S", "-\(lines)"]).output
     }
 
-    public func sendEnter(_ session: String) async throws {
-        try await check(["send-keys", "-t", Self.pane(session), "Enter"])
+    public func sendKeys(_ session: String, _ keys: [String]) async throws {
+        try await check(["send-keys", "-t", Self.pane(session)] + keys)
     }
 
     public func kill(_ session: String) async throws {

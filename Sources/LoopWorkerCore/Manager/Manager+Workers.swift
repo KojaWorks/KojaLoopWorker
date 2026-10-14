@@ -237,17 +237,24 @@ extension Manager {
     /// Accepts claude's folder-trust dialog, which a fresh worktree shows once and which
     /// would otherwise hang the unattended worker.
     func watchFolderTrust(_ session: String) {
-        let tmux = deps.tmux, clock = self.clock, log = self.log, showsTrustPrompt = deps.pane.showsTrustPrompt
+        let tmux = deps.tmux, clock = self.clock, log = self.log, trustPromptKeys = deps.pane.trustPromptKeys
         track {
             for _ in 0..<15 {
                 try? await clock.sleep(seconds: 2)
                 if Task.isCancelled { return }
                 guard let pane = try? await tmux.capture(session, lines: 40) else { return }
-                if showsTrustPrompt(pane) {
-                    try? await tmux.sendEnter(session)
-                    log.info("\(session): accepted claude's folder-trust dialog")
+                guard let keys = trustPromptKeys(pane) else { continue }
+                guard !keys.isEmpty else {
+                    log.warning("\(session): claude shows a folder-trust dialog without a recognizable Yes option; leaving it for a human (tmux -S <home>/state/tmux attach -t \(session))")
                     return
                 }
+                do {
+                    try await tmux.sendKeys(session, keys)
+                    log.info("\(session): accepted claude's folder-trust dialog (\(keys.joined(separator: " ")))")
+                } catch {
+                    log.warning("\(session): couldn't answer claude's folder-trust dialog: \(error)")
+                }
+                return
             }
         }
     }

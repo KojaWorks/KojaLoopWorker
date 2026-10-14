@@ -91,7 +91,8 @@ public struct WorkerBrief: Sendable {
             and `LOOPWORKER_PORT` as they are in your environment. Fix your change until it \
             passes. If it fails for a reason outside your change that you can't fix within \
             the card's scope, write a stuck outcome that names the failing check.
-            4. Review your own change with fresh-context subagents that haven't seen your work. \
+            4. Review your own change with fresh-context subagents that haven't seen your work, \
+            however small the change: the reviewer relies on this step having run. \
             Give each the card and `git diff origin/\(baseBranch)...HEAD`, and ask one of: \
             (a) does the change do what the card asks, with nothing missing and nothing extra; \
             (b) correctness: bugs, edge cases, failure handling; (c) does it follow the \

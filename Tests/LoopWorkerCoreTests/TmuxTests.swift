@@ -44,7 +44,7 @@ struct BaseEnvironmentRunner: ProcessRunning {
     @Test("B11, B12, B15: own socket, 10 s timeout, token variables removed")
     func everyCommand() async throws {
         let (tmux, runner) = tmux()
-        try await tmux.sendEnter("lw_a_1")
+        try await tmux.sendKeys("lw_a_1", ["Enter"])
         let spec = try #require(runner.calls.first)
         #expect(spec.executable == "tmux")
         #expect(spec.arguments == ["-S", socket.path, "send-keys", "-t", "=lw_a_1:", "Enter"])

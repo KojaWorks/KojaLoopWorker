@@ -104,6 +104,10 @@ scripts, git hooks and the notify command never see them. A variable in the Mana
 environment is used when `secrets.env` doesn't set it, but a launchd service has no shell
 environment, so put everything here.
 
+Use a GitLab personal access token with the `api` scope for `LOOPWORKER_GITLAB_TOKEN`. An
+OAuth token, such as the one `glab auth login` stores, expires after about two hours, and the
+Manager can't refresh it.
+
 `CLAUDE_CODE_OAUTH_TOKEN` comes from `claude setup-token`. Without it, workers use the host's
 interactive claude login, which a LaunchDaemon can't reach and which concurrent workers can
 log out by racing its refresh.

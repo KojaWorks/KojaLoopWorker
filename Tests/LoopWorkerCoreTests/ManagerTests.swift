@@ -72,7 +72,7 @@ func fileMode(_ url: URL) throws -> Int {
         h.addCard(1)
         try await h.boot()
         await h.cycle()
-        #expect(h.tmux.state.get.entersSent == ["lw_g--app_0"])
+        #expect(h.tmux.state.get.keysSent.map(\.session) == ["lw_g--app_0"])
     }
 
     @Test func lostClaimSkipsTheCardAndClearsTheRecord() async throws {  // B74
@@ -242,7 +242,7 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(!saw.contains("glpat-fabricated"))
         #expect(!saw.contains("sk-ant-parent"))
         #expect(!saw.contains("USER="))
-        #expect(saw.contains("ARG:--strict-mcp-config\nARG:--mcp-config\nARG:\(state.path)/mcp.json\nARG:--model\nARG:opus\nARG:the brief"))
+        #expect(saw.contains("ARG:--add-dir\nARG:\(state.path)\nARG:--strict-mcp-config\nARG:--mcp-config\nARG:\(state.path)/mcp.json\nARG:--model\nARG:opus\nARG:the brief"))
     }
 }
 

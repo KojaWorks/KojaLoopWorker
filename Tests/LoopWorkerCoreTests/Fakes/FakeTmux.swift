@@ -17,7 +17,7 @@ final class FakeTmux: TmuxDriving, @unchecked Sendable {
         var sessions: [String: Session] = [:]
         var spawned: [Spawned] = []
         var killed: [String] = []
-        var entersSent: [String] = []
+        var keysSent: [(session: String, keys: [String])] = []
         var failSpawn = false
         var failIsAlive: Set<String> = []
         /// The pane a freshly spawned session shows.
@@ -61,9 +61,9 @@ final class FakeTmux: TmuxDriving, @unchecked Sendable {
         state { $0.sessions[session]?.pane ?? "" }
     }
 
-    func sendEnter(_ session: String) async throws {
+    func sendKeys(_ session: String, _ keys: [String]) async throws {
         state {
-            $0.entersSent.append(session)
+            $0.keysSent.append((session, keys))
             $0.sessions[session]?.pane = ""
         }
     }
