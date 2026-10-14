@@ -72,6 +72,8 @@ public protocol Forge: Sendable {
     func openReviewRequest(_ draft: ReviewRequestDraft) async throws -> ReviewRequest  // idempotent per branch
     func attach(_ file: URL, to project: ProjectSpec) async throws -> URL?           // nil: forge has no attachments
     func pipeline(for project: ProjectSpec, commit: String) async throws -> PipelineStatus?  // nil: no pipeline yet
+    func baselineJobs(for project: ProjectSpec, ref: String, names: [String]) async throws -> [String: CIJobBaseline]
+    func retryJobs(project: ProjectSpec, jobs: [CIJob]) async throws -> Bool         // false: can't re-run them
 }
 ```
 
@@ -174,7 +176,11 @@ time), and only then moves the card to `verifying` and frees the slot.
 Every 120 s the Manager re-reads each watched card and the forge's pipeline for the pushed
 commit (by commit, not by review request, because some repos run pipelines only on branch
 pushes). A commit can have several pipelines (a branch push and a merge request pipeline);
-the forge combines the newest of each kind, and any failure fails the commit:
+the forge combines the newest of each kind, and any failure fails the commit. For a failed
+pipeline the Manager also reads how each failed job did on the base branch (`baselineJobs`): a
+job that also fails there is pre-existing, and one that passes there may be flaky. Flaky jobs
+are re-run at most once per commit; the watch record notes the re-run before the forge is
+asked, and a forge that can't re-run them leads straight to a fix round:
 
 | Pipeline | Decision |
 | --- | --- |
@@ -182,16 +188,19 @@ the forge combines the newest of each kind, and any failure fails the commit:
 | Still running `ci_timeout_minutes` after the push | `markStuck` |
 | None 15 min after the push | `markStuck` |
 | Canceled | `markStuck`: a cancel is usually a human decision |
-| Failed, fix rounds left | queue a fix round |
-| Failed after `ci_fix_attempts` fix rounds | `markStuck`, linking each failed job |
+| Failed only in jobs that also fail on the base branch | `markReview` with a note that links each job on both branches |
+| Failed in jobs that pass on the base branch, not yet re-run | re-run those jobs once and keep watching |
+| Failed otherwise, fix rounds left | queue a fix round |
+| Failed otherwise after `ci_fix_attempts` fix rounds | `markStuck`, linking each failed job |
 | Card no longer `verifying` | stop watching; no backlog write |
 
 A fix round is a worker run on the existing card branch. Fill starts queued fix rounds before
 new claims, within the same budget. The round calls `resumeFix` (`verifying` -> `working`; false
 means a human moved the card, so the round is dropped), resets any free slot to the pushed
 card branch, and writes `ci.md` into the slot's state directory: each failed job's name, stage,
-link and the redacted tail of its log. CI logs are untrusted data, like card content: `ci.md`
-says so, fences the logs, and the brief tells the worker to read it as data. The worker fixes
+link, how it did on the base branch and the redacted tail of its log. CI logs are untrusted
+data, like card content: `ci.md` says so, fences the logs, and the brief tells the worker to
+read it as data. The worker fixes
 the failures and writes an outcome as usual; finish pushes under the same lease, gets the
 existing review request back from `openReviewRequest`, and returns the card to `verifying`
 with the new commit and the next round. A crash in a fix round releases the card like any
