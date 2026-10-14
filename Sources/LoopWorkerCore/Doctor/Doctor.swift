@@ -40,6 +40,8 @@ public struct Doctor: Sendable {
     public var environment: [String: String]
     /// Runs the claude preflight and the engine probe.
     public var runner: any ProcessRunning
+    /// Tells whether a project's clone uses Git LFS.
+    public var git: any GitDriving
     /// The directories on the `PATH` that `loopworker service install` gives the service; a
     /// tool found only outside them gets a warning.
     public var servicePath: [String]
@@ -49,13 +51,14 @@ public struct Doctor: Sendable {
     public var makeBackends: @Sendable (HostConfig, [String: String]) throws -> (backlog: any Backlog, forge: any Forge)
 
     public init(
-        home: URL, environment: [String: String], runner: any ProcessRunning, servicePath: [String],
+        home: URL, environment: [String: String], runner: any ProcessRunning, git: any GitDriving, servicePath: [String],
         credentialVariables: @escaping @Sendable (HostConfig) throws -> [String],
         makeBackends: @escaping @Sendable (HostConfig, [String: String]) throws -> (backlog: any Backlog, forge: any Forge)
     ) {
         self.home = home
         self.environment = environment
         self.runner = runner
+        self.git = git
         self.servicePath = servicePath
         self.credentialVariables = credentialVariables
         self.makeBackends = makeBackends
@@ -95,7 +98,8 @@ public struct Doctor: Sendable {
         }
         checks += tokens(Array(Set(tokenNames)).sorted(), fileSecrets: fileSecrets, secretsFile: secretsFile)
 
-        let tools = tools()
+        let lfsProjects = which("git-lfs") == nil ? await lfsProjects(config) : []
+        let tools = tools(lfsProjects: lfsProjects)
         checks += tools
         if tools.contains(where: { $0.name == "tool claude" && $0.level != .fail }) {
             checks.append(await claude(overlaid, secretsFile: secretsFile))
@@ -170,11 +174,27 @@ public struct Doctor: Sendable {
         }
     }
 
-    private func tools() -> [DoctorCheck] {
-        let path = (environment["PATH"] ?? "").split(separator: ":").map(String.init)
-        func find(_ tool: String) -> URL? {
-            path.lazy.map { URL(filePath: $0).appending(path: tool) }.first { FileManager.default.isExecutableFile(atPath: $0.path) }
+    private func which(_ tool: String) -> URL? {
+        (environment["PATH"] ?? "").split(separator: ":").lazy
+            .map { URL(filePath: String($0)).appending(path: tool) }
+            .first { FileManager.default.isExecutableFile(atPath: $0.path) }
+    }
+
+    /// The configured projects whose clone exists and uses Git LFS. A clone that git can't
+    /// read counts as not using it.
+    private func lfsProjects(_ config: HostConfig?) async -> [String] {
+        guard let config else { return [] }
+        var paths: [String] = []
+        for project in config.projects {
+            let clone = config.clonesDir.appending(path: project.key)
+            guard FileManager.default.fileExists(atPath: clone.path) else { continue }
+            if (try? await git.usesLFS(clone)) == true { paths.append(project.path) }
         }
+        return paths
+    }
+
+    /// - Parameter lfsProjects: Projects whose clones use Git LFS; a missing `git-lfs` fails for them.
+    private func tools(lfsProjects: [String]) -> [DoctorCheck] {
         func found(_ name: String, _ url: URL) -> DoctorCheck {
             let dir = url.deletingLastPathComponent().path
             guard servicePath.contains(dir) else {
@@ -184,11 +204,16 @@ public struct Doctor: Sendable {
             return DoctorCheck("tool \(name)", .ok, url.path)
         }
         return Self.requiredTools.map { tool in
-            find(tool).map { found(tool, $0) }
+            which(tool).map { found(tool, $0) }
                 ?? DoctorCheck("tool \(tool)", .fail, "not on PATH", remedy: tool == "claude" ? "install Claude Code" : "brew install \(tool)")
         } + Self.optionalTools.map { tool, feature, install in
-            find(tool).map { found(tool, $0) }
-                ?? DoctorCheck("tool \(tool)", .warn, "not on PATH; needed for \(feature)", remedy: install)
+            if let url = which(tool) { return found(tool, url) }
+            if tool == "git-lfs", !lfsProjects.isEmpty {
+                let names = lfsProjects.joined(separator: ", ")
+                return DoctorCheck("tool git-lfs", .fail, "not on PATH; projects whose clones use Git LFS: \(names)",
+                                   remedy: "\(install); without it the Manager can't pull or push the LFS content of \(names)")
+            }
+            return DoctorCheck("tool \(tool)", .warn, "not on PATH; needed for \(feature)", remedy: install)
         }
     }
 

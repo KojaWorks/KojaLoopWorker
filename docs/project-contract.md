@@ -36,7 +36,8 @@ at the script's timeout, which marks the slot broken. Make every step non-intera
 ### `provision.sh`
 
 Runs once per hot slot (and again after the slot breaks), or before every card on a cold slot.
-Install dependencies, fetch large files, start services. It must be idempotent: it runs again
+Install dependencies, start services. The Manager has already pulled any Git LFS content (see
+"Git LFS"). It must be idempotent: it runs again
 on a slot that is half provisioned. Exit non-zero with a clear message when a prerequisite is
 missing; the output tail lands in the log and the status file.
 
@@ -91,10 +92,39 @@ wallclock_cap_minutes = 90
 [review]
 # Ask the worker to write a storygrafter review guide, attached to the review request.
 guide = false
+
+[lfs]
+# Pull Git LFS content into the slot when the repo uses LFS. false leaves pointer files.
+pull = true
+# git-lfs path patterns to pull, and to skip. Empty include means everything.
+include = []
+exclude = []
+pull_timeout_minutes = 60
 ```
 
 Which environment variables reach a worker is host config (`worker_env` on the project in
 `config.toml`), not contract, so a repo can't widen it.
+
+## Git LFS
+
+When any `.gitattributes` in the repo contains `filter=lfs`, the Manager handles LFS content
+with the forge credentials:
+
+- Before the slot's first script on each card (and before `provision.sh` on a hot slot), it
+  pulls the LFS content of the checked-out commit into the worktree, limited by `[lfs] include`
+  and `exclude`. A failed pull marks the slot broken, like a failed provision.
+- Before it pushes the card branch, it uploads the LFS objects that the worker committed.
+
+The Manager's own checkouts never download LFS content, and it configures the repo so that the
+worker's checkouts don't either; files that the worker checks out stay pointer files until the
+next pull. The worker's `git add` still stores tracked files in LFS.
+
+Scripts must not run `git lfs pull` or `git lfs fetch` themselves: they have no forge
+credentials. Set `pull = false` when the slot doesn't need the content, for example a repo
+whose LFS files are only release assets.
+
+The host needs `git-lfs` on `PATH`; `loopworker doctor` fails without it once a cloned project
+uses LFS.
 
 ## Hot or cold
 

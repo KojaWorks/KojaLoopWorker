@@ -50,11 +50,12 @@ private final class DiagnosableForge: Forge, Diagnosable, @unchecked Sendable {
     func doctor(
         environment: [String: String] = [:],
         runner: ScriptedRunner = ScriptedRunner(),
+        git: FakeGit = FakeGit(),
         forgeCheck: DoctorCheck = DoctorCheck("forge fake", .ok, "token belongs to @me"),
         backends: Error? = nil
     ) -> Doctor {
         Doctor(
-            home: home, environment: ["PATH": bin.path].merging(environment) { _, new in new }, runner: runner,
+            home: home, environment: ["PATH": bin.path].merging(environment) { _, new in new }, runner: runner, git: git,
             servicePath: [bin.path],
             credentialVariables: { _ in ["GL_TOKEN"] },
             makeBackends: { _, env in
@@ -119,9 +120,26 @@ private final class DiagnosableForge: Forge, Diagnosable, @unchecked Sendable {
         #expect(lfs?.detail.contains("Git LFS") == true)
     }
 
+    @Test("B162: a missing git-lfs fails once a cloned project uses Git LFS")
+    func missingGitLFSFailsWhenAClonedProjectUsesIt() async throws {
+        try FileManager.default.removeItem(at: bin.appending(path: "git-lfs"))
+        let git = FakeGit()
+        git.state { $0.usesLFS = true }
+        let uncloned = await doctor(git: git).run()
+        #expect(check(uncloned, "tool git-lfs")?.level == .warn)
+
+        try FileManager.default.createDirectory(at: home.appending(path: "clones/g--app"), withIntermediateDirectories: true)
+        let checks = await doctor(git: git).run()
+        let lfs = check(checks, "tool git-lfs")
+        #expect(lfs?.level == .fail)
+        #expect(lfs?.detail == "not on PATH; projects whose clones use Git LFS: g/app")
+        #expect(lfs?.remedy?.contains("brew install git-lfs") == true)
+        #expect(!Doctor.passed(checks))
+    }
+
     @Test func aToolOutsideTheServicePathWarns() async throws {
         let d = Doctor(
-            home: home, environment: ["PATH": bin.path], runner: ScriptedRunner(), servicePath: ["/usr/bin"],
+            home: home, environment: ["PATH": bin.path], runner: ScriptedRunner(), git: FakeGit(), servicePath: ["/usr/bin"],
             credentialVariables: { _ in [] }, makeBackends: { _, _ in (FakeBacklog(), FakeForge()) })
         let checks = await d.run()
         #expect(check(checks, "tool tmux")?.level == .warn)
@@ -169,7 +187,7 @@ private final class DiagnosableForge: Forge, Diagnosable, @unchecked Sendable {
 
     @Test func aMissingHomeFails() async throws {
         let d = Doctor(
-            home: home.appending(path: "nope"), environment: ["PATH": bin.path], runner: ScriptedRunner(), servicePath: [bin.path],
+            home: home.appending(path: "nope"), environment: ["PATH": bin.path], runner: ScriptedRunner(), git: FakeGit(), servicePath: [bin.path],
             credentialVariables: { _ in [] }, makeBackends: { _, _ in (FakeBacklog(), FakeForge()) })
         let checks = await d.run()
         #expect(check(checks, "home")?.level == .fail)

@@ -86,6 +86,25 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(!FileManager.default.fileExists(atPath: h.stateDir().appending(path: "card.json").path))
     }
 
+    @Test func aClaimWhoseResponseWasLostButLandedIsKept() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        h.addCard(1)
+        h.backlog.state { $0.claimThrows = true }
+        try await h.boot()
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 1)
+    }
+
+    @Test func aClaimThatFailedWithoutLandingSkipsTheCard() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        h.addCard(1)
+        h.backlog.state { $0.claimThrows = false }
+        try await h.boot()
+        await h.cycle()
+        #expect(h.tmux.spawned.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: h.stateDir().appending(path: "card.json").path))
+    }
+
     @Test func acquireFailureBreaksTheSlotAndReleasesTheCard() async throws {  // B36, B75
         let h = try ManagerHarness(projects: oneColdProject)
         h.addCard(1)
@@ -348,6 +367,24 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.forge.state.get.opened.count == 1)
         #expect(h.backlog.card(id: "id-12")?.state == .review)
         #expect(try h.status().projects[0].slots[0].state == "idle")
+    }
+
+    @Test("B160: an LFS repo's objects go up before the branch, and a failed LFS push is retried")
+    func lfsPushPrecedesThePush() async throws {
+        let h = try await spawned()
+        h.git.state { $0.usesLFS = true; $0.failLFSPushOnce = true }
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.git.state.get.pushes.isEmpty)
+        #expect(h.log.contains("pushing Git LFS objects for loopworker-12-fix-it: git lfs push failed; retrying in 30 s", level: .error))
+        #expect(try h.status().projects[0].slots[0].state == "busy")
+
+        h.clock.advance(31)
+        await h.cycle()
+        let calls = h.git.calls.filter { $0.hasPrefix("lfsPush") || $0.hasPrefix("push") }
+        #expect(calls == ["lfsPush https://forge.example/g/app.git forge-env", "push loopworker-12-fix-it"])
+        #expect(h.backlog.card(id: "id-12")?.state == .review)
     }
 
     @Test func aBranchSomeoneElsePushedEndsTheCardStuck() async throws {

@@ -21,6 +21,8 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
         var failRelease = false
         var failMarkReview: (any Error)?
         var claimOverride: Bool?
+        /// `claim` throws after (true) or instead of (false) moving the card, like a lost response.
+        var claimThrows: Bool?
         var workableCalls: [[String]] = []
         var cardCalls: [String] = []
         /// When set, `card(_:)` waits on it after recording the call.
@@ -74,8 +76,12 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
     }
 
     func claim(_ card: Card) async throws -> Bool {
-        state {
+        try state {
             $0.writes.append(.claim(card.ref.id))
+            if let landed = $0.claimThrows {
+                if landed { $0.cards[card.ref.id]?.state = .working }
+                throw FakeError("no response from the backlog")
+            }
             if let o = $0.claimOverride { return o }
             guard $0.cards[card.ref.id]?.state == .ready else { return false }
             $0.cards[card.ref.id]?.state = .working

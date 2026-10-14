@@ -6,7 +6,12 @@ private actor SlotFakeGit: GitDriving {
     var calls: [String] = []
     var resetError: (any Error)?
 
+    var lfs = false
+    var lfsPullError: (any Error)?
+    var lfsPulls: [(url: String, include: [String], exclude: [String], timeout: Duration, environment: [String: String])] = []
+
     func failReset(_ error: any Error) { resetError = error }
+    func useLFS(failing error: (any Error)? = nil) { lfs = true; lfsPullError = error }
 
     func cloneOrFetch(url: String, into directory: URL, environment: [String: String]) async throws { calls.append("cloneOrFetch") }
     func syncCheckout(_ clone: URL, base: String) async throws { calls.append("syncCheckout") }
@@ -22,6 +27,13 @@ private actor SlotFakeGit: GitDriving {
         calls.append("push")
         return "pushed"
     }
+    func usesLFS(_ worktree: URL) async throws -> Bool { lfs }
+    func lfsPull(_ worktree: URL, url: String, include: [String], exclude: [String], timeout: Duration, environment: [String: String]) async throws {
+        calls.append("lfsPull")
+        lfsPulls.append((url, include, exclude, timeout, environment))
+        if let lfsPullError { throw lfsPullError }
+    }
+    func lfsPush(_ worktree: URL, url: String, environment: [String: String]) async throws { calls.append("lfsPush") }
     func removeWorktree(clone: URL, worktree: URL) async { calls.append("removeWorktree \(worktree.lastPathComponent)") }
 }
 
@@ -105,6 +117,50 @@ private struct Fixture {
         await f.lifecycle.recycle(slot, contract: f.contract)
         #expect(f.scriptsRun() == ["provision.sh", "teardown.sh"])
         #expect(await !f.git.calls.contains("detach 0"))
+    }
+
+    @Test("B159: acquire and hot prepare pull LFS content with the forge remote before any script")
+    func lfsPullBeforeScripts() async throws {
+        let f = try Fixture()
+        await f.git.useLFS()
+        var contract = f.contract
+        contract.lfs.include = ["assets/**"]
+        contract.lfs.pullTimeout = .seconds(120)
+        _ = try await f.lifecycle.acquire(f.slot(hot: false), contract: contract, base: "main", branch: "b")
+        #expect(await f.git.calls == ["ensureWorktree 0", "resetWorktree https://forge.invalid/app.git main b /askpass", "lfsPull"])
+        let pull = try #require(await f.git.lfsPulls.first)
+        #expect(pull.url == "https://forge.invalid/app.git")
+        #expect(pull.include == ["assets/**"] && pull.exclude.isEmpty)
+        #expect(pull.timeout == .seconds(120))
+        #expect(pull.environment["GIT_ASKPASS"] == "/askpass")
+        #expect(f.log.lines.contains { $0.hasPrefix("group--app/0: pulled Git LFS content in") })
+        #expect(f.scriptsRun() == ["provision.sh"])
+
+        let hot = try Fixture()
+        await hot.git.useLFS()
+        try await hot.lifecycle.prepare(hot.slot(hot: true), contract: hot.contract)
+        #expect(await hot.git.calls == ["ensureWorktree 0", "lfsPull"])
+    }
+
+    @Test("B159: a failed LFS pull is a redacted SlotFailure and runs no script; pull = false skips it")
+    func lfsPullFailure() async throws {
+        let f = try Fixture()
+        let slot = f.slot(hot: false)
+        await f.git.useLFS(failing: FakeError("git lfs pull exited 2: Authorization error, token glpat-fabricated0123456789"))
+        let failure = try await #require(throws: SlotFailure.self) {
+            try await f.lifecycle.acquire(slot, contract: f.contract, base: "main", branch: "b")
+        }
+        #expect(failure.description.hasPrefix("group--app/0: pulling Git LFS content into \(slot.worktree.path) failed: git lfs pull exited 2"))
+        #expect(!failure.description.contains("glpat-"))
+        #expect(f.scriptsRun().isEmpty)
+
+        let off = try Fixture()
+        await off.git.useLFS(failing: FakeError("unreachable"))
+        var contract = off.contract
+        contract.lfs.pull = false
+        _ = try await off.lifecycle.acquire(off.slot(hot: false), contract: contract, base: "main", branch: "b")
+        #expect(await !off.git.calls.contains("lfsPull"))
+        #expect(off.scriptsRun() == ["provision.sh"])
     }
 
     @Test("B35: a hot slot runs reset on acquire and detaches HEAD on recycle")

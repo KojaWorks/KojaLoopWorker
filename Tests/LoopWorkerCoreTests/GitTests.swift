@@ -278,3 +278,132 @@ struct GitFixture {
         #expect(try FileManager.default.contentsOfDirectory(atPath: clone.deletingLastPathComponent().path) == [])
     }
 }
+
+/// A `GitFixture` whose `main` stores `data.bin` in Git LFS. `url` is the origin as a `file://`
+/// URL, so its LFS endpoint `<url>/info/lfs` is a local store that git-lfs's standalone file
+/// transfer reads and writes; that store must be a bare repo.
+struct LFSFixture {
+    static let available = ProcessInfo.processInfo.environment["PATH"]?.split(separator: ":")
+        .contains { FileManager.default.isExecutableFile(atPath: "\($0)/git-lfs") } ?? false
+    static let pointerPrefix = "version https://git-lfs.github.com/spec/v1"
+
+    let f: GitFixture
+    var url: String { "file://\(f.origin.path)" }
+    var store: URL { f.origin.appending(path: "info/lfs") }
+
+    init() async throws {
+        f = try await GitFixture()
+        try await f.run(["init", "--bare", "-b", "main", store.path])
+        try await f.run(["-C", f.seed.path, "lfs", "install", "--local"])
+        try await f.run(["-C", f.seed.path, "lfs", "track", "*.bin"])
+        try await f.run(["-C", f.seed.path, "add", ".gitattributes"])
+        try await commitData("first content\n")
+    }
+
+    /// Commits `data.bin` in the seed and pushes it, LFS content included, to origin.
+    func commitData(_ contents: String) async throws {
+        try await f.commit(in: f.seed, file: "data.bin", contents)
+        try await f.run(["-C", f.seed.path, "-c", "lfs.url=\(url)/info/lfs", "push", "origin", "main"])
+    }
+
+    /// The oid of `file`'s LFS object at HEAD in `repo`.
+    func oid(_ repo: URL, _ file: String) async throws -> String {
+        let pointer = try await f.run(["-C", repo.path, "cat-file", "-p", "HEAD:\(file)"])
+        return try #require(pointer.split(separator: "\n").first { $0.hasPrefix("oid sha256:") }).dropFirst("oid sha256:".count).description
+    }
+
+    func stored(_ oid: String) -> Bool {
+        f.exists(store.appending(path: "lfs/objects/\(oid.prefix(2))/\(oid.dropFirst(2).prefix(2))/\(oid)"))
+    }
+
+    func lifecycle(_ remoteURL: String) -> ScriptedSlotLifecycle {
+        ScriptedSlotLifecycle(runner: f.runner, git: f.git, log: f.log,
+                              gitRemote: { _ in (remoteURL, ["LOOPWORKER_GIT_PASSWORD": "fabricated-forge-password"]) })
+    }
+
+    /// Slot 1 of a cold project whose provision script prints `data.bin` and whether it can
+    /// see the forge password.
+    func slot() throws -> (SlotSpec, ProjectContract) {
+        let contract = f.root.appending(path: "contract")
+        try f.write("echo \"content: $(cat data.bin)\"\necho \"password: ${LOOPWORKER_GIT_PASSWORD:-none}\"\n",
+                    to: contract.appending(path: "provision.sh"))
+        let spec = SlotSpec(project: ProjectSpec(path: "proj"), index: 1, clone: f.clone, worktree: f.slot(1),
+                            port: 54400, stateDir: f.root.appending(path: "state/1"))
+        return (spec, ProjectContract(directory: contract))
+    }
+}
+
+@Suite(.enabled(if: LFSFixture.available, "git-lfs is not on PATH")) struct GitLFSTests {
+    @Test("B157, B159: acquire pulls LFS content that a credential-free provision script then reads")
+    func acquirePullsLFSContent() async throws {
+        let l = try await LFSFixture()
+        defer { l.f.cleanUp() }
+        try await l.f.git.cloneOrFetch(url: l.url, into: l.f.clone, environment: [:])
+        #expect(try l.f.read(l.f.clone.appending(path: "data.bin")).hasPrefix(LFSFixture.pointerPrefix))
+        #expect(try await l.f.git.usesLFS(l.f.clone))
+
+        let (slot, contract) = try l.slot()
+        _ = try await l.lifecycle(l.url).acquire(slot, contract: contract, base: "main", branch: "loopworker-1-card")
+        #expect(try l.f.read(slot.worktree.appending(path: "data.bin")) == "first content\n")
+        let lines = l.f.log.lines.map(\.1)
+        #expect(lines.contains("[proj/1 provision] content: first content"), "\(lines)")
+        #expect(lines.contains("[proj/1 provision] password: none"))
+        #expect(lines.contains { $0.hasPrefix("proj/1: pulled Git LFS content in") })
+        #expect(try await l.f.run(["-C", slot.worktree.path, "status", "--porcelain"]) == "")
+    }
+
+    @Test("B156, B159: a reset never downloads LFS content, and a failed pull fails the slot")
+    func resetSkipsSmudgeAndAFailedPullFailsTheSlot() async throws {
+        let l = try await LFSFixture()
+        defer { l.f.cleanUp() }
+        let slot = try await l.f.slotOnBranch("loopworker-1-first")
+        try await l.f.run(["-C", l.f.clone.path, "lfs", "install", "--local"])  // a smudging filter, as a host-wide install gives
+        try await l.commitData("second content\n")
+        let away = l.f.root.appending(path: "lfs-away")
+        try FileManager.default.moveItem(at: l.store, to: away)
+
+        _ = try await l.f.git.resetWorktree(slot, url: l.url, base: "main", branch: "loopworker-2-second", environment: [:])
+        #expect(try l.f.read(slot.appending(path: "data.bin")).hasPrefix(LFSFixture.pointerPrefix))
+        let error = try await #require(throws: GitError.self) {
+            try await l.f.git.lfsPull(slot, url: l.url, include: [], exclude: [], timeout: .seconds(60), environment: [:])
+        }
+        #expect(error.command.contains("lfs pull"))
+
+        let (spec, contract) = try l.slot()
+        let failure = try await #require(throws: SlotFailure.self) {
+            try await l.lifecycle(l.url).acquire(spec, contract: contract, base: "main", branch: "loopworker-3-third")
+        }
+        #expect(failure.description.contains("proj/1: pulling Git LFS content into \(slot.path) failed: git "))
+        #expect(!l.f.log.lines.contains { $0.1.contains("provision]") })
+    }
+
+    @Test("B158: lfsPush uploads the worker's new LFS object, and the pushed commit holds its pointer")
+    func lfsPushUploadsNewObjects() async throws {
+        let l = try await LFSFixture()
+        defer { l.f.cleanUp() }
+        try await l.f.git.cloneOrFetch(url: l.url, into: l.f.clone, environment: [:])
+        let (slot, contract) = try l.slot()
+        _ = try await l.lifecycle(l.url).acquire(slot, contract: contract, base: "main", branch: "loopworker-1-card")
+        try await l.f.commit(in: slot.worktree, file: "data.bin", "worker content\n")
+        let oid = try await l.oid(slot.worktree, "data.bin")
+        #expect(!l.stored(oid))
+
+        try await l.f.git.lfsPush(slot.worktree, url: l.url, environment: [:])
+        _ = try await l.f.git.push(slot.worktree, to: l.url, branch: "loopworker-1-card", expected: nil, environment: [:])
+        #expect(l.stored(oid))
+        let pushed = try await l.f.run(["-C", l.f.origin.path, "cat-file", "-p", "loopworker-1-card:data.bin"])
+        #expect(pushed.hasPrefix(LFSFixture.pointerPrefix))
+        #expect(pushed.contains(oid))
+    }
+
+    @Test("B157: usesLFS reads every .gitattributes in HEAD, at any depth")
+    func usesLFS() async throws {
+        let f = try await GitFixture()
+        defer { f.cleanUp() }
+        #expect(try await !f.git.usesLFS(f.seed))
+        try await f.commit(in: f.seed, file: ".gitattributes", "*.txt text\n")
+        #expect(try await !f.git.usesLFS(f.seed))
+        try await f.commit(in: f.seed, file: "assets/art/.gitattributes", "*.psd filter=lfs diff=lfs merge=lfs -text\n")
+        #expect(try await f.git.usesLFS(f.seed))
+    }
+}

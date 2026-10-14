@@ -21,6 +21,8 @@ public struct ProjectContract: Sendable, Equatable {
     /// lowercase ASCII words joined by `-`, at most 40 characters. Projects whose hooks parse
     /// branch names override it.
     public var branchTemplate: String
+    /// How the Manager pulls Git LFS content into a slot.
+    public var lfs: LFS
 
     public static let defaultBranchTemplate = "loopworker-{number}-{slug}"
 
@@ -35,10 +37,23 @@ public struct ProjectContract: Sendable, Equatable {
         public init() {}
     }
 
+    /// The `[lfs]` table. The Manager pulls LFS content with the forge credentials before the
+    /// slot's first lifecycle script, because the scripts have none.
+    public struct LFS: Sendable, Equatable {
+        /// Pull whenever the repo uses Git LFS; false leaves pointer files in the worktree.
+        public var pull = true
+        /// git-lfs path patterns to pull; empty means all.
+        public var include: [String] = []
+        /// git-lfs path patterns not to pull.
+        public var exclude: [String] = []
+        public var pullTimeout: Duration = .seconds(60 * 60)
+        public init() {}
+    }
+
     public init(
         directory: URL, scripts: Scripts = Scripts(),
         wallclockCapMinutes: Double = 90, mcpConfig: String? = nil, reviewGuide: Bool = false,
-        brief: String? = nil, branchTemplate: String = ProjectContract.defaultBranchTemplate
+        brief: String? = nil, branchTemplate: String = ProjectContract.defaultBranchTemplate, lfs: LFS = LFS()
     ) {
         self.directory = directory
         self.scripts = scripts
@@ -47,6 +62,7 @@ public struct ProjectContract: Sendable, Equatable {
         self.reviewGuide = reviewGuide
         self.brief = brief
         self.branchTemplate = branchTemplate
+        self.lfs = lfs
     }
 
     /// The directory to read for `project` with its clone at `clone`.
@@ -83,6 +99,20 @@ public struct ProjectContract: Sendable, Equatable {
             if let m = s.reset_timeout_minutes { scripts.resetTimeout = .seconds(m * 60) }
             if let m = s.teardown_timeout_minutes { scripts.teardownTimeout = .seconds(m * 60) }
         }
+        var lfs = LFS()
+        if let l = raw.lfs {
+            lfs.pull = l.pull ?? lfs.pull
+            lfs.include = l.include ?? []
+            lfs.exclude = l.exclude ?? []
+            // git-lfs takes each list comma-separated.
+            if let bad = (lfs.include + lfs.exclude).first(where: { $0.contains(",") }) {
+                throw ConfigError("\(file.path): [lfs] pattern \"\(bad)\" contains a comma, which git-lfs reads as a separator")
+            }
+            if let m = l.pull_timeout_minutes {
+                guard m > 0 else { throw ConfigError("\(file.path): [lfs] pull_timeout_minutes must be > 0") }
+                lfs.pullTimeout = .seconds(m * 60)
+            }
+        }
         let brief = try? String(contentsOf: directory.appending(path: "BRIEF.md"), encoding: .utf8)
         let branch = raw.worker?.branch ?? defaultBranchTemplate
         guard branch.contains("{number}") else {
@@ -97,7 +127,8 @@ public struct ProjectContract: Sendable, Equatable {
             mcpConfig: raw.worker?.mcp_config,
             reviewGuide: raw.review?.guide ?? false,
             brief: brief,
-            branchTemplate: branch)
+            branchTemplate: branch,
+            lfs: lfs)
     }
 
     // Field names mirror the TOML keys.
@@ -105,6 +136,7 @@ public struct ProjectContract: Sendable, Equatable {
         var scripts: RawScripts?
         var worker: RawWorker?
         var review: RawReview?
+        var lfs: RawLFS?
     }
     private struct RawScripts: Decodable {
         var provision: String?
@@ -121,4 +153,10 @@ public struct ProjectContract: Sendable, Equatable {
         var branch: String?
     }
     private struct RawReview: Decodable { var guide: Bool? }
+    private struct RawLFS: Decodable {
+        var pull: Bool?
+        var include: [String]?
+        var exclude: [String]?
+        var pull_timeout_minutes: Double?
+    }
 }

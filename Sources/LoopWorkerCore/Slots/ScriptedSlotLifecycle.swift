@@ -32,6 +32,7 @@ public struct ScriptedSlotLifecycle: SlotLifecycle {
     public func prepare(_ slot: SlotSpec, contract: ProjectContract) async throws(SlotFailure) {
         guard slot.project.hot else { return }
         try await ensureWorktree(slot)
+        try await pullLFS(slot, contract)
         try await runScript(.provision, slot, contract)
     }
 
@@ -45,6 +46,7 @@ public struct ScriptedSlotLifecycle: SlotLifecycle {
             throw SlotFailure("\(Self.name(slot)): resetting \(slot.worktree.path) to origin/\(base) on branch \(branch) failed: \(error)")
         }
         log.info("\(Self.name(slot)): worktree at origin/\(base) @ \(commit.prefix(12)), branch \(branch)")  // a full SHA trips the redactor's hex rule
+        try await pullLFS(slot, contract)
         try await runScript(slot.project.hot ? .reset : .provision, slot, contract)
         return commit
     }
@@ -87,6 +89,21 @@ public struct ScriptedSlotLifecycle: SlotLifecycle {
     private func ensureWorktree(_ slot: SlotSpec) async throws(SlotFailure) {
         do { try await git.ensureWorktree(clone: slot.clone, worktree: slot.worktree, slot: slot.index) }
         catch { throw SlotFailure("\(Self.name(slot)): creating worktree \(slot.worktree.path) from \(slot.clone.path) failed: \(error)") }
+    }
+
+    private func pullLFS(_ slot: SlotSpec, _ contract: ProjectContract) async throws(SlotFailure) {
+        guard contract.lfs.pull else { return }
+        do {
+            guard try await git.usesLFS(slot.worktree) else { return }
+            let remote = gitRemote(slot.project)
+            log.info("\(Self.name(slot)): pulling Git LFS content from \(remote.url) (timeout \(Self.describe(contract.lfs.pullTimeout)))")
+            let start = ContinuousClock.now
+            try await git.lfsPull(slot.worktree, url: remote.url, include: contract.lfs.include, exclude: contract.lfs.exclude,
+                                  timeout: contract.lfs.pullTimeout, environment: remote.environment)
+            log.info("\(Self.name(slot)): pulled Git LFS content in \(Self.describe(ContinuousClock.now - start))")
+        } catch {
+            throw SlotFailure(Redactor.redact("\(Self.name(slot)): pulling Git LFS content into \(slot.worktree.path) failed: \(error)"))
+        }
     }
 
     private func teardown(_ slot: SlotSpec, _ contract: ProjectContract) async {

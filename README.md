@@ -168,7 +168,8 @@ and exits 1 when anything fails. `--json` prints the same as JSON. It checks:
 
 - `config.toml` parses, and lists the projects;
 - `secrets.env` is mode 600, and each token is set there (a token only in your shell warns);
-- `tmux`, `git`, `claude` and `bash` are on `PATH`; `git-lfs` and `storygrafter` warn when absent;
+- `tmux`, `git`, `claude` and `bash` are on `PATH`; `git-lfs` and `storygrafter` warn when absent,
+  and a missing `git-lfs` fails once a cloned project uses Git LFS;
 - claude answers `claude -p` headless, the same check that gates claims;
 - the container engine answers its probe (a warning only);
 - the backlog and forge accept their tokens, and whose they are;

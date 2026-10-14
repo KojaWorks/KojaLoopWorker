@@ -159,6 +159,7 @@ struct Doctor: AsyncParsableCommand {
         let userHome = FileManager.default.homeDirectoryForCurrentUser
         let doctor = LoopWorkerCore.Doctor(
             home: HostConfig.home(environment: process), environment: process, runner: ProcessRunner(),
+            git: Git(runner: ProcessRunner(), log: StderrLog()),
             servicePath: LaunchdService.path(userHome: userHome),
             credentialVariables: { try credentialVariables(config: $0) },
             makeBackends: { config, environment in
