@@ -60,8 +60,9 @@ extension Manager {
         var lastPoll: Date?
         var polling = false
         var pipeline: PipelineStatus?
-        /// A failed pipeline that waits for a fix round.
+        /// A failed pipeline that waits for a fix round, and since when.
         var fix: PipelineStatus?
+        var fixQueuedAt: Date?
         /// A slot is starting the fix round.
         var fixStarting = false
     }
@@ -82,13 +83,38 @@ extension Manager {
     }
 
     /// Starts a poll for every watch whose last one is at least `ciPollInterval` old.
+    /// Starts a poll for every watch whose last one is at least `ciPollInterval` old, and marks
+    /// stuck each queued fix round that can't start: its project left the config or is
+    /// leaving, or no slot took it within `ci_timeout_minutes`.
     func pollCI(_ now: Date) {
-        for (id, w) in ciWatches where !w.polling && w.fix == nil && !w.fixStarting {
+        for (id, w) in ciWatches where !w.polling && !w.fixStarting {
+            if w.fix != nil {
+                guard let why = queuedFixProblem(w, now) else { continue }
+                ciWatches[id]!.polling = true
+                track {
+                    await self.ciStuck(id, w.card, w.record, why)
+                    await self.pollEnded(id)
+                }
+                continue
+            }
             if let last = w.lastPoll, now.timeIntervalSince(last) < Self.ciPollInterval { continue }
             ciWatches[id]!.polling = true
             ciWatches[id]!.lastPoll = now
             track { await self.pollTask(id) }
         }
+    }
+
+    func pollEnded(_ id: String) { ciWatches[id]?.polling = false }
+
+    /// Why the queued fix round of `w` can't start, or nil while it still may.
+    func queuedFixProblem(_ w: CIWatch, _ now: Date) -> String? {
+        let failed = "CI failed on `\(w.record.sha.prefix(12))`: \((w.fix?.url ?? w.record.review.url).absoluteString)."
+        guard let p = projects[ProjectSpec(path: w.record.project).key], !p.removing else {
+            return "\(failed) \(w.record.project) is no longer served by this Manager, so no fix round can run."
+        }
+        let timeout = (p.contract ?? ProjectContract(directory: URL(filePath: "/"))).ci.timeoutMinutes
+        guard let queued = w.fixQueuedAt, now.timeIntervalSince(queued) >= timeout * 60 else { return nil }
+        return "\(failed) No fix round could start within \(Int(timeout)) min; `loopworker status` shows \(w.record.project)'s slots."
     }
 
     func pollTask(_ id: String) async {
@@ -134,11 +160,12 @@ extension Manager {
             log.info("\(r.card): CI passed on \(r.sha.prefix(12)); moved to review: \(r.review.display) \(r.review.url.absoluteString)")
             unwatch(id)
         case .fix:
-            guard project != nil else {
-                await ciStuck(id, fresh, r, "CI failed on `\(r.sha.prefix(12))`: \((pipeline?.url ?? r.review.url).absoluteString). \(r.project) is no longer in this Manager's config, so no fix round can run.")
+            ciWatches[id]!.fix = pipeline
+            ciWatches[id]!.fixQueuedAt = clock.now()
+            if let why = queuedFixProblem(ciWatches[id]!, clock.now()) {
+                await ciStuck(id, fresh, r, why)
                 return
             }
-            ciWatches[id]!.fix = pipeline
             fillSoon = true
             log.warning("\(r.card): CI failed on \(r.sha.prefix(12)); queued fix round \(r.round + 1) of \(ci.fixAttempts)")
         case .stuck(let reason):
@@ -183,6 +210,23 @@ extension Manager {
     }
 
     // MARK: Resuming after a restart
+
+    /// Logs each CI watch record of a project that is no longer configured. The backlog can't
+    /// be asked about such a project, so a human must check the card.
+    func reportUnconfiguredCIWatches() {
+        let dir = CIWatchRecord.directory(stateDir: stateDir)
+        let d = JSONDecoder()
+        d.dateDecodingStrategy = .iso8601
+        for name in ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []).sorted() where name.hasSuffix(".json") {
+            let file = dir.appending(path: name)
+            guard let record = try? d.decode(CIWatchRecord.self, from: Data(contentsOf: file)) else {
+                log.error("\(file.path) is not a readable CI watch record; delete it once you have checked which card it was")
+                continue
+            }
+            guard projects[ProjectSpec(path: record.project).key] == nil else { continue }
+            log.error("\(file.path) says \(record.card) of \(record.project) waits for CI, but that project is no longer in config.toml: check the card in the backlog (it may still be verifying), then delete \(file.path)")
+        }
+    }
 
     /// Resumes watching each `verifying` card that has a watch record, and marks the others
     /// stuck, since nothing else would ever move them on. Runs at startup and with the

@@ -240,6 +240,50 @@ let reviewURL = URL(string: "https://forge.example/g/app/-/merge_requests/1")!
         #expect(h.backlog.writes.filter { $0 == .resumeFix("id-12") }.count == 1)
     }
 
+    /// `commit-1`'s pipeline failed and its fix round is queued while claims are paused.
+    func queuedFix() async throws -> ManagerHarness {
+        let h = try await verifying()
+        h.forge.state { $0.pipelines["commit-1"] = PipelineStatus(state: .failed, url: pipelineURL) }
+        try Data().write(to: h.home.appending(path: "state/PAUSED"))
+        h.clock.advance(121)
+        await h.cycle()
+        #expect(try h.status().ci?.first?.state == "fix queued")
+        return h
+    }
+
+    @Test("B168: a queued fix round that no slot takes within ci_timeout_minutes marks the card stuck")
+    func queuedFixTimesOut() async throws {
+        let h = try await queuedFix()
+        h.clock.advance(59 * 60)
+        await h.cycle()
+        #expect(stuckBlocker(h) == nil)
+        h.clock.advance(60)
+        await h.cycle()
+        #expect(stuckBlocker(h)?.hasPrefix("CI failed on `commit-1`: \(pipelineURL.absoluteString). No fix round could start within 60 min") == true)
+        #expect(try record(h) == nil)
+    }
+
+    @Test("B168: a queued fix round of a project that left the config marks the card stuck")
+    func queuedFixOfARemovedProject() async throws {
+        let h = try await queuedFix()
+        try h.writeConfig(projects: "")
+        h.clock.advance(61)
+        await h.cycle()
+        await h.cycle()
+        #expect(stuckBlocker(h)?.contains("g/app is no longer served by this Manager, so no fix round can run.") == true)
+    }
+
+    @Test("B170: at startup, a CI watch record of an unconfigured project is reported")
+    func unconfiguredWatchRecordIsReported() async throws {
+        let h = try ManagerHarness(projects: oneColdProject, manifest: ciManifest)
+        let record = CIWatchRecord(
+            card: CardRef(id: "id-9", display: "g/gone#9"), project: "g/gone", branch: "b", base: "main", sha: "abc",
+            review: ReviewRequest(url: reviewURL, display: "g/gone!1"), round: 0, pushedAt: Date())
+        try record.write(stateDir: h.home.appending(path: "state"))
+        try await h.boot()
+        #expect(h.log.contains("says g/gone#9 of g/gone waits for CI, but that project is no longer in config.toml", level: .error))
+    }
+
     @Test("B168: a fix round for a card a human moved out of verifying is dropped")
     func resumeFixFalseDropsTheRound() async throws {
         let h = try await verifying()

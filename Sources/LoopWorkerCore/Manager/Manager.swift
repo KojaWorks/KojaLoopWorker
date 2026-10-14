@@ -201,6 +201,7 @@ public actor Manager {
         for key in order { adopted.formUnion(await adoptPreviousWorkers(key)) }
         await reapUnadoptedSessions(adopted)
         reportUnconfiguredCards()
+        reportUnconfiguredCIWatches()
         for key in order { startRefresh(key) }
         lastSweep = clock.now()
         sweepStranded()
