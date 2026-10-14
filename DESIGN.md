@@ -156,9 +156,16 @@ that starts with `/` is escaped, so `/merge` or `/label` from a worker is shown,
 5. **Finish.** When the outcome file exists, the Manager reaps the session after a short grace
    period and runs the finish task:
    - `done`: check that the branch has commits ahead of the base (otherwise treat the outcome
-     as `stuck`), push, attach the guide (a file in the slot's state directory, resolved and
-     checked to stay inside it), open a draft review request, `markReview` (or, for a project
+     as `stuck`), push, attach the files that the outcome names (the guide, and each
+     `attachment:<path>` link or image in the body, such as `![after](attachment:after.png)`),
+     open a draft review request, `markReview` (or, for a project
      that waits for CI, `markVerifying`; see "Waiting for CI").
+   - An attached file must resolve (symlinks resolved) inside the slot's state directory, be
+     a regular non-empty file under 20 MB, not have a credential-like name, and not contain a
+     credential shape or a PEM private key. The Manager uploads it with `forge.attach` and puts
+     the URL in place of the reference. A refused file, or any file on a forge without
+     attachments, keeps its reference, is logged, and gets a line under the body that says
+     "LoopWorker didn't attach <path>: <reason>". The worker stays credential-free.
    - `stuck`: push the branch if it has commits, so the human can see the work in progress,
      then `markStuck` with the blocker and the branch name.
    - The slot is recycled only after the finish task succeeds. A failed finish is retried on

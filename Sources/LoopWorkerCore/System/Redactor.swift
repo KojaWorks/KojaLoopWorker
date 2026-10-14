@@ -30,17 +30,24 @@ public enum Redactor {
         return line
     }
 
+    /// True when `text` holds a credential shape that `redact` scrubs, leaving out the bare
+    /// hex rule, which commit SHAs and digests match too.
+    public static func containsCredential(_ text: String) -> Bool {
+        text.contains(urlPassword) || text.contains(bearer) || text.contains(privateToken)
+            || credentialTokens.contains { text.contains($0) }
+    }
+
     // Regex isn't Sendable, but matching never mutates it (its compiled program is initialized atomically).
     nonisolated(unsafe) private static let urlPassword = #/([A-Za-z][A-Za-z0-9+.\-]*://[^:@/\s]+:)[^@/\s]+@/#
     nonisolated(unsafe) private static let bearer = #/(Bearer\s+)[^\s"']+/#.ignoresCase()
     nonisolated(unsafe) private static let privateToken = #/(PRIVATE-TOKEN:\s*)[^\s"']+/#.ignoresCase()
-    nonisolated(unsafe) private static let tokens: [Regex<Substring>] = [
+    nonisolated(unsafe) private static let tokens = credentialTokens + [#/\b[0-9a-fA-F]{32,}\b/#]
+    nonisolated(unsafe) private static let credentialTokens: [Regex<Substring>] = [
         #/eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{4,}/#,
         #/sb_(?:secret|publishable)_[A-Za-z0-9_\-]+/#,
         #/\b(?:glpat|gloas|glrt|gldt)-[A-Za-z0-9_.\-]+/#,
         #/\b(?:ghp|gho|ghs|ghu|ghr)_[A-Za-z0-9]+/#,
         #/\bgithub_pat_[A-Za-z0-9_]+/#,
         #/\bsk-ant-[A-Za-z0-9_\-]+/#,
-        #/\b[0-9a-fA-F]{32,}\b/#,
     ]
 }

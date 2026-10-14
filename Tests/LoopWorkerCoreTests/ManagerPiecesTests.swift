@@ -378,3 +378,85 @@ func temporaryDirectory() throws -> URL {
         #expect(merged == ["PATH": "/bin", "CLAUDE_CODE_OAUTH_TOKEN": "from-file", "LOOPWORKER_GITLAB_TOKEN": "glpat-fabricated"])
     }
 }
+
+@Suite struct AttachmentsTests {
+    let root: URL
+    let outside: URL
+
+    init() throws {
+        let dir = try temporaryDirectory()
+        root = dir.appending(path: "slot")
+        outside = dir.appending(path: "elsewhere")
+        for d in [root, outside, root.appending(path: "out"), root.appending(path: ".git"), root.appending(path: "sub/.ssh")] {
+            try FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        }
+    }
+
+    func write(_ path: String, _ text: String, in dir: URL? = nil) throws {
+        try Data(text.utf8).write(to: (dir ?? root).appending(path: path))
+    }
+
+    func reason(_ path: String) -> String? {
+        if case .failure(let r) = Attachments.check(path, in: root) { return r.reason }
+        return nil
+    }
+
+    @Test("B181: each referenced file is uploaded once and its reference becomes the URL")
+    func resolvesReferences() async throws {
+        try write("after.png", "png bytes")
+        try write("out/log.txt", "built 3f786850e387550fdab836ed7e6dc881de23001b\n")  // a SHA isn't a secret
+        let uploads = Guarded<[String]>([])
+        let body = "| Before | After |\n| --- | --- |\n| x | ![after](attachment:after.png) |\n\n[log](attachment:out/log.txt) [again](attachment:after.png) [web](https://x.example)"
+        let (out, refused) = try await Attachments.resolve(body, in: root) { file in
+            uploads { $0.append(file.lastPathComponent) }
+            return URL(string: "https://forge.example/uploads/\(file.lastPathComponent)")
+        }
+        #expect(refused.isEmpty)
+        #expect(uploads.get == ["after.png", "log.txt"])
+        #expect(out == "| Before | After |\n| --- | --- |\n| x | ![after](https://forge.example/uploads/after.png) |\n\n[log](https://forge.example/uploads/log.txt) [again](https://forge.example/uploads/after.png) [web](https://x.example)")
+    }
+
+    @Test("B181: every refusal names its reason")
+    func refusals() throws {
+        try write("secret.txt", "x", in: outside)
+        try FileManager.default.createSymbolicLink(at: root.appending(path: "link.txt"), withDestinationURL: outside.appending(path: "secret.txt"))
+        try write(".env.local", "A=1")
+        try FileManager.default.createSymbolicLink(at: root.appending(path: "innocent.txt"), withDestinationURL: root.appending(path: ".env.local"))
+        try write("empty.txt", "")
+        try write("key.txt", "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n")
+        try write("token.txt", "token: glpat-abcdefghijklmnopqrst\n")
+        try Data([0xFF, 0xFE, 0x00] + Array("ghp_abcdefghijklmnop".utf8)).write(to: root.appending(path: "blob.bin"))
+        let big = root.appending(path: "big.bin")
+        FileManager.default.createFile(atPath: big.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: big)
+        try handle.truncate(atOffset: UInt64(Attachments.maxBytes))
+        try handle.close()
+
+        #expect(reason("../elsewhere/secret.txt")?.contains("outside") == true)
+        #expect(reason(outside.appending(path: "secret.txt").path)?.contains("outside") == true)
+        #expect(reason("link.txt")?.contains("outside") == true)
+        for name in [".env", ".env.local", "server.pem", "tls.key", "cert.p12", "id_rsa.pub", "id_ed25519", ".git/config", "sub/.ssh/known_hosts", ".claude/settings.json"] {
+            #expect(reason(name) == "its name looks like a credential file", "\(name)")
+        }
+        #expect(reason("innocent.txt")?.contains("whose name looks like a credential file") == true)
+        #expect(reason("missing.png")?.hasSuffix("doesn't exist") == true)
+        #expect(reason("out")?.hasSuffix("isn't a regular file") == true)
+        #expect(reason("empty.txt")?.hasSuffix("is empty") == true)
+        #expect(reason("big.bin")?.contains("the limit is 20971520") == true)
+        #expect(reason("key.txt") == "it contains a PEM private key")
+        #expect(reason("token.txt") == "its content looks like it holds a token or password")
+        #expect(reason("blob.bin") == "its content looks like it holds a token or password")
+    }
+
+    @Test("B181: a forge without attachments, or one that refuses, leaves the reference; other errors throw")
+    func forgeOutcomes() async throws {
+        try write("a.png", "png")
+        let body = "![a](attachment:a.png)"
+        let none = try await Attachments.resolve(body, in: root) { _ in nil }
+        #expect(none.body == body)
+        #expect(none.refused == [Attachments.Refusal(path: "a.png", reason: "this forge has no attachments")])
+        let rejected = try await Attachments.resolve(body, in: root) { _ in throw BackendRejection("413 too large") }
+        #expect(rejected.refused == [Attachments.Refusal(path: "a.png", reason: "the forge refused it: 413 too large")])
+        await #expect(throws: FakeError("timeout")) { _ = try await Attachments.resolve(body, in: root) { _ in throw FakeError("timeout") } }
+    }
+}

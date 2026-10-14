@@ -317,14 +317,43 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(try h.status().projects[0].slots[0].state == "idle")
     }
 
-    @Test func guideOutsideTheStateDirectoryIsNotAttached() async throws {  // B89
+    @Test func guideOutsideTheStateDirectoryIsNotAttached() async throws {  // B89, B181
         let h = try await spawned()
         try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b","guide":"../../../config.toml"}"#)
         h.tmux.set("lw_g--app_0", alive: false)
         await h.cycle()
         #expect(h.forge.state.get.attached.isEmpty)
-        #expect(h.log.contains("not attaching guide", level: .warning))
+        #expect(h.log.contains("didn't attach ../../../config.toml to g/app#12's review request: it resolves to", level: .warning))
+        let body = try #require(h.forge.state.get.opened.first?.body)
+        #expect(body.hasPrefix("b\n\nLoopWorker didn't attach ../../../config.toml: it resolves to "))
+        #expect(!body.contains("Review guide:"))
         #expect(h.backlog.writes.last == .markReview("id-12", url: URL(string: "https://forge.example/g/app/-/merge_requests/1")!))
+    }
+
+    @Test("B181: attachment references become URLs; refused ones stay and are named under the body")
+    func attachmentReferences() async throws {
+        let h = try await spawned()
+        try "png".write(to: h.stateDir().appending(path: "after.png"), atomically: true, encoding: .utf8)
+        try "A=1".write(to: h.stateDir().appending(path: ".env"), atomically: true, encoding: .utf8)
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"![after](attachment:after.png) [env](attachment:.env)"}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        let body = try #require(h.forge.state.get.opened.first?.body)
+        #expect(body.hasPrefix("![after](https://forge.example/uploads/after.png) [env](attachment:.env)\n\nLoopWorker didn't attach .env: its name looks like a credential file\n\n---\nCard: "))
+        #expect(h.log.contains("didn't attach .env", level: .warning))
+        #expect(h.backlog.card(id: "id-12")?.state == .review)
+    }
+
+    @Test("B181: a forge without attachments names each file under the body, the guide too")
+    func forgeWithoutAttachments() async throws {
+        let h = try await spawned()
+        h.forge.state { $0.supportsAttachments = false }
+        try "<html/>".write(to: h.stateDir().appending(path: "guide.html"), atomically: true, encoding: .utf8)
+        try "png".write(to: h.stateDir().appending(path: "after.png"), atomically: true, encoding: .utf8)
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"![after](attachment:after.png)","guide":"guide.html"}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.forge.state.get.opened.first?.body == "![after](attachment:after.png)\n\nLoopWorker didn't attach after.png: this forge has no attachments\n\nLoopWorker didn't attach guide.html: this forge has no attachments\n\n---\nCard: [g/app#12](https://forge.example/g/app/-/issues/12)\n")
     }
 
     @Test func outcomeWaitsForTheGraceWhileTheSessionLives() async throws {  // B56

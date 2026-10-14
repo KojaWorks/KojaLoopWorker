@@ -18,6 +18,7 @@ One term per concept. Code, docs, logs and commits use the term in the left colu
 | **Claim** | The Manager moving a ready card to `working` before it spawns a worker. | pick, take, assign |
 | **Release** | The Manager returning a `working` card to `ready` after a crash, hang or auth failure, with a note on the card. | reclaim, unclaim, bail |
 | **Outcome** | The JSON file that a worker writes as its last act: `done` (with review request text) or `stuck` (with the blocker). The worker's only output channel to the Manager. | result, exit signal |
+| **Attachment** | A file that a worker writes into its slot state directory and names in its outcome, as the `guide` or as `attachment:<path>` in the body. The Manager checks it and uploads it to the forge at finish. | upload, asset |
 | **Finish** | The Manager applying an outcome: pushing the branch, opening the review request and moving the card to `review` or `stuck`. | wind down, ship |
 | **Push ledger** | `state/pushes.json`: the branch and commit that the Manager last pushed for each card. A push leases on it, and a re-queued card whose branch is still on the forge resumes from it. | push record, lease file |
 | **Review request** | A forge's request to merge a branch: a GitLab merge request, a GitHub pull request. | MR, PR (except when naming one forge's object) |

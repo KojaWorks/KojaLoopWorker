@@ -233,6 +233,13 @@ public struct WorkerBrief: Sendable {
             and body become the review request, so follow the repository's conventions for \
             them. The body says what changed and why, how you verified it, what the \
             self-review found and fixed, and any pre-existing failures from step 3.\(doneNote)
+            - Files in the body: to show a screenshot, a log or a Before | After table, write the \
+            files into `\(slot.stateDir.path)` (never into the worktree) and refer to each inside a \
+            markdown link or image as `attachment:<path relative to that directory>`, such as \
+            `![after](attachment:after.png)` or `[log](attachment:out/log.txt)`. The Manager uploads \
+            each file and puts its URL in place of the reference. It refuses empty files, files of \
+            20 MB or more, credential-like names (`.env`, keys, anything under `.git` or `.ssh`) and \
+            content that looks like a token or password, and says so under the body.
             - Stuck: `{"outcome": "stuck", "blocker": "..."}`. The blocker is posted on the card \
             for its owner: what is missing, the numbered questions, and what you already \
             committed on the branch.

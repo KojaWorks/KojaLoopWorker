@@ -608,18 +608,26 @@ extension Manager {
             return
         }
         let commit = try await pushBranch(spec, card: card, branch: branch)
-        var guideLink: URL?
-        if let guide, let file = resolveGuide(guide, in: spec) {
-            do { guideLink = try await step("attaching \(guide)") { try await self.deps.forge.attach(file, to: spec.project) } }
-            catch let rejection as BackendRejection {
-                log.warning("\(label(spec)): the forge refused the review guide \(file.path): \(rejection); opening the review request without it")
+        let forge = deps.forge, project = spec.project
+        let attach: @Sendable (URL) async throws -> URL? = { try await forge.attach($0, to: project) }
+        var (text, refused) = try await step("attaching the files that the outcome references") {
+            try await Attachments.resolve(body, in: spec.stateDir, attach: attach)
+        }
+        var guideLine = ""
+        if let guide {
+            switch try await step("attaching \(guide)") { try await Attachments.upload(guide, in: spec.stateDir, attach: attach) } {
+            case .success(let url): guideLine = "\nReview guide: [\(guide)](\(url.absoluteString))"
+            case .failure(let refusal): refused.append(refusal)
             }
         }
+        for r in refused {
+            log.warning("\(label(spec)): didn't attach \(r.path) to \(card.ref)'s review request: \(r.reason)")
+            text += "\n\nLoopWorker didn't attach \(r.path.replacingOccurrences(of: "\n", with: " ")): \(r.reason)"
+        }
         let cardLine = card.url.map { "Card: [\(card.ref.display)](\($0.absoluteString))" } ?? "Card: \(card.ref.display)"
-        let guideLine = guideLink.map { "\nReview guide: [\(guide ?? "guide")](\($0.absoluteString))" } ?? ""
         let draft = ReviewRequestDraft(
             project: spec.project, card: card, sourceBranch: branch, targetBranch: base, title: title,
-            body: "\(body)\n\n---\n\(cardLine)\(guideLine)\n", draft: spec.project.draftReviewRequests)
+            body: "\(text)\n\n---\n\(cardLine)\(guideLine)\n", draft: spec.project.draftReviewRequests)
         let review = try await step("opening the review request") { try await self.deps.forge.openReviewRequest(draft) }
         guard waitForCI else {
             try await step("moving \(card.ref) to review") { try await self.deps.backlog.markReview(card, review: review) }
@@ -694,24 +702,6 @@ extension Manager {
         do { return try await body() }
         catch let rejection as BackendRejection { throw rejection }
         catch { throw StepError(step: name, error: error) }
-    }
-
-    /// The guide file inside the slot's state directory, or nil (logged) when it resolves
-    /// outside it or doesn't exist.
-    func resolveGuide(_ guide: String, in spec: SlotSpec) -> URL? {
-        let root = spec.stateDir.standardizedFileURL.resolvingSymlinksInPath().path
-        let raw = guide.hasPrefix("/") ? URL(filePath: guide) : spec.stateDir.appending(path: guide)
-        let file = raw.standardizedFileURL.resolvingSymlinksInPath()
-        var isDir: ObjCBool = false
-        guard file.path.hasPrefix(root + "/") else {
-            log.warning("\(label(spec)): not attaching guide \(guide): it resolves to \(file.path), outside \(root)")
-            return nil
-        }
-        guard FileManager.default.fileExists(atPath: file.path, isDirectory: &isDir), !isDir.boolValue else {
-            log.warning("\(label(spec)): not attaching guide \(guide): \(file.path) doesn't exist")
-            return nil
-        }
-        return file
     }
 
     func finishFailed(_ ref: SlotRef, card: Card, error: any Error) {
