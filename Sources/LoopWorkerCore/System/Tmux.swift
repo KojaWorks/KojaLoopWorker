@@ -7,11 +7,13 @@ public protocol TmuxDriving: Sendable {
 
     /// Starts a detached session running `script` (an executable file) in `directory`.
     /// Secrets reach the worker through files that the script sources, never through tmux
-    /// arguments, which other users can read with `ps`.
+    /// arguments, which other users can read with `ps`. The pane stays after the script exits
+    /// (`remain-on-exit`), so its last screen can be captured; `kill` removes it.
     func spawn(session: String, directory: URL, script: URL) async throws
 
-    /// True when the session exists and its pane runs something other than a shell. A
-    /// finished-but-idle `claude` counts as alive; the outcome file says when it is done.
+    /// True when the session exists, its pane's process hasn't exited, and it runs something
+    /// other than a shell. A finished-but-idle `claude` counts as alive; the outcome file says
+    /// when it is done.
     func isAlive(_ session: String) async throws -> Bool
 
     /// The last `lines` lines of the session's pane, for auth-failure and trust-dialog
@@ -76,11 +78,14 @@ public struct Tmux: TmuxDriving {
         guard !script.path.contains("'") && !script.path.contains("\\") else {
             throw TmuxError(command: ["new-session", "-s", session], reason: "script path \(script.path) contains a quote or backslash")
         }
-        try await check(["new-session", "-d", "-s", session, "-c", directory.path, "'\(script.path)'"])
+        // remain-on-exit is set server-wide before the session exists, so even a script that
+        // dies at once leaves its pane (and its error) behind. The server is LoopWorker's own.
+        try await check(["start-server", ";", "set-option", "-g", "remain-on-exit", "on", ";",
+                         "new-session", "-d", "-s", session, "-c", directory.path, "'\(script.path)'"])
     }
 
     public func isAlive(_ session: String) async throws -> Bool {
-        let command = ["display-message", "-p", "-t", Self.pane(session), "#{session_name}:#{pane_current_command}"]
+        let command = ["display-message", "-p", "-t", Self.pane(session), "#{session_name}:#{pane_dead}:#{pane_current_command}"]
         let result = try await tmux(command)
         if !result.succeeded {
             if !result.timedOut && (Self.noServer(result) || Self.noSession(result)) { return false }
@@ -88,7 +93,9 @@ public struct Tmux: TmuxDriving {
         }
         let output = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
         guard output.hasPrefix(session + ":") else { return false }
-        let current = output.dropFirst(session.count + 1).drop { $0 == "-" }
+        let rest = output.dropFirst(session.count + 1)
+        guard rest.hasPrefix("0:") else { return false }  // 1: the process exited; the pane is kept for capture
+        let current = rest.dropFirst(2).drop { $0 == "-" }
         return !current.isEmpty && !Self.shells.contains(String(current))
     }
 

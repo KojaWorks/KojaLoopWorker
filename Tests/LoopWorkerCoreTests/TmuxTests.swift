@@ -79,7 +79,7 @@ struct BaseEnvironmentRunner: ProcessRunning {
     @Test func spawn() async throws {
         let (tmux, runner) = tmux()
         try await tmux.spawn(session: "lw_a_1", directory: URL(filePath: "/w/1"), script: URL(filePath: "/s/1/launch.sh"))
-        #expect(runner.calls[0].arguments.dropFirst(2) == ["new-session", "-d", "-s", "lw_a_1", "-c", "/w/1", "'/s/1/launch.sh'"])
+        #expect(runner.calls[0].arguments.dropFirst(2) == ["start-server", ";", "set-option", "-g", "remain-on-exit", "on", ";", "new-session", "-d", "-s", "lw_a_1", "-c", "/w/1", "'/s/1/launch.sh'"])
 
         let (failing, _) = self.tmux { _ in Self.failed }
         await #expect(throws: TmuxError.self) {
@@ -91,14 +91,15 @@ struct BaseEnvironmentRunner: ProcessRunning {
     }
 
     @Test("B14: alive unless gone or back at a shell", arguments: [
-        ("lw_a_1:claude\n", true), ("lw_a_1:node\n", true), ("lw_a_1:zsh\n", false), ("lw_a_1:-bash\n", false),
-        ("lw_a_1:fish\n", false), ("lw_a_1:login\n", false), ("\n", false), ("lw_a_10:claude\n", false),
+        ("lw_a_1:0:claude\n", true), ("lw_a_1:0:node\n", true), ("lw_a_1:0:zsh\n", false), ("lw_a_1:0:-bash\n", false),
+        ("lw_a_1:0:fish\n", false), ("lw_a_1:0:login\n", false), ("\n", false), ("lw_a_10:0:claude\n", false),
+        ("lw_a_1:1:claude\n", false),
     ])
     func isAlive(output: String, alive: Bool) async throws {
         let (tmux, runner) = tmux { _ in ProcessResult(status: 0, output: output) }
         #expect(try await tmux.isAlive("lw_a_1") == alive)
         #expect(runner.calls[0].arguments.dropFirst(2)
-            == ["display-message", "-p", "-t", "=lw_a_1:", "#{session_name}:#{pane_current_command}"])
+            == ["display-message", "-p", "-t", "=lw_a_1:", "#{session_name}:#{pane_dead}:#{pane_current_command}"])
     }
 
     @Test("B11, B14: a missing session is dead, a timeout or other failure throws")
@@ -172,6 +173,22 @@ struct BaseEnvironmentRunner: ProcessRunning {
             try await tmux.kill("lw_t_1")
             #expect(try await tmux.isAlive("lw_t_1") == false)
             try await tmux.kill("lw_t_1")
+
+            // A script that exits leaves a dead pane whose last screen can still be read.
+            let dying = directory.appending(path: "dying.sh")
+            try "#!/bin/sh\necho the worker said why\nexit 3\n".write(to: dying, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dying.path)
+            try await tmux.spawn(session: "lw_t_2", directory: directory, script: dying)
+            var pane = ""
+            for _ in 0..<50 where !pane.contains("Pane is dead") {
+                pane = try await tmux.capture("lw_t_2", lines: 20)
+                if !pane.contains("Pane is dead") { try await Task.sleep(for: .milliseconds(50)) }
+            }
+            #expect(pane.contains("the worker said why"))
+            #expect(try await tmux.isAlive("lw_t_2") == false)
+            #expect(try await tmux.sessions(prefix: "lw_t_2") == ["lw_t_2"])
+            try await tmux.kill("lw_t_2")
+            #expect(try await tmux.sessions(prefix: "lw_t_") == [])
         } catch {
             _ = try? await raw(["kill-server"])
             try? FileManager.default.removeItem(at: directory)
