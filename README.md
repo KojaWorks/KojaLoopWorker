@@ -148,6 +148,16 @@ loopworker doctor              # check the host first
 loopworker                     # run the Manager in the foreground (same as `loopworker run`)
 ```
 
+To keep a foreground Manager running after you log out of an SSH session, start it in tmux:
+
+```bash
+tmux new-session -d -s loopworker loopworker run
+```
+
+tmux runs that command through your login shell, so shell syntax such as `VAR=x cmd` or `&&`
+fails under fish and similar shells. The Manager needs none: settings live in `config.toml` and
+tokens in `secrets.env`. Wrap anything else in `bash -c '...'`.
+
 As a launchd service, which starts at login and restarts after a crash:
 
 ```bash
