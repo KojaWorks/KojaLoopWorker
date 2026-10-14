@@ -12,7 +12,7 @@ public struct AuthGate: Sendable {
     public enum Verdict: Sendable, Equatable {
         case ok
         /// claude answered and the login doesn't work: a login prompt, a non-zero exit, or
-        /// claude can't start.
+        /// claude can't start (including a quarantined binary that macOS killed).
         case failed(String)
         /// claude didn't answer: timed out or killed by a signal, as on a loaded host. Says
         /// nothing about the login.
@@ -108,10 +108,17 @@ public struct AuthGate: Sendable {
     /// Runs `claude -p ok --model haiku` with `USER` removed (the same claude-code 401
     /// workaround as the launch script) and `CLAUDE_CODE_OAUTH_TOKEN` passed from
     /// `environment` when present, under a `preflightTimeout` s timeout. Never throws.
+    /// - Parameter isQuarantined: Reads the quarantine flag of the `claude` that `PATH` in
+    ///   `environment` resolves to.
     /// - Returns: `.failed` for claude's login prompt in the output (which comes with exit
-    ///   status 0 when the CLI has no login of its own), a non-zero exit, or a claude that
-    ///   can't start; `.inconclusive` for a timeout or a kill by a signal; otherwise `.ok`.
-    public static func preflight(runner: any ProcessRunning, environment: [String: String]) async -> Verdict {
+    ///   status 0 when the CLI has no login of its own), a non-zero exit, a claude that
+    ///   can't start, or a kill by a signal while the `claude` binary is quarantined (with the
+    ///   `xattr` remedy); `.inconclusive` for a timeout or any other kill by a signal;
+    ///   otherwise `.ok`.
+    public static func preflight(
+        runner: any ProcessRunning, environment: [String: String],
+        isQuarantined: @Sendable (URL) -> Bool = Quarantine.isFlagged
+    ) async -> Verdict {
         var env: [String: String?] = ["USER": nil]
         if let token = environment["CLAUDE_CODE_OAUTH_TOKEN"] { env["CLAUDE_CODE_OAUTH_TOKEN"] = token }
         let spec = ProcessSpec("claude", ["-p", "ok", "--model", "haiku"], environment: env, timeout: .seconds(preflightTimeout))
@@ -120,7 +127,12 @@ public struct AuthGate: Sendable {
             let last = r.output.split(whereSeparator: \.isNewline).last.map(String.init)
             if Pane.showsAuthFailure(r.output) { return .failed(last ?? "claude -p is not logged in") }
             if r.timedOut { return .inconclusive("claude -p timed out after \(preflightTimeout) s") }
-            if r.status < 0 { return .inconclusive("claude -p was killed by signal \(-r.status)") }
+            if r.status < 0 {
+                if let claude = Quarantine.resolve("claude", path: environment["PATH"] ?? ""), isQuarantined(claude) {
+                    return .failed("claude -p was killed by signal \(-r.status), and \(claude.path) carries \(Quarantine.attribute): \(Quarantine.why); run `\(Quarantine.remedy(claude))`")
+                }
+                return .inconclusive("claude -p was killed by signal \(-r.status)")
+            }
             if r.succeeded { return .ok }
             return .failed(last ?? "claude -p exited \(r.status)")
         } catch {

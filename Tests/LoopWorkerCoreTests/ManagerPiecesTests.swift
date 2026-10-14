@@ -257,6 +257,22 @@ func temporaryDirectory() throws -> URL {
         let killed = ScriptedRunner { _ in ProcessResult(status: -15, output: "") }
         #expect(await AuthGate.preflight(runner: killed, environment: [:]) == .inconclusive("claude -p was killed by signal 15"))
     }
+
+    @Test("B179: a kill by a signal while claude is quarantined fails with the xattr remedy")
+    func preflightKilledWhileQuarantinedFails() async throws {
+        let dir = try temporaryDirectory()
+        let claude = dir.appending(path: "claude")
+        try Data("#!/bin/sh\n".utf8).write(to: claude)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: claude.path)
+        let killed = ScriptedRunner { _ in ProcessResult(status: -9, output: "") }
+        let env = ["PATH": dir.path]
+        let r = await AuthGate.preflight(runner: killed, environment: env, isQuarantined: { $0.lastPathComponent == "claude" })
+        let path = claude.resolvingSymlinksInPath().path
+        #expect(r == .failed("claude -p was killed by signal 9, and \(path) carries com.apple.quarantine: \(Quarantine.why); run `xattr -d com.apple.quarantine \(path)`"))
+        #expect(await AuthGate.preflight(runner: killed, environment: env, isQuarantined: { _ in false }) == .inconclusive("claude -p was killed by signal 9"))
+        let timedOut = ScriptedRunner { _ in ProcessResult(status: -9, output: "", timedOut: true) }
+        #expect(await AuthGate.preflight(runner: timedOut, environment: env, isQuarantined: { _ in true }) == .inconclusive("claude -p timed out after 120 s"))
+    }
 }
 
 @Suite struct NotifierTests {

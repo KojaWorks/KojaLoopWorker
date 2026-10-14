@@ -182,6 +182,12 @@ warns about tools outside that `PATH`. The service writes its output to
 `$LOOPWORKER_HOME/state/manager.out`; the redacted log is `state/manager.log`. Use either this
 or `brew services`, not both.
 
+A LaunchDaemon, or any host where the Manager's user has no GUI session, can't answer
+Gatekeeper's first-launch prompt, so macOS kills a quarantined binary (one that a Homebrew cask
+installed, for example) the moment it starts. Clear the flag from each tool the Manager runs
+with `xattr -d com.apple.quarantine <path>`, on the resolved binary rather than the symlink on
+`PATH`; `loopworker doctor` names every quarantined tool and the exact command.
+
 ## Doctor
 
 `loopworker doctor` prints `ok`, `warn` or `FAIL` per check, with a remedy for each problem,
@@ -191,6 +197,7 @@ and exits 1 when anything fails. `--json` prints the same as JSON. It checks:
 - `secrets.env` is mode 600, and each token is set there (a token only in your shell warns);
 - `tmux`, `git`, `claude` and `bash` are on `PATH`; `git-lfs` and `storygrafter` warn when absent,
   and a missing `git-lfs` fails once a cloned project uses Git LFS;
+- none of those tools, nor `loopworker` itself, carries macOS's quarantine flag;
 - claude answers `claude -p` headless, the same check that gates claims;
 - the container engine answers its probe (a warning only);
 - the backlog and forge accept their tokens, and whose they are;
