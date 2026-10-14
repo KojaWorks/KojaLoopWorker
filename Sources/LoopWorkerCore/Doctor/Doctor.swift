@@ -81,7 +81,7 @@ public struct Doctor: Sendable {
                 : DoctorCheck("config", .ok, "projects: \(c.projects.map(\.path).joined(separator: ", "))"))
         } catch {
             config = nil
-            checks.append(DoctorCheck("config", .fail, "\(error)", remedy: "fix \(home.appending(path: "config.toml").path); README.md \"Configuration\" shows a complete one"))
+            checks.append(DoctorCheck("config", .fail, "\(error)", remedy: "create or fix \(home.appending(path: "config.toml").path); README.md \"Configuration\" shows a complete one"))
         }
 
         let (secretsCheck, fileSecrets) = secrets(secretsFile)

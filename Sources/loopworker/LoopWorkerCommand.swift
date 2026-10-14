@@ -168,7 +168,7 @@ struct Doctor: AsyncParsableCommand {
         let checks = await doctor.run()
         if json {
             let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
             FileHandle.standardOutput.write(try encoder.encode(checks) + Data("\n".utf8))
         } else {
             print(LoopWorkerCore.Doctor.render(checks), terminator: "")
