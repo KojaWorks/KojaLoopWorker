@@ -102,8 +102,8 @@ public actor GitLabBacklog: Backlog {
             number: String(issue.iid),
             title: issue.title,
             state: state,
-            priority: labelValue(issue, "priority:").flatMap(Double.init) ?? 0,
-            model: labelValue(issue, "model:"),
+            priority: labelValue(issue, "priority").flatMap(Double.init) ?? 0,
+            model: labelValue(issue, "model"),
             attempts: notes.filter { Trust.countsAsAttempt($0, me: me) }.count,
             url: URL(string: issue.webUrl))
         return Read(card: card, issue: issue, projectPath: path, notes: notes)
@@ -120,7 +120,7 @@ public actor GitLabBacklog: Backlog {
     }
 
     private func labelValue(_ issue: GLIssue, _ key: String) -> String? {
-        let prefix = settings.labelPrefix + key
+        let prefix = settings.valueLabelPrefix(key)
         return issue.labels.first { $0.hasPrefix(prefix) }.map { String($0.dropFirst(prefix.count)) }
     }
 

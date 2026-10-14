@@ -33,6 +33,13 @@ struct GitLabBacklogSettings: Sendable, Equatable {
     /// defaults to the `working` name.
     var statusNames: [CardState: String]
 
+    /// The label prefix for a card's `key` value (`priority`, `model`). With a GitLab scoped
+    /// prefix (`loopworker::`) the value gets a scope of its own (`loopworker-priority::`), since
+    /// GitLab lets an issue carry only one label per scope and would drop the state label.
+    func valueLabelPrefix(_ key: String) -> String {
+        labelPrefix.hasSuffix("::") ? String(labelPrefix.dropLast(2)) + "-\(key)::" : labelPrefix + "\(key):"
+    }
+
     func label(_ state: CardState) -> String? {
         switch state {
         case .ready: labelPrefix + "next"
@@ -81,7 +88,7 @@ enum GitLabConfig {
         if let empty = names.first(where: { $0.value.isEmpty }) {
             throw ConfigError("config.toml: \(key).status \(empty.key.rawValue) must not be empty")
         }
-        let prefix = section.label_prefix ?? "loopworker:"
+        let prefix = section.label_prefix ?? "loopworker::"
         guard !prefix.isEmpty else { throw ConfigError("config.toml: \(key) label_prefix must not be empty") }
         return GitLabBacklogSettings(
             connection: connection, allowed: allowed, labelPrefix: prefix, statusMode: mode, statusNames: names)

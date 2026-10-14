@@ -116,7 +116,7 @@ enum Fixture {
     static func date(_ minutes: Int) -> Date { GitLabTime.parse(t(minutes))! }
 
     static func issue(
-        iid: Int = 12, projectID: Int = projectID, labels: [String] = ["loopworker:next"],
+        iid: Int = 12, projectID: Int = projectID, labels: [String] = ["loopworker::next"],
         assignees: [[String: Any]] = [me], author: [String: Any] = me, created: Int = 0,
         state: String = "opened", title: String = "Fix it", movedTo: Int? = nil
     ) -> [String: Any] {
@@ -137,7 +137,7 @@ enum Fixture {
         note(id, "assigned to @me", by: author, at: minutes, system: true)
     }
 
-    static func labelEvent(_ id: Int, _ label: String = "loopworker:next", by user: [String: Any] = me, at minutes: Int, action: String = "add") -> [String: Any] {
+    static func labelEvent(_ id: Int, _ label: String = "loopworker::next", by user: [String: Any] = me, at minutes: Int, action: String = "add") -> [String: Any] {
         ["id": id, "user": user, "created_at": t(minutes), "label": ["id": 50, "name": label], "action": action, "resource_type": "Issue", "resource_id": 9012]
     }
 
