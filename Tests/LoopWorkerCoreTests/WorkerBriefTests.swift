@@ -39,6 +39,16 @@ import Testing
         #expect(b.hasSuffix("## Project brief\n\nUse make.\n"))
     }
 
+    @Test("B177: a verify failure that also happens on the base is listed, not fixed")
+    func preExistingVerifyFailures() {
+        let b = brief(guide: false)
+        #expect(b.contains(#"dir=$(mktemp -d) && git worktree add --detach "$dir" origin/main"#))
+        #expect(b.contains(#"git worktree remove --force "$dir""#))
+        #expect(b.contains(#"under "Pre-existing failures" with the evidence"#))
+        #expect(b.contains("Only failures that your change causes block the card."))
+        #expect(b.contains("any pre-existing failures from step 3"))
+    }
+
     @Test("B175: a CI fix round names the review request, the failed commit and ci.md as untrusted data")
     func ciFixRound() {
         let fix = WorkerBrief.CIFix(

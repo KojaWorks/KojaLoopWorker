@@ -208,6 +208,26 @@ struct GitFixture {
         #expect(try f.read(ran).contains("pre-push"))  // the same hook does run for plain git
     }
 
+    @Test("B178: hasRemoteBranch sees a pushed branch after a fetch, and not once the forge deleted it")
+    func hasRemoteBranch() async throws {
+        let f = try await GitFixture()
+        defer { f.cleanUp() }
+        let slot = try await f.slotOnBranch("loopworker-1-card")
+        #expect(try await f.git.hasRemoteBranch(f.clone, branch: "loopworker-1-card") == false)
+        try await f.commit(in: slot, file: "feature", "x\n")
+        _ = try await f.git.push(slot, to: f.origin.path, branch: "loopworker-1-card", expected: nil, environment: [:])
+        try await f.git.cloneOrFetch(url: f.origin.path, into: f.clone, environment: [:])
+        #expect(try await f.git.hasRemoteBranch(f.clone, branch: "loopworker-1-card"))
+        #expect(try await f.git.hasRemoteBranch(slot, branch: "loopworker-1-card"))
+
+        try await f.run(["-C", f.seed.path, "push", "origin", "--delete", "loopworker-1-card"])
+        try await f.git.cloneOrFetch(url: f.origin.path, into: f.clone, environment: [:])
+        #expect(try await f.git.hasRemoteBranch(f.clone, branch: "loopworker-1-card") == false)
+        await #expect(throws: GitError.self) {
+            try await f.git.hasRemoteBranch(f.root.appending(path: "not-a-repo"), branch: "main")
+        }
+    }
+
     @Test("detach frees the card branch for another worktree")
     func detachFreesBranch() async throws {
         let f = try await GitFixture()

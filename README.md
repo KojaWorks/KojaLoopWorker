@@ -136,7 +136,7 @@ moves a card between them:
 | `loopworker:working` | A worker is on it. | The Manager claimed it. |
 | `loopworker:ci` | Waiting for CI. Only for projects whose contract sets `[review] wait_for_ci`. | The Manager pushed the branch, opened a merge request, linked it in a note and is watching its pipeline. No worker runs. If CI fails, a worker fixes it on the same branch (the card shows `loopworker:working` meanwhile); if it keeps failing, times out or is canceled, the card becomes stuck. `loopworker status` lists these cards under "waiting for CI". |
 | `loopworker:review` | Done. | The Manager pushed the branch, opened a merge request and linked it in a note (and, after CI, the pipeline that passed). |
-| `loopworker:stuck` | The worker needs a human. | A note says what blocks it. You stay assigned, so it stays in your queue; answer it on the issue, then replace `loopworker:stuck` with `loopworker:next`. A card with two `loopworker:*` labels is ignored. |
+| `loopworker:stuck` | The worker needs a human. | A note says what blocks it. You stay assigned, so it stays in your queue; answer it on the issue, then replace `loopworker:stuck` with `loopworker:next`; the next worker continues from the pushed branch. A card with two `loopworker:*` labels is ignored. |
 
 A card that crashes `max_attempts` times becomes stuck. Closing an issue or removing its
 `loopworker:*` label while a worker runs stops that worker; nothing is written back.
@@ -147,6 +147,16 @@ A card that crashes `max_attempts` times becomes stuck. Closing an issue or remo
 loopworker doctor              # check the host first
 loopworker                     # run the Manager in the foreground (same as `loopworker run`)
 ```
+
+To keep a foreground Manager running after you log out of an SSH session, start it in tmux:
+
+```bash
+tmux new-session -d -s loopworker loopworker run
+```
+
+tmux runs that command through your login shell, so shell syntax such as `VAR=x cmd` or `&&`
+fails under fish and similar shells. The Manager needs none: settings live in `config.toml` and
+tokens in `secrets.env`. Wrap anything else in `bash -c '...'`.
 
 As a launchd service, which starts at login and restarts after a crash:
 
