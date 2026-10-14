@@ -27,6 +27,8 @@ struct PatchConfig: Sendable, Equatable {
         var working = "In progress"
         var review = "In review"
         var stuck = "Needs refinement"
+        /// The review request waits for CI. Only written for projects with `wait_for_ci`.
+        var verifying = "Verifying"
         /// The status a `blocked_by` target must have before the blocked card is workable.
         var shipped = "Shipped"
     }
@@ -71,11 +73,18 @@ struct PatchConfig: Sendable, Equatable {
             status.working = s.working ?? status.working
             status.review = s.review ?? status.review
             status.stuck = s.stuck ?? status.stuck
+            status.verifying = s.verifying ?? status.verifying
             status.shipped = s.shipped ?? status.shipped
         }
-        let names = [status.ready, status.working, status.review, status.stuck, status.shipped]
-        guard Set(names).count == names.count, !names.contains("") else {
-            throw ConfigError("config.toml: [backlog.patch.status] needs five distinct, non-empty statuses, got \(names)")
+        let keyed = [("ready", status.ready), ("working", status.working), ("verifying", status.verifying),
+                     ("review", status.review), ("stuck", status.stuck), ("shipped", status.shipped)]
+        if let empty = keyed.first(where: { $0.1.isEmpty }) {
+            throw ConfigError("config.toml: [backlog.patch.status] \(empty.0) must not be empty")
+        }
+        for (i, a) in keyed.enumerated() {
+            if let b = keyed[(i + 1)...].first(where: { $0.1 == a.1 }) {
+                throw ConfigError("config.toml: [backlog.patch.status] \(a.0) and \(b.0) are both \"\(a.1)\"; every state needs its own status")
+            }
         }
 
         let appBase = raw.app_base.flatMap { URL(string: $0) }
@@ -110,6 +119,7 @@ struct PatchConfig: Sendable, Equatable {
             var working: String?
             var review: String?
             var stuck: String?
+            var verifying: String?
             var shipped: String?
         }
     }
