@@ -251,7 +251,7 @@ extension Manager {
             guard case .failed(let url?) = baselines[job.name] else { return "- \(here)" }
             return "- \(here), on `\(r.base)`: \(url.absoluteString)"
         }
-        let note = "CI failed on `\(r.sha.prefix(12))` only in jobs that also fail on `\(r.base)`, so no fix round ran: \(link)\n\n"
+        let note = "CI failed on `\(r.sha.prefix(12))` only in jobs that also fail on `\(r.base)`, so LoopWorker starts no fix round for this commit: \(link)\n\n"
             + jobs.joined(separator: "\n")
         await ciReview(id, card, r, note: note, verdict: "CI failed only in jobs that also fail on \(r.base)")
     }
