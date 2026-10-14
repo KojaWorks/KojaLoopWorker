@@ -291,7 +291,7 @@ func temporaryDirectory() throws -> URL {
         let r = StatusReport.render(status(updated: now.addingTimeInterval(-5)), lockHolder: 7, now: now)
         #expect(r.running)
         #expect(r.text == """
-            LoopWorker 0.0.0-dev on box, pid 7, up 1h 01m, PAUSED
+            LoopWorker \(loopworkerVersion) on box, pid 7, up 1h 01m, PAUSED
             auth: failing (Invalid API key)
             g/app (cold)
               slot 0: busy g/app#12 on loopworker-12-x for 2m, finishing, FINISH FAILING

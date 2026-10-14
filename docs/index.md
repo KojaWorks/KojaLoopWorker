@@ -4,7 +4,7 @@ Read the doc whose situation matches yours.
 
 | Doc | Read it when… |
 | --- | --- |
-| [../DESIGN.md](../DESIGN.md) | You need how LoopWorker works: Manager and powerless Worker, the separate backlog and forge seams, card states and trust, the worker lifecycle and outcome file, reconcile, host config and on-disk state. The architecture source of truth. |
+| [../DESIGN.md](../DESIGN.md) | You need how LoopWorker works: Manager and credential-free Worker, the separate backlog and forge seams, card states and trust, the worker lifecycle and outcome file, reconcile, host config and on-disk state. The architecture source of truth. |
 | [glossary.md](glossary.md) | You're naming something, or two words seem to mean the same thing. One term per concept; the glossary wins. |
 | [project-contract.md](project-contract.md) | You're making a project LoopWorker-compatible: the `.loopworker/` files, the script environment, `manifest.toml` keys, hot vs cold, pinned toolchains. |
 | [behavior-spec.md](behavior-spec.md) | You're changing a component and need every behavior it must keep, with row ids (`B12`) to cite in tests and commits, and where each came from. |
