@@ -72,7 +72,7 @@ func fileMode(_ url: URL) throws -> Int {
         h.addCard(1)
         try await h.boot()
         await h.cycle()
-        #expect(h.tmux.state.get.entersSent == ["lw_g--app_0"])
+        #expect(h.tmux.state.get.keysSent.map(\.session) == ["lw_g--app_0"])
     }
 
     @Test func lostClaimSkipsTheCardAndClearsTheRecord() async throws {  // B74

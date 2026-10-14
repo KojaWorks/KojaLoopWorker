@@ -72,6 +72,27 @@ import Testing
 
     @Test func noTrustPromptInOrdinaryPane() {
         #expect(!Pane.showsTrustPrompt("⏺ Running swift test"))
+        #expect(Pane.trustPromptKeys("⏺ Running swift test") == nil)
+    }
+
+    @Test("B17: the trust dialog is answered by moving to Yes, whatever the option order")
+    func trustPromptKeys() {
+        let noFirst = """
+             Accessing workspace:
+             /private/tmp/x
+             Quick safety check: Is this a project you created or one you trust?
+             ❯ No, exit
+               Yes, I trust this folder
+             Enter to confirm · Esc to cancel
+            """
+        #expect(Pane.trustPromptKeys(noFirst) == ["Down", "Enter"])
+        let yesFirst = """
+             Do you trust the files in this folder?
+             ❯ Yes, proceed
+               No, exit
+            """
+        #expect(Pane.trustPromptKeys(yesFirst) == ["Enter"])
+        #expect(Pane.trustPromptKeys("Do you trust the files in this folder?\n  1. Maybe") == [])
     }
 
     @Test("B18: activity line skips chrome and the tip below the thinking line")

@@ -10,10 +10,24 @@ public enum Pane {
         pane.contains(authFailure)
     }
 
-    /// True when the pane shows claude's folder-trust dialog, which the Manager accepts with
-    /// `TmuxDriving.sendEnter`.
+    /// True when the pane shows claude's folder-trust dialog.
     public static func showsTrustPrompt(_ pane: String) -> Bool {
         pane.contains(trustPrompt)
+    }
+
+    /// The keys that accept claude's folder-trust dialog shown in `pane`: arrows from the
+    /// highlighted option (`❯`) to the "Yes" option, then Enter. Claude's option order has
+    /// changed between versions, so plain Enter may pick "No, exit". Returns nil when the pane
+    /// shows no trust dialog, and `[]` when it shows one without a recognizable "Yes" option
+    /// or cursor, so the caller presses nothing.
+    public static func trustPromptKeys(_ pane: String) -> [String]? {
+        guard showsTrustPrompt(pane) else { return nil }
+        let lines = pane.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
+        guard let cursor = lines.lastIndex(where: { $0.hasPrefix("❯") }),
+              let yes = lines.lastIndex(where: { $0.drop(while: { $0 == "❯" || $0 == " " }).hasPrefix("Yes") })
+        else { return [] }
+        let arrows = Array(repeating: yes > cursor ? "Down" : "Up", count: abs(yes - cursor))
+        return arrows + ["Enter"]
     }
 
     /// What the worker is doing right now, for the status file: the most recent non-empty

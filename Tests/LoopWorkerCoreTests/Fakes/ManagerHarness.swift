@@ -73,7 +73,7 @@ final class ManagerHarness: @unchecked Sendable {
             engine: engine, log: log, recentLines: { [log] in log.recentLines() },
             redact: { $0.replacingOccurrences(of: "SECRET", with: "[REDACTED]") },
             pane: PaneReading(showsAuthFailure: { $0.contains("Please run /login · API Error") },
-                              showsTrustPrompt: { $0.contains("trust this folder") }),
+                              trustPromptKeys: { $0.contains("trust this folder") ? ["Enter"] : nil }),
             environment: environment)
         return Manager(config: config, dependencies: deps, clock: clock)
     }

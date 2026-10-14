@@ -35,7 +35,7 @@ func makeDependencies(config: HostConfig, environment: [String: String]) throws 
         log: fileLog,
         recentLines: { fileLog.recentLines() },
         redact: { Redactor.redact($0, literals: secrets) },
-        pane: PaneReading(showsAuthFailure: Pane.showsAuthFailure, showsTrustPrompt: Pane.showsTrustPrompt),
+        pane: PaneReading(showsAuthFailure: Pane.showsAuthFailure, trustPromptKeys: Pane.trustPromptKeys),
         environment: environment)
 }
 
