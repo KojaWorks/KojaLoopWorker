@@ -104,6 +104,7 @@ final class FakePatch: @unchecked Sendable {
         default: nil
         }
         if value == "is.null" { return cell == nil || cell == .null }
+        if value == "not.is.null" { return cell != nil && cell != .null }
         if value.hasPrefix("eq.") { return text == String(value.dropFirst(3)) }
         if value.hasPrefix("in.(") {
             return text.map { value.dropFirst(4).dropLast().split(separator: ",").map(String.init).contains($0) } ?? false

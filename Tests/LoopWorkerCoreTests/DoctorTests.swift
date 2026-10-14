@@ -55,7 +55,8 @@ private final class DiagnosableForge: Forge, Diagnosable, @unchecked Sendable {
         runner: ScriptedRunner = ScriptedRunner(),
         git: FakeGit = FakeGit(),
         forgeCheck: DoctorCheck = DoctorCheck("forge fake", .ok, "token belongs to @me"),
-        backends: Error? = nil
+        backends: Error? = nil,
+        quarantined: Set<String> = []
     ) -> Doctor {
         Doctor(
             home: home, environment: ["PATH": bin.path].merging(environment) { _, new in new }, runner: runner, git: git,
@@ -65,7 +66,9 @@ private final class DiagnosableForge: Forge, Diagnosable, @unchecked Sendable {
                 if let backends { throw backends }
                 #expect(env["GL_TOKEN"] == Self.token)
                 return (FakeBacklog(), DiagnosableForge(forgeCheck))
-            })
+            },
+            executable: bin.appending(path: "loopworker"),
+            isQuarantined: { quarantined.contains($0.lastPathComponent) })
     }
 
     func check(_ checks: [DoctorCheck], _ name: String) -> DoctorCheck? { checks.first { $0.name == name } }
@@ -138,6 +141,37 @@ private final class DiagnosableForge: Forge, Diagnosable, @unchecked Sendable {
         #expect(lfs?.detail == "not on PATH; projects whose clones use Git LFS: g/app")
         #expect(lfs?.remedy?.contains("brew install git-lfs") == true)
         #expect(!Doctor.passed(checks))
+    }
+
+    @Test("B183: a quarantined tool or loopworker binary fails with the xattr remedy, and claude isn't run")
+    func quarantinedBinariesFail() async throws {
+        let real = home.appending(path: "Caskroom/claude")
+        try FileManager.default.createDirectory(at: real.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.moveItem(at: bin.appending(path: "claude"), to: real)
+        try FileManager.default.createSymbolicLink(at: bin.appending(path: "claude"), withDestinationURL: real)
+        let runner = ScriptedRunner()
+        let checks = await doctor(runner: runner, quarantined: ["claude", "loopworker"]).run()
+        let claude = check(checks, "tool claude")
+        #expect(claude?.level == .fail)
+        #expect(claude?.detail.contains("\(real.resolvingSymlinksInPath().path) carries com.apple.quarantine") == true)
+        #expect(claude?.detail.contains("GUI session") == true)
+        #expect(claude?.remedy == "xattr -d com.apple.quarantine \(real.resolvingSymlinksInPath().path)")
+        #expect(check(checks, "tool loopworker")?.remedy == "xattr -d com.apple.quarantine \(bin.appending(path: "loopworker").path)")
+        #expect(check(checks, "tool git")?.level == .ok)
+        #expect(check(checks, "claude login") == nil)
+        #expect(!runner.specs.get.contains { $0.executable == "claude" })
+        #expect(!Doctor.passed(checks))
+    }
+
+    @Test func quarantineReadsTheRealAttribute() throws {
+        let file = home.appending(path: "flagged")
+        try Data().write(to: file)
+        #expect(!Quarantine.isFlagged(file))
+        #if canImport(Darwin)
+        let value = "0081;00000000;Test;"
+        #expect(setxattr(file.path, Quarantine.attribute, value, value.utf8.count, 0, 0) == 0)
+        #expect(Quarantine.isFlagged(file))
+        #endif
     }
 
     @Test func aToolOutsideTheServicePathWarns() async throws {

@@ -298,7 +298,7 @@ let reviewURL = URL(string: "https://forge.example/g/app/-/merge_requests/1")!
         await h.cycle()
         #expect(h.backlog.card(id: "id-12")?.state == .review)
         #expect(h.backlog.state.get.reviewNotes["id-12"] == """
-            CI failed on `commit-1` only in jobs that also fail on `main`, so no fix round ran: \(pipelineURL.absoluteString)
+            CI failed on `commit-1` only in jobs that also fail on `main`, so LoopWorker starts no fix round for this commit: \(pipelineURL.absoluteString)
 
             - [lint](https://forge.example/jobs/lint), on `main`: https://forge.example/jobs/71
             - [x\\]\\(https://evil.example\\) /merge](https://forge.example/jobs/x%5D(https://evil.example)%0A/merge)

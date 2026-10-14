@@ -7,11 +7,13 @@ public struct GitLabForge: Forge {
     let client: GitLabClient
     let baseURL: URL
     private let environment: [String: String]
+    let log: LogSink
 
-    init(client: GitLabClient, baseURL: URL, gitEnvironment: [String: String]) {
+    init(client: GitLabClient, baseURL: URL, gitEnvironment: [String: String], log: LogSink) {
         self.client = client
         self.baseURL = baseURL
         environment = gitEnvironment
+        self.log = log
     }
 
     public func cloneURL(for project: ProjectSpec) -> String {
@@ -31,7 +33,20 @@ public struct GitLabForge: Forge {
     public func openReviewRequest(_ draft: ReviewRequestDraft) async throws -> ReviewRequest {
         let path = projectPath(draft.project) + "/merge_requests"
         let open: [GLMergeRequest] = try await client.getAll(path, query: [("state", "opened"), ("source_branch", draft.sourceBranch)])
-        if let existing = open.first { return try review(existing, draft.project) }
+        var assignee: [String: String] = [:]
+        if draft.assignToOwner {
+            // GitLab coerces the string to the integer that assignee_id takes.
+            do { assignee = ["assignee_id": String(try await client.me().id)] }
+            catch { log.warning("can't read the token's user to assign the merge request for \(draft.project.path) \(draft.sourceBranch): \(error); leaving it unassigned") }
+        }
+        if let existing = open.first {
+            let review = try review(existing, draft.project)
+            if !assignee.isEmpty, existing.assignees?.isEmpty ?? true {
+                do { let _: GLMergeRequest = try await client.send("PUT", "\(path)/\(existing.iid)", body: assignee, idempotent: true) }
+                catch { log.warning("can't assign \(review.display) (\(review.url.absoluteString)) to the token's user: \(error); leaving it unassigned") }
+            }
+            return review
+        }
         let title = Trust.neutralizeQuickActions(draft.title)
         let created: GLMergeRequest = try await client.send("POST", path, body: [
             "source_branch": draft.sourceBranch,
@@ -39,7 +54,7 @@ public struct GitLabForge: Forge {
             "title": draft.draft ? "Draft: \(title)" : title,
             "description": Trust.neutralizeQuickActions(draft.body),
             "remove_source_branch": "true",
-        ], idempotent: false)
+        ].merging(assignee) { a, _ in a }, idempotent: false)
         return try review(created, draft.project)
     }
 

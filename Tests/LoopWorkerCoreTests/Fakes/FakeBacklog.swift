@@ -36,6 +36,9 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
         var cardCalls: [String] = []
         /// When set, `card(_:)` waits on it after recording the call.
         var cardGate: Gate?
+        /// Manager notes by card id: `markStuck` and `release` append theirs.
+        var notes: [String: [String]] = [:]
+        var failManagerNotes = false
     }
 
     let state = Guarded(State())
@@ -130,6 +133,13 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
         state { $0.snapshots[card.ref.id] ?? CardSnapshot(markdown: "# \(card.title)\n") }
     }
 
+    func managerNotes(_ card: Card) async throws -> [String] {
+        try state {
+            if $0.failManagerNotes { throw FakeError("managerNotes \(card.ref) failed") }
+            return $0.notes[card.ref.id] ?? []
+        }
+    }
+
     func markReview(_ card: Card, review: ReviewRequest, note: String?) async throws {
         try state {
             if let e = $0.failMarkReview { throw e }
@@ -142,6 +152,7 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
     func markStuck(_ card: Card, blocker: String) async throws {
         state {
             $0.writes.append(.markStuck(card.ref.id, blocker: blocker))
+            $0.notes[card.ref.id, default: []].append(blocker)
             $0.cards[card.ref.id]?.state = .stuck
         }
     }
@@ -150,6 +161,7 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
         try state {
             if $0.failRelease { throw FakeError("release failed") }
             $0.writes.append(.release(card.ref.id, reason: reason, countsAsAttempt: countsAsAttempt))
+            $0.notes[card.ref.id, default: []].append(reason)
             $0.cards[card.ref.id]?.state = .ready
             if countsAsAttempt { $0.cards[card.ref.id]?.attempts += 1 }
         }

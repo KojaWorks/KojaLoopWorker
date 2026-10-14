@@ -49,12 +49,20 @@ public struct Doctor: Sendable {
     public var credentialVariables: @Sendable (HostConfig) throws -> [String]
     /// Builds the backlog and forge from the config and the overlaid environment, as `run` does.
     public var makeBackends: @Sendable (HostConfig, [String: String]) throws -> (backlog: any Backlog, forge: any Forge)
+    /// The running `loopworker` binary, checked for quarantine like the tools.
+    public var executable: URL?
+    /// Reads a resolved binary's quarantine flag.
+    public var isQuarantined: @Sendable (URL) -> Bool
 
     public init(
         home: URL, environment: [String: String], runner: any ProcessRunning, git: any GitDriving, servicePath: [String],
         credentialVariables: @escaping @Sendable (HostConfig) throws -> [String],
-        makeBackends: @escaping @Sendable (HostConfig, [String: String]) throws -> (backlog: any Backlog, forge: any Forge)
+        makeBackends: @escaping @Sendable (HostConfig, [String: String]) throws -> (backlog: any Backlog, forge: any Forge),
+        executable: URL? = Bundle.main.executableURL,
+        isQuarantined: @escaping @Sendable (URL) -> Bool = Quarantine.isFlagged
     ) {
+        self.executable = executable
+        self.isQuarantined = isQuarantined
         self.home = home
         self.environment = environment
         self.runner = runner
@@ -196,6 +204,7 @@ public struct Doctor: Sendable {
     /// - Parameter lfsProjects: Projects whose clones use Git LFS; a missing `git-lfs` fails for them.
     private func tools(lfsProjects: [String]) -> [DoctorCheck] {
         func found(_ name: String, _ url: URL) -> DoctorCheck {
+            if let q = quarantined(name, url) { return q }
             let dir = url.deletingLastPathComponent().path
             guard servicePath.contains(dir) else {
                 return DoctorCheck("tool \(name)", .warn, "\(url.path), outside the service PATH (\(servicePath.joined(separator: ":")))",
@@ -203,7 +212,8 @@ public struct Doctor: Sendable {
             }
             return DoctorCheck("tool \(name)", .ok, url.path)
         }
-        return Self.requiredTools.map { tool in
+        let me = executable.flatMap { quarantined("loopworker", $0) }.map { [$0] } ?? []
+        return me + Self.requiredTools.map { tool in
             which(tool).map { found(tool, $0) }
                 ?? DoctorCheck("tool \(tool)", .fail, "not on PATH", remedy: tool == "claude" ? "install Claude Code" : "brew install \(tool)")
         } + Self.optionalTools.map { tool, feature, install in
@@ -215,6 +225,14 @@ public struct Doctor: Sendable {
             }
             return DoctorCheck("tool \(tool)", .warn, "not on PATH; needed for \(feature)", remedy: install)
         }
+    }
+
+    /// A FAIL when `url`, symlinks resolved, carries macOS's quarantine flag.
+    private func quarantined(_ name: String, _ url: URL) -> DoctorCheck? {
+        let resolved = url.resolvingSymlinksInPath()
+        guard isQuarantined(resolved) else { return nil }
+        return DoctorCheck("tool \(name)", .fail, "\(resolved.path) carries \(Quarantine.attribute); \(Quarantine.why)",
+                           remedy: Quarantine.remedy(resolved))
     }
 
     private func claude(_ overlaid: [String: String], secretsFile: URL) async -> DoctorCheck {

@@ -24,6 +24,11 @@ public protocol Backlog: Sendable {
     /// their CI at startup and in the stranded-card sweep.
     func verifying(in projects: [ProjectSpec]) async throws -> [Card]
 
+    /// The Manager's own earlier notes on the card (stuck blockers, release reasons, review
+    /// links), without the backend's header, oldest first; `[]` when there are none. The
+    /// Manager hands them to the card's next worker as background, never as card content.
+    func managerNotes(_ card: Card) async throws -> [String]
+
     /// Moves a `ready` card to `working`. Returns false when the card is no longer `ready`
     /// (someone else moved it); the Manager then skips it.
     func claim(_ card: Card) async throws -> Bool

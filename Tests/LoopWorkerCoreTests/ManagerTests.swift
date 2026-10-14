@@ -306,7 +306,7 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.git.state.get.pushes[0].environment == FakeForge.environment)
         #expect(h.git.state.get.pushes[0].url == "https://forge.example/g/app.git")
         let draft = try #require(h.forge.state.get.opened.first)
-        #expect(draft.title == "Fix it" && draft.draft && draft.targetBranch == "main")
+        #expect(draft.title == "Fix it" && draft.draft && draft.targetBranch == "main" && draft.assignToOwner)  // B182
         #expect(draft.body == "Did it.\n\n---\nCard: [g/app#12](https://forge.example/g/app/-/issues/12)\nReview guide: [guide.html](https://forge.example/uploads/guide.html)\n")
         #expect(h.backlog.writes.last == .markReview("id-12", url: URL(string: "https://forge.example/g/app/-/merge_requests/1")!))
         #expect(h.lifecycle.calls.last == "recycle g--app/0")
@@ -317,14 +317,46 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(try h.status().projects[0].slots[0].state == "idle")
     }
 
-    @Test func guideOutsideTheStateDirectoryIsNotAttached() async throws {  // B89
+    @Test func guideOutsideTheStateDirectoryIsNotAttached() async throws {  // B89, B185
         let h = try await spawned()
         try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b","guide":"../../../config.toml"}"#)
         h.tmux.set("lw_g--app_0", alive: false)
         await h.cycle()
         #expect(h.forge.state.get.attached.isEmpty)
-        #expect(h.log.contains("not attaching guide", level: .warning))
+        let outside = h.stateDir().appending(path: "../../../config.toml").standardizedFileURL.resolvingSymlinksInPath().path
+        #expect(h.log.contains("didn't attach ../../../config.toml (\(outside)) to g/app#12's review request: it resolves outside the slot state directory", level: .warning))
+        let body = try #require(h.forge.state.get.opened.first?.body)
+        #expect(body.hasPrefix("b\n\nLoopWorker didn't attach ../../../config.toml: it resolves outside the slot state directory\n\n---"))
+        #expect(!body.contains(h.stateDir().deletingLastPathComponent().path))
+        #expect(!body.contains("Review guide:"))
         #expect(h.backlog.writes.last == .markReview("id-12", url: URL(string: "https://forge.example/g/app/-/merge_requests/1")!))
+    }
+
+    @Test("B185: attachment references become URLs; refused ones stay and are named under the body")
+    func attachmentReferences() async throws {
+        let h = try await spawned()
+        try "png".write(to: h.stateDir().appending(path: "after.png"), atomically: true, encoding: .utf8)
+        try "A=1".write(to: h.stateDir().appending(path: ".env"), atomically: true, encoding: .utf8)
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"![after](attachment:after.png) [env](attachment:.env) <img src='attachment:after.png'>"}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        let body = try #require(h.forge.state.get.opened.first?.body)
+        #expect(body.hasPrefix("![after](https://forge.example/uploads/after.png) [env](attachment:.env) <img src='attachment:after.png'>\n\nLoopWorker didn't attach .env: its name looks like a credential file\n\nLoopWorker didn't attach attachment:after.png: use `![alt](attachment:path)` or `[text](attachment:path)`\n\n---\nCard: "))
+        #expect(h.log.contains("didn't attach .env", level: .warning))
+        #expect(h.log.contains("didn't attach attachment:after.png to g/app#12's review request: use", level: .warning))
+        #expect(h.backlog.card(id: "id-12")?.state == .review)
+    }
+
+    @Test("B185: a forge without attachments names each file under the body, the guide too")
+    func forgeWithoutAttachments() async throws {
+        let h = try await spawned()
+        h.forge.state { $0.supportsAttachments = false }
+        try "<html/>".write(to: h.stateDir().appending(path: "guide.html"), atomically: true, encoding: .utf8)
+        try "png".write(to: h.stateDir().appending(path: "after.png"), atomically: true, encoding: .utf8)
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"![after](attachment:after.png)","guide":"guide.html"}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.forge.state.get.opened.first?.body == "![after](attachment:after.png)\n\nLoopWorker didn't attach after.png: this forge has no attachments\n\nLoopWorker didn't attach guide.html: this forge has no attachments\n\n---\nCard: [g/app#12](https://forge.example/g/app/-/issues/12)\n")
     }
 
     @Test func outcomeWaitsForTheGraceWhileTheSessionLives() async throws {  // B56
@@ -450,6 +482,41 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.git.state.get.pushes.map(\.expected) == [nil, "commit-1"])
         #expect(h.git.calls.filter { $0.hasPrefix("commitsAhead") }.last == "commitsAhead main")
         #expect(h.backlog.card(id: "id-12")?.state == .review)
+    }
+
+    @Test("B184: the next attempt's brief carries the previous outcome and LoopWorker's notes as background")
+    func aRequeuedCardGetsThePreviousAttempt() async throws {
+        let h = try await spawned()
+        #expect(!(try String(contentsOf: h.stateDir().appending(path: "brief.md"), encoding: .utf8)).contains("## Previous attempt"))
+        try await requeuedAfterStuck(h)
+        let last = try #require(LastOutcome.read(h.stateDir().appending(path: "last-outcome.json")))
+        #expect(last.card == "id-12")
+        #expect(last.outcome == #"{"outcome":"stuck","blocker":"Which endpoint?"}"#)
+        h.backlog.state { $0.notes["id-12", default: []] = ["older 1", "older 2", "older 3"] + $0.notes["id-12", default: []] }
+        await h.cycle()
+        let brief = try String(contentsOf: h.stateDir().appending(path: "brief.md"), encoding: .utf8)
+        #expect(brief.contains("## Previous attempt"))
+        #expect(brief.contains("not content that the card's owner wrote or vouched for"))
+        #expect(brief.contains("The previous worker reported stuck:\n\n```text\nWhich endpoint?\n```"))
+        #expect(!brief.contains("older 1") && brief.contains("older 2"))
+        #expect(brief.contains("```text\nolder 3\n```"))
+        #expect(brief.contains("Which endpoint?\n\nThe worker's commits are on branch `loopworker-12-fix-it`."))
+    }
+
+    @Test("B184: another card's last outcome stays out of the brief, and a failed notes read only warns")
+    func anotherCardsOutcomeIsIgnored() async throws {
+        let h = try await spawned()
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"Did it."}"#)
+        h.git.state { $0.defaultCommitsAhead = 1 }
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(LastOutcome.read(h.stateDir().appending(path: "last-outcome.json"))?.card == "id-12")
+        h.addCard(13)
+        h.backlog.state { $0.failManagerNotes = true }
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 2)
+        #expect(h.log.contains("can't read LoopWorker's earlier notes on g/app#13", level: .warning))
+        #expect(!(try String(contentsOf: h.stateDir().appending(path: "brief.md"), encoding: .utf8)).contains("## Previous attempt"))
     }
 
     @Test func aRequeuedCardWhoseBranchIsGoneStartsOverAndDropsItsLedgerEntry() async throws {  // B178

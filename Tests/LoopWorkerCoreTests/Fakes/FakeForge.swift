@@ -12,6 +12,7 @@ final class FakeForge: Forge, @unchecked Sendable {
         var failNextOpen: (any Error)?
         var attached: [URL] = []
         var supportsAttachments = true
+        var failAttach: (any Error)?
         var defaultBranch = "main"
         /// The pipeline per commit; a commit without one has no pipeline.
         var pipelines: [String: PipelineStatus] = [:]
@@ -76,7 +77,8 @@ final class FakeForge: Forge, @unchecked Sendable {
     }
 
     func attach(_ file: URL, to project: ProjectSpec) async throws -> URL? {
-        state {
+        try state {
+            if let e = $0.failAttach { throw e }
             guard $0.supportsAttachments else { return nil }
             $0.attached.append(file)
             return URL(string: "https://forge.example/uploads/\(file.lastPathComponent)")

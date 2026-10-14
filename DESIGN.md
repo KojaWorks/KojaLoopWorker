@@ -142,7 +142,11 @@ that starts with `/` is escaped, so `/merge` or `/label` from a worker is shown,
    only the project's declared servers (`--strict-mcp-config`). The launch script starts from
    `env -i` and adds back only `HOME`, `PATH`, `TERM`, `LANG`, `TMPDIR` and the variables in the
    slot's `worker.env`, so no backlog or forge token in the Manager's environment, or in the
-   tmux server's, reaches the worker.
+   tmux server's, reaches the worker. When the card was worked on before, the brief gets a
+   "Previous attempt" section: the last outcome that a slot of the project kept for this card
+   and the Manager's three latest notes on it (`managerNotes`), fenced and labelled as
+   LoopWorker's own output rather than content that the owner vouched for. The snapshot still
+   leaves those notes out.
 4. **Work.** The worker implements, runs `verify.sh`, reviews its own diff with fresh-context
    subagents, optionally writes a review guide, commits, and writes the outcome:
 
@@ -154,9 +158,17 @@ that starts with `/` is escaped, so `/merge` or `/label` from a worker is shown,
 5. **Finish.** When the outcome file exists, the Manager reaps the session after a short grace
    period and runs the finish task:
    - `done`: check that the branch has commits ahead of the base (otherwise treat the outcome
-     as `stuck`), push, attach the guide (a file in the slot's state directory, resolved and
-     checked to stay inside it), open a draft review request, `markReview` (or, for a project
+     as `stuck`), push, attach the files that the outcome names (the guide, and each
+     `attachment:<path>` link or image in the body, such as `![after](attachment:after.png)`),
+     open a draft review request assigned to the forge token's user (the card's owner), `markReview` (or, for a project
      that waits for CI, `markVerifying`; see "Waiting for CI").
+   - An attached file must resolve (symlinks resolved) inside the slot's state directory, be
+     not be one of the files that the Manager writes there (such as `worker.env`), be a
+     regular non-empty file under 20 MB, not have a credential-like name, and not contain a
+     credential shape or a PEM private key. The Manager uploads it with `forge.attach` and puts
+     the URL in place of the reference. A refused file, or any file on a forge without
+     attachments, keeps its reference, is logged, and gets a line under the body that says
+     "LoopWorker didn't attach <path>: <reason>". The worker stays credential-free.
    - `stuck`: push the branch if it has commits, so the human can see the work in progress,
      then `markStuck` with the blocker and the branch name.
    - The slot is recycled only after the finish task succeeds. A failed finish is retried on
@@ -294,7 +306,8 @@ $LOOPWORKER_HOME/
   state/tmux                  the Manager's own tmux server socket
   state/ci/<card id>.json     CI watch record of a verifying card (the id percent-encoded)
   state/pushes.json           push ledger: the branch and commit last pushed per card id, the push lease
-  slots/<key>/<n>/            brief, snapshot, launch script, outcome, MCP config, ci.md
+  slots/<key>/<n>/            brief, snapshot, launch script, outcome, MCP config, ci.md;
+                              last-outcome.json: the last finished outcome and its card id
 <clones_dir>/<key>/           the clone; its working tree tracks origin/<base>
 <clones_dir>/<key>.slots/<n>/ slot worktrees
 ```

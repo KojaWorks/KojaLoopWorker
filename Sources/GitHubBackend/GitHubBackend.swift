@@ -147,16 +147,35 @@ public struct GitHubForge: Forge {
             URLQueryItem(name: "state", value: "open"),
             URLQueryItem(name: "head", value: "\(owner):\(draft.sourceBranch)"),
         ], as: [Pull].self)
-        if let existing = open.first { return existing.reviewRequest(path) }
+        if let existing = open.first {
+            let review = existing.reviewRequest(path)
+            if draft.assignToOwner, existing.assignees?.isEmpty ?? true { await assignOwner(path, existing.number, review) }
+            return review
+        }
 
         var body = NewPull(title: draft.title, head: draft.sourceBranch, base: draft.targetBranch, body: draft.body, draft: draft.draft)
+        let pull: Pull
         do {
-            return try await request("POST", "repos/\(path)/pulls", body: body, as: Pull.self).reviewRequest(path)
+            pull = try await request("POST", "repos/\(path)/pulls", body: body, as: Pull.self)
         } catch let e as BackendRejection where body.draft && e.description.localizedCaseInsensitiveContains("draft") {
             // Private repos on free plans refuse drafts; a ready pull request beats a stuck card.
             log.warning("\(path) refuses draft pull requests; opening \(draft.sourceBranch) as ready for review")
             body.draft = false
-            return try await request("POST", "repos/\(path)/pulls", body: body, as: Pull.self).reviewRequest(path)
+            pull = try await request("POST", "repos/\(path)/pulls", body: body, as: Pull.self)
+        }
+        let review = pull.reviewRequest(path)
+        if draft.assignToOwner { await assignOwner(path, pull.number, review) }
+        return review
+    }
+
+    /// Assigns pull request `number` to the token's user, or logs why it can't.
+    private func assignOwner(_ path: String, _ number: Int, _ review: ReviewRequest) async {
+        struct Assignees: Encodable { var assignees: [String] }
+        do {
+            let me = try await request("GET", "user", as: User.self)
+            _ = try await request("POST", "repos/\(path)/issues/\(number)/assignees", body: Assignees(assignees: [me.login]), as: Ignored.self)
+        } catch {
+            log.warning("can't assign \(review.display) (\(review.url.absoluteString)) to the token's user: \(error); leaving it unassigned")
         }
     }
 
@@ -215,6 +234,9 @@ public struct GitHubForge: Forge {
 
     // MARK: HTTP
 
+    private struct User: Decodable { var login: String }
+    private struct Ignored: Decodable {}
+
     private struct CheckRun: Decodable {
         /// For a GitHub Actions run, also its job id.
         var id: Int?
@@ -251,6 +273,7 @@ public struct GitHubForge: Forge {
     private struct Pull: Decodable {
         var number: Int
         var html_url: URL
+        var assignees: [User]?
         func reviewRequest(_ path: String) -> ReviewRequest { ReviewRequest(url: html_url, display: "\(path)#\(number)") }
     }
 

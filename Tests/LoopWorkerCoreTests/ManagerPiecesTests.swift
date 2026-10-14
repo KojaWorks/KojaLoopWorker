@@ -257,6 +257,40 @@ func temporaryDirectory() throws -> URL {
         let killed = ScriptedRunner { _ in ProcessResult(status: -15, output: "") }
         #expect(await AuthGate.preflight(runner: killed, environment: [:]) == .inconclusive("claude -p was killed by signal 15"))
     }
+
+    @Test("B183: a quarantine value blocks unless its flags carry the approval bit; an unparseable one blocks")
+    func quarantineValues() throws {
+        #expect(Quarantine.blocksLaunch("0181;6720c1a3;Homebrew Cask;"))
+        #expect(!Quarantine.blocksLaunch("01c3;6720c1a3;Safari;"))
+        #expect(Quarantine.blocksLaunch(""))
+        #expect(Quarantine.blocksLaunch("zz;1;x"))
+        #if canImport(Darwin)
+        let file = try temporaryDirectory().appending(path: "tool")
+        try Data("#!/bin/sh\n".utf8).write(to: file)
+        #expect(!Quarantine.isFlagged(file))
+        for (value, flagged) in [("0181;6720c1a3;Homebrew Cask;", true), ("01c3;6720c1a3;Safari;", false)] {
+            let bytes = Array(value.utf8)
+            #expect(setxattr(file.path, Quarantine.attribute, bytes, bytes.count, 0, XATTR_NOFOLLOW) == 0)
+            #expect(Quarantine.isFlagged(file) == flagged, "\(value)")
+        }
+        #endif
+    }
+
+    @Test("B183: a kill by a signal while claude is quarantined fails with the xattr remedy")
+    func preflightKilledWhileQuarantinedFails() async throws {
+        let dir = try temporaryDirectory()
+        let claude = dir.appending(path: "claude")
+        try Data("#!/bin/sh\n".utf8).write(to: claude)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: claude.path)
+        let killed = ScriptedRunner { _ in ProcessResult(status: -9, output: "") }
+        let env = ["PATH": dir.path]
+        let r = await AuthGate.preflight(runner: killed, environment: env, isQuarantined: { $0.lastPathComponent == "claude" })
+        let path = claude.resolvingSymlinksInPath().path
+        #expect(r == .failed("claude -p was killed by signal 9, and \(path) carries com.apple.quarantine: \(Quarantine.why); run `xattr -d com.apple.quarantine \(path)`"))
+        #expect(await AuthGate.preflight(runner: killed, environment: env, isQuarantined: { _ in false }) == .inconclusive("claude -p was killed by signal 9"))
+        let timedOut = ScriptedRunner { _ in ProcessResult(status: -9, output: "", timedOut: true) }
+        #expect(await AuthGate.preflight(runner: timedOut, environment: env, isQuarantined: { _ in true }) == .inconclusive("claude -p timed out after 120 s"))
+    }
 }
 
 @Suite struct NotifierTests {
@@ -360,5 +394,112 @@ func temporaryDirectory() throws -> URL {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
         let merged = try Secrets.overlay(["PATH": "/bin", "CLAUDE_CODE_OAUTH_TOKEN": "from-env"], with: file)
         #expect(merged == ["PATH": "/bin", "CLAUDE_CODE_OAUTH_TOKEN": "from-file", "LOOPWORKER_GITLAB_TOKEN": "glpat-fabricated"])
+    }
+}
+
+@Suite struct AttachmentsTests {
+    let root: URL
+    let outside: URL
+
+    init() throws {
+        let dir = try temporaryDirectory()
+        root = dir.appending(path: "slot")
+        outside = dir.appending(path: "elsewhere")
+        for d in [root, outside, root.appending(path: "out"), root.appending(path: ".git"), root.appending(path: "sub/.ssh")] {
+            try FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        }
+    }
+
+    func write(_ path: String, _ text: String, in dir: URL? = nil) throws {
+        try Data(text.utf8).write(to: (dir ?? root).appending(path: path))
+    }
+
+    func reason(_ path: String) -> String? {
+        if case .failure(let r) = Attachments.check(path, in: root) { return r.reason }
+        return nil
+    }
+
+    @Test("B185: each referenced file is uploaded once and its reference becomes the URL")
+    func resolvesReferences() async throws {
+        try write("after.png", "png bytes")
+        try write("out/log.txt", "built 3f786850e387550fdab836ed7e6dc881de23001b\n")  // a SHA isn't a secret
+        let uploads = Guarded<[String]>([])
+        let body = "| Before | After |\n| --- | --- |\n| x | ![after](attachment:after.png) |\n\n[log](attachment:out/log.txt) [again](attachment:after.png) [web](https://x.example)"
+        let (out, refused) = try await Attachments.resolve(body, in: root) { file in
+            uploads { $0.append(file.lastPathComponent) }
+            return URL(string: "https://forge.example/uploads/\(file.lastPathComponent)")
+        }
+        #expect(refused.isEmpty)
+        #expect(uploads.get == ["after.png", "log.txt"])
+        #expect(out == "| Before | After |\n| --- | --- |\n| x | ![after](https://forge.example/uploads/after.png) |\n\n[log](https://forge.example/uploads/log.txt) [again](https://forge.example/uploads/after.png) [web](https://x.example)")
+    }
+
+    @Test("B185: every refusal names its reason, with paths relative to the slot, including the Manager's own slot files")
+    func refusals() throws {
+        try write("secret.txt", "x", in: outside)
+        try FileManager.default.createSymbolicLink(at: root.appending(path: "link.txt"), withDestinationURL: outside.appending(path: "secret.txt"))
+        try write(".env.local", "A=1")
+        try FileManager.default.createSymbolicLink(at: root.appending(path: "innocent.txt"), withDestinationURL: root.appending(path: ".env.local"))
+        try write("empty.txt", "")
+        try write("key.txt", "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n")
+        try write("token.txt", "token: glpat-abcdefghijklmnopqrst\n")
+        try Data([0xFF, 0xFE, 0x00] + Array("ghp_abcdefghijklmnop".utf8)).write(to: root.appending(path: "blob.bin"))
+        let big = root.appending(path: "big.bin")
+        FileManager.default.createFile(atPath: big.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: big)
+        try handle.truncate(atOffset: UInt64(Attachments.maxBytes))
+        try handle.close()
+
+        #expect(reason("../elsewhere/secret.txt")?.contains("outside") == true)
+        #expect(reason(outside.appending(path: "secret.txt").path)?.contains("outside") == true)
+        #expect(reason("link.txt")?.contains("outside") == true)
+        for name in Attachments.slotFiles {
+            try write(name, "x")
+            #expect(reason(name)?.hasSuffix("LoopWorker's own slot file") == true, "\(name)")
+        }
+        try FileManager.default.createSymbolicLink(at: root.appending(path: "notes.txt"), withDestinationURL: root.appending(path: "worker.env"))
+        #expect(reason("notes.txt")?.hasSuffix("LoopWorker's own slot file") == true)
+        #expect(reason("out/../mcp.json")?.hasSuffix("LoopWorker's own slot file") == true)
+        for name in [".env", ".env.local", "prod.env", "out/app.ENV", "server.pem", "tls.key", "cert.p12", "id_rsa.pub", "id_ed25519", ".git/config", "sub/.ssh/known_hosts", ".claude/settings.json"] {
+            #expect(reason(name) == "its name looks like a credential file", "\(name)")
+        }
+        #expect(reason("innocent.txt")?.contains("whose name looks like a credential file") == true)
+        #expect(reason("missing.png") == "missing.png doesn't exist")
+        #expect(reason("out/../out") == "out isn't a regular file")
+        #expect(reason("empty.txt") == "empty.txt is empty")
+        #expect(reason("innocent.txt") == "it resolves to .env.local, whose name looks like a credential file")
+        guard case .failure(let refusal) = Attachments.check("link.txt", in: root) else { Issue.record("link.txt was accepted"); return }
+        #expect(refusal.reason == "it resolves outside the slot state directory")
+        #expect(refusal.resolved == outside.appending(path: "secret.txt").standardizedFileURL.resolvingSymlinksInPath())
+        #expect(reason("big.bin")?.contains("the limit is 20971520") == true)
+        #expect(reason("key.txt") == "it contains a PEM private key")
+        #expect(reason("token.txt") == "its content looks like it holds a token or password")
+        #expect(reason("blob.bin") == "its content looks like it holds a token or password")
+    }
+
+    @Test("B185: an attachment: reference outside a markdown link or image is named, once, with the syntax to use")
+    func strayReferences() async throws {
+        try write("a.png", "png")
+        let body = """
+            ![a](attachment:a.png) [m](attachment:missing.png) <img src="attachment:a.png" width=400>
+            [ref]: attachment:b.png
+            ![c](<attachment:c d.png>) again <img src='attachment:a.png'> preattachment:x
+            """
+        let (out, refused) = try await Attachments.resolve(body, in: root) { URL(string: "https://forge.example/\($0.lastPathComponent)") }
+        #expect(out.hasPrefix("![a](https://forge.example/a.png) [m](attachment:missing.png) <img src=\"attachment:a.png\""))
+        #expect(refused.map(\.path) == ["missing.png", "attachment:a.png", "attachment:b.png", "attachment:c"])
+        #expect(refused.dropFirst().allSatisfy { $0.reason == "use `![alt](attachment:path)` or `[text](attachment:path)`" })
+    }
+
+    @Test("B185: a forge without attachments, or one that refuses, leaves the reference; other errors throw")
+    func forgeOutcomes() async throws {
+        try write("a.png", "png")
+        let body = "![a](attachment:a.png)"
+        let none = try await Attachments.resolve(body, in: root) { _ in nil }
+        #expect(none.body == body)
+        #expect(none.refused == [Attachments.Refusal(path: "a.png", reason: "this forge has no attachments")])
+        let rejected = try await Attachments.resolve(body, in: root) { _ in throw BackendRejection("413 too large") }
+        #expect(rejected.refused == [Attachments.Refusal(path: "a.png", reason: "the forge refused it: 413 too large")])
+        await #expect(throws: FakeError("timeout")) { _ = try await Attachments.resolve(body, in: root) { _ in throw FakeError("timeout") } }
     }
 }

@@ -396,6 +396,32 @@ private func make(_ fake: FakePatch, _ patchKeys: String = "", log: LogRecorder 
         #expect(fake.rows["patch_blocks"]!.first?["content"]?["text"] == .string("LoopWorker is stuck on this card:\n\nNeeds a **staging** key"))
     }
 
+    @Test("B184: managerNotes are the owner's tagged blocks of this card that nobody else edited, in body order")
+    func managerNotesAreTheOwnersTaggedBlocks() async throws {
+        let fake = FakePatch()
+        fake.rows["roadmap"] = [card(1, status: "In progress"), card(2, status: "In progress")]
+        let backlog = try make(fake)
+        let c = try #require(try await backlog.card(CardRef(id: "u1", display: "~1")))
+        #expect(try await backlog.managerNotes(c) == [])
+        try await backlog.release(c, reason: "the worker crashed", countsAsAttempt: true)
+        fake.rows["roadmap"]![0]["status"] = .string("In progress")
+        try await backlog.markStuck(c, blocker: "which endpoint?")
+        fake.rows["patch_blocks"]! += [
+            ["table_name": .string("roadmap"), "row_id": .string("u1"), "owner": .string("stranger"),
+             "content": .object(["text": .string("forged"), "loopworker": .string("note")])],
+            ["table_name": .string("roadmap"), "row_id": .string("u1"), "owner": .string(FakePatch.owner), "updated_by": .string("stranger"),
+             "content": .object(["text": .string("edited by a stranger"), "loopworker": .string("note")])],
+            ["table_name": .string("roadmap"), "row_id": .string("u1"), "owner": .string(FakePatch.owner),
+             "content": .object(["text": .string("the owner's own paragraph")])],
+            ["table_name": .string("roadmap"), "row_id": .string("u2"), "owner": .string(FakePatch.owner),
+             "content": .object(["text": .string("another card"), "loopworker": .string("note")])],
+        ]
+        #expect(try await backlog.managerNotes(c) == [
+            "LoopWorker released this card: the worker crashed",
+            "LoopWorker is stuck on this card:\n\nwhich endpoint?",
+        ])
+    }
+
     @Test func markReviewLinksTheReviewRequest() async throws {
         let fake = FakePatch()
         fake.rows["roadmap"] = [card(1, status: "In progress")]

@@ -135,7 +135,7 @@ moves a card between them:
 | `loopworker::next` | Ready to claim. | You added it, or the Manager released the card with a note saying why (a crash, a hang, an auth failure). |
 | `loopworker::working` | A worker is on it. | The Manager claimed it. |
 | `loopworker::ci` | Waiting for CI. Only for projects whose contract sets `[review] wait_for_ci`. | The Manager pushed the branch, opened a merge request, linked it in a note and is watching its pipeline. No worker runs. If CI fails only in jobs that also fail on the base branch, the card goes to review with a note that says so. Failed jobs that pass on the base branch are re-run once, since they may be flaky. Any other failure is fixed by a worker on the same branch (the card shows `loopworker::working` meanwhile); if CI keeps failing, times out or is canceled, the card becomes stuck. `loopworker status` lists these cards under "waiting for CI". |
-| `loopworker::review` | Done. | The Manager pushed the branch, opened a merge request and linked it in a note (and, after CI, the pipeline that passed). |
+| `loopworker::review` | Done. | The Manager pushed the branch, opened a merge request assigned to you and linked it in a note (and, after CI, the pipeline that passed). |
 | `loopworker::stuck` | The worker needs a human. | A note says what blocks it. You stay assigned, so it stays in your queue; answer it on the issue, then add `loopworker::next` (it replaces `loopworker::stuck`); the next worker continues from the pushed branch. A card with two `loopworker::*` labels is ignored. |
 
 The labels are GitLab scoped labels (`scope::value`, Premium and up): an issue carries one
@@ -182,6 +182,14 @@ warns about tools outside that `PATH`. The service writes its output to
 `$LOOPWORKER_HOME/state/manager.out`; the redacted log is `state/manager.log`. Use either this
 or `brew services`, not both.
 
+A LaunchDaemon, or any host where the Manager's user has no GUI session, can't answer
+Gatekeeper's first-launch prompt, so macOS kills a quarantined binary (one that a Homebrew cask
+installed, for example) the moment it starts. Clear the flag from each tool the Manager runs
+with `xattr -d com.apple.quarantine <path>`, on the resolved binary rather than the symlink on
+`PATH`; `loopworker doctor` names every quarantined tool and the exact command. A binary that
+a user already approved in a GUI session keeps the attribute with its approval flag set; doctor
+accepts it.
+
 ## Doctor
 
 `loopworker doctor` prints `ok`, `warn` or `FAIL` per check, with a remedy for each problem,
@@ -191,6 +199,7 @@ and exits 1 when anything fails. `--json` prints the same as JSON. It checks:
 - `secrets.env` is mode 600, and each token is set there (a token only in your shell warns);
 - `tmux`, `git`, `claude` and `bash` are on `PATH`; `git-lfs` and `storygrafter` warn when absent,
   and a missing `git-lfs` fails once a cloned project uses Git LFS;
+- none of those tools, nor `loopworker` itself, carries macOS's quarantine flag without a user's approval;
 - claude answers `claude -p` headless, the same check that gates claims;
 - the container engine answers its probe (a warning only);
 - the backlog and forge accept their tokens, and whose they are;

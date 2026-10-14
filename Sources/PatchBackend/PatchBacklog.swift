@@ -83,6 +83,21 @@ public actor PatchBacklog: Backlog {
         return PatchMarkdown.snapshot(title: row.title, createdBy: row.createdBy, blocks: blocks, trusted: try await trustedAuthors())
     }
 
+    /// The text of the card's blocks tagged `content.loopworker` that the PAT owner wrote and
+    /// last edited, in body order.
+    public func managerNotes(_ card: Card) async throws -> [String] {
+        let owner = try await client.owner()
+        return try await client.getAll("patch_blocks", [
+            URLQueryItem(name: "table_name", value: "eq.\(config.roadmapTable)"),
+            URLQueryItem(name: "row_id", value: "eq.\(card.ref.id)"),
+            URLQueryItem(name: "content->>\(PatchMarkdown.markerKey)", value: "not.is.null"),
+            URLQueryItem(name: "owner", value: "eq.\(owner)"),
+            URLQueryItem(name: "updated_by", value: "eq.\(owner)"),
+            URLQueryItem(name: "select", value: "content"),
+            URLQueryItem(name: "order", value: "sort.asc,id.asc"),
+        ]).compactMap { $0["content"]?["text"]?.string }
+    }
+
     // MARK: Writes
 
     public func claim(_ card: Card) async throws -> Bool {
