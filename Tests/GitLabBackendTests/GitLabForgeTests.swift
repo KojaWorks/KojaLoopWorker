@@ -144,18 +144,21 @@ import Testing
     func failedJobs() async throws {
         let w = World()
         w.gitlab.on("GET", pipelines, json: pipeline("failed"))
+        let trace = (1...250).map { "line \($0)" }.joined(separator: "\n") + "\n\u{1B}[31;1mERROR\u{1B}[0m boom"
+        w.gitlab.on("GET", "/api/v4/projects/mygroup%2Fapp/jobs/1/trace", responses: [.init(status: 200, body: Data(trace.utf8), headers: [:])])
+        w.gitlab.on("GET", "/api/v4/projects/mygroup%2Fapp/jobs/3/trace", status: 404, json: ["message": "404 Not found"])
         w.gitlab.on("GET", pipelines + "/55/jobs", query: ["scope[]": "failed"], json: [
             ["id": 1, "name": "test", "stage": "verify", "web_url": "https://gitlab.example.com/j/1", "allow_failure": false],
             ["id": 2, "name": "lint", "stage": "verify", "web_url": "https://gitlab.example.com/j/2", "allow_failure": true],
             ["id": 3, "name": "old", "stage": "build", "web_url": "https://gitlab.example.com/j/3", "allow_failure": false],
+            ["id": 4, "name": "flaky", "stage": "build", "web_url": "https://gitlab.example.com/j/4", "allow_failure": false],
         ])
-        let trace = (1...250).map { "line \($0)" }.joined(separator: "\n") + "\n\u{1B}[31;1mERROR\u{1B}[0m boom"
-        w.gitlab.on("GET", "/api/v4/projects/mygroup%2Fapp/jobs/1/trace", responses: [.init(status: 200, body: Data(trace.utf8), headers: [:])])
-        w.gitlab.on("GET", "/api/v4/projects/mygroup%2Fapp/jobs/3/trace", status: 404, json: ["message": "404 Not found"])
+        w.gitlab.on("GET", "/api/v4/projects/mygroup%2Fapp/jobs/4/trace", status: 400, json: ["message": "bad trace"])
 
         let p = try #require(try await w.make().forge.pipeline(for: World.app, commit: "abc123"))
         #expect(p.state == .failed)
-        #expect(p.failedJobs.map(\.name) == ["test", "old"])
+        #expect(p.failedJobs.map(\.name) == ["test", "old", "flaky"])
+        #expect(p.failedJobs[2].logTail.hasPrefix("(LoopWorker couldn't read this job's log: GET /projects/mygroup%2Fapp/jobs/4/trace: 400"))
         let test = p.failedJobs[0]
         #expect(test.stage == "verify" && test.url == URL(string: "https://gitlab.example.com/j/1"))
         let lines = test.logTail.split(separator: "\n", omittingEmptySubsequences: false)

@@ -79,7 +79,9 @@ public struct GitLabForge: Forge {
             for p in failed {
                 let listed: [GLJob] = try await client.getAll(base + "/pipelines/\(p.id)/jobs", query: [("scope[]", "failed")])
                 for job in listed where !job.allowFailure {
-                    let trace = try await client.textIfFound(base + "/jobs/\(job.id)/trace") ?? "(GitLab has no log for this job)"
+                    let trace: String
+                    do { trace = try await client.textIfFound(base + "/jobs/\(job.id)/trace") ?? "(GitLab has no log for this job)" }
+                    catch { trace = "(LoopWorker couldn't read this job's log: \(error))" }
                     jobs.append(CIJob(name: job.name, stage: job.stage, url: URL(string: job.webUrl),
                                       logTail: CIJob.tail(Self.stripANSI(trace))))
                 }
