@@ -83,7 +83,7 @@ public struct GitLabForge: Forge {
                     do { trace = try await client.textIfFound(base + "/jobs/\(job.id)/trace") ?? "(GitLab has no log for this job)" }
                     catch { trace = "(LoopWorker couldn't read this job's log: \(error))" }
                     jobs.append(CIJob(name: job.name, stage: job.stage, url: URL(string: job.webUrl),
-                                      logTail: CIJob.tail(Self.stripANSI(trace))))
+                                      logTail: CIJob.tail(Self.stripANSI(trace)), id: String(job.id)))
                 }
             }
             return PipelineStatus(state: .failed, url: URL(string: first.webUrl), failedJobs: jobs)
@@ -116,6 +116,17 @@ public struct GitLabForge: Forge {
             }
         }
         return result
+    }
+
+    /// `POST /projects/:id/jobs/:job_id/retry` per job, which puts the pipeline back to running.
+    public func retryJobs(project: ProjectSpec, jobs: [CIJob]) async throws -> Bool {
+        let ids = jobs.compactMap(\.id)
+        guard ids.count == jobs.count else { return false }
+        struct Retried: Decodable { var id: Int }
+        for id in ids {
+            let _: Retried = try await client.send("POST", projectPath(project) + "/jobs/\(id)/retry", body: [:], idempotent: false)
+        }
+        return true
     }
 
     /// Removes what GitLab traces carry besides the job's output: terminal color and erase

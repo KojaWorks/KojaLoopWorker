@@ -199,6 +199,23 @@ import Testing
         #expect(w.gitlab.requests.filter { $0.path.contains("/jobs") }.isEmpty)
     }
 
+    @Test("B180: failed jobs carry their id, and a retry POSTs each job's retry")
+    func retry() async throws {
+        let w = World()
+        w.gitlab.on("GET", pipelines, json: pipeline("failed"))
+        w.gitlab.on("GET", pipelines + "/55/jobs", json: [
+            ["id": 7, "name": "test", "stage": "verify", "web_url": "https://gitlab.example.com/j/7", "allow_failure": false],
+        ])
+        w.gitlab.on("GET", "/api/v4/projects/mygroup%2Fapp/jobs/7/trace", responses: [.init(status: 200, body: Data("x".utf8), headers: [:])])
+        w.gitlab.on("POST", "/api/v4/projects/mygroup%2Fapp/jobs/7/retry", status: 201, json: ["id": 8])
+        let forge = try w.make().forge
+        let jobs = try #require(try await forge.pipeline(for: World.app, commit: "abc123")).failedJobs
+        #expect(jobs.map(\.id) == ["7"])
+        #expect(try await forge.retryJobs(project: World.app, jobs: jobs))
+        #expect(w.gitlab.requests("POST", "/api/v4/projects/mygroup%2Fapp/jobs/7/retry").count == 1)
+        #expect(try await !forge.retryJobs(project: World.app, jobs: [CIJob(name: "x", stage: "", url: nil, logTail: "")]))
+    }
+
     @Test func traceCleanupKeepsOnlyTheJobsOutput() {
         let trace = "2026-10-14T16:59:46.845748Z 00O Running with gitlab-runner 19.5.0\n"
             + "2026-10-14T16:59:51.975330Z 00O+section_start:1791997191:prepare_script\r\u{1B}[0K\u{1B}[36;1mPreparing environment\u{1B}[0;m\n"

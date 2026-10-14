@@ -23,6 +23,10 @@ final class FakeForge: Forge, @unchecked Sendable {
         /// `<ref>: <names>` per `baselineJobs` call.
         var baselineCalls: [String] = []
         var failBaseline = false
+        /// The job ids of each `retryJobs` call.
+        var retries: [[String]] = []
+        var retrySupported = true
+        var failRetry = false
     }
 
     let state = Guarded(State())
@@ -60,6 +64,14 @@ final class FakeForge: Forge, @unchecked Sendable {
             if $0.failBaseline { throw FakeError("baseline read for \(ref) failed") }
             let known = $0.baselines
             return Dictionary(names.map { ($0, known[$0] ?? .unknown) }, uniquingKeysWith: { a, _ in a })
+        }
+    }
+
+    func retryJobs(project: ProjectSpec, jobs: [CIJob]) async throws -> Bool {
+        try state {
+            $0.retries.append(jobs.map { $0.id ?? "nil" })
+            if $0.failRetry { throw FakeError("retry failed") }
+            return $0.retrySupported
         }
     }
 

@@ -70,12 +70,15 @@ public struct CIJob: Sendable, Equatable {
     public var url: URL?
     /// The last lines of the job's log, unredacted.
     public var logTail: String
+    /// The forge's id for `Forge.retryJobs`; nil when the forge can't re-run this job.
+    public var id: String?
 
-    public init(name: String, stage: String, url: URL?, logTail: String) {
+    public init(name: String, stage: String, url: URL?, logTail: String, id: String? = nil) {
         self.name = name
         self.stage = stage
         self.url = url
         self.logTail = logTail
+        self.id = id
     }
 
     /// How many log lines `logTail` holds at most.

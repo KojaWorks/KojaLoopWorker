@@ -33,6 +33,12 @@ public protocol Forge: Sendable {
     /// - Throws: when the forge can't be read; the Manager then treats every job as `.unknown`.
     func baselineJobs(for project: ProjectSpec, ref: String, names: [String]) async throws -> [String: CIJobBaseline]
 
+    /// Re-runs failed `jobs` from `pipeline(for:commit:)` in place, so that the next read of
+    /// that commit's pipeline reflects the new attempts.
+    /// - Returns: false, with nothing re-run, when some job can't be re-run (its `id` is nil).
+    /// - Throws: when the forge refuses or can't be reached.
+    func retryJobs(project: ProjectSpec, jobs: [CIJob]) async throws -> Bool
+
     /// Uploads a file and returns a URL that the review request body can link to, or nil
     /// when the forge has no attachments. The Manager then leaves the link out.
     func attach(_ file: URL, to project: ProjectSpec) async throws -> URL?

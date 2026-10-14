@@ -174,7 +174,8 @@ public struct GitHubForge: Forge {
         let failed = runs.filter { $0.conclusion == "failure" || $0.conclusion == "timed_out" }
         if !failed.isEmpty {
             return PipelineStatus(state: .failed, url: url, failedJobs: failed.map {
-                CIJob(name: $0.name, stage: "", url: $0.html_url, logTail: CIJob.tail($0.output?.text ?? $0.output?.summary ?? ""))
+                CIJob(name: $0.name, stage: "", url: $0.html_url, logTail: CIJob.tail($0.output?.text ?? $0.output?.summary ?? ""),
+                      id: $0.app?.slug == "github-actions" ? $0.id.map(String.init) : nil)
             })
         }
         if runs.contains(where: { $0.conclusion == "cancelled" }) { return PipelineStatus(state: .canceled, url: url) }
@@ -198,12 +199,27 @@ public struct GitHubForge: Forge {
         return result
     }
 
+    /// Re-runs each job through `POST /repos/{repo}/actions/jobs/{id}/rerun`. Only GitHub
+    /// Actions jobs can be re-run; a check run of any other app makes this return false.
+    public func retryJobs(project: ProjectSpec, jobs: [CIJob]) async throws -> Bool {
+        let ids = jobs.compactMap(\.id)
+        guard ids.count == jobs.count else { return false }
+        for id in ids {
+            _ = try await request("POST", "repos/\(project.path)/actions/jobs/\(id)/rerun", as: NoBody.self)
+        }
+        return true
+    }
+
     /// Always nil: GitHub's API has no way to attach a file to a pull request.
     public func attach(_ file: URL, to project: ProjectSpec) async throws -> URL? { nil }
 
     // MARK: HTTP
 
     private struct CheckRun: Decodable {
+        /// For a GitHub Actions run, also its job id.
+        var id: Int?
+        var app: App?
+        struct App: Decodable { var slug: String? }
         var name: String
         var status: String
         var conclusion: String?
@@ -246,7 +262,7 @@ public struct GitHubForge: Forge {
         var draft: Bool
     }
 
-    private struct NoBody: Encodable {}
+    private struct NoBody: Codable {}
 
     private func request<T: Decodable>(_ method: String, _ path: String, query: [URLQueryItem] = [], as: T.Type) async throws -> T {
         try await request(method, path, query: query, body: Optional<NoBody>.none, as: T.self)
@@ -277,6 +293,7 @@ public struct GitHubForge: Forge {
             catch { throw GitHubError.transport(label, error.localizedDescription) }
             let status = resp.statusCode
             if (200..<300).contains(status) {
+                if data.isEmpty, let none = NoBody() as? T { return none }
                 do { return try JSONDecoder().decode(T.self, from: data) }
                 catch { throw GitHubError.malformed("\(label): \(error)") }
             }

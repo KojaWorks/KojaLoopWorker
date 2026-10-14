@@ -12,6 +12,7 @@ private final class DiagnosableForge: Forge, Diagnosable, @unchecked Sendable {
     func attach(_ file: URL, to project: ProjectSpec) async throws -> URL? { nil }
     func pipeline(for project: ProjectSpec, commit: String) async throws -> PipelineStatus? { nil }
     func baselineJobs(for project: ProjectSpec, ref: String, names: [String]) async throws -> [String: CIJobBaseline] { [:] }
+    func retryJobs(project: ProjectSpec, jobs: [CIJob]) async throws -> Bool { false }
     func diagnose() async -> [DoctorCheck] { [check] }
 }
 

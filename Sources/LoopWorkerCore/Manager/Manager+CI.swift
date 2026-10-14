@@ -17,6 +17,8 @@ struct CIWatchRecord: Codable, Equatable {
     /// 0 for the first push, n after the n-th fix round.
     var round: Int
     var pushedAt: Date
+    /// The commit whose failed jobs the Manager re-ran; it does so at most once per commit.
+    var retriedCommit: String? = nil
 
     static func directory(stateDir: URL) -> URL { stateDir.appending(path: "ci") }
 
@@ -161,15 +163,26 @@ extension Manager {
         ciWatches[id]!.card = fresh
         ciWatches[id]!.pipeline = pipeline
         let ci = (project?.contract ?? ProjectContract(directory: URL(filePath: "/"))).ci
-        let decision = Reconciler.decideCI(
-            observation, sincePush: clock.now().timeIntervalSince(r.pushedAt), round: r.round,
-            policy: CIPolicy(timeout: ci.timeoutMinutes * 60, fixAttempts: ci.fixAttempts))
+        let decide = { (retried: Bool) in
+            Reconciler.decideCI(
+                observation, sincePush: self.clock.now().timeIntervalSince(r.pushedAt), round: r.round,
+                policy: CIPolicy(timeout: ci.timeoutMinutes * 60, fixAttempts: ci.fixAttempts),
+                baselines: baselines, retried: retried)
+        }
+        var decision = decide(r.retriedCommit == r.sha)
+        if case .retry(let jobs) = decision {
+            if await retryFlakyJobs(id, project?.spec ?? ProjectSpec(path: r.project), r, jobs, pipeline) { return }
+            guard ciWatches[id] != nil else { return }
+            decision = decide(true)
+        }
 
         switch decision {
-        case .wait:
+        case .wait, .retry:
             return
         case .passed:
             await ciPassed(id, fresh, r, pipeline)
+        case .preexisting:
+            await ciPreexisting(id, fresh, r, pipeline!, baselines)
         case .fix:
             ciWatches[id]!.fix = pipeline
             ciWatches[id]!.fixBaselines = baselines
@@ -197,14 +210,59 @@ extension Manager {
         }
     }
 
+    /// Re-runs, once per commit, the failed jobs that pass on the base branch. True when the
+    /// forge re-ran them and the watch waits for the new attempts; false when the failure is
+    /// to be handled as real.
+    func retryFlakyJobs(_ id: String, _ spec: ProjectSpec, _ r: CIWatchRecord, _ jobs: [CIJob], _ pipeline: PipelineStatus?) async -> Bool {
+        var record = r
+        record.retriedCommit = r.sha
+        // Recorded first, so that a crash after the retry can't retry the commit again.
+        do { try record.write(stateDir: stateDir) }
+        catch { log.error("\(r.card): can't record the CI retry in its watch record: \(error); a restarted Manager may retry \(r.sha.prefix(12)) once more") }
+        ciWatches[id]?.record = record
+        let names = jobs.map { Self.inlineMarkdown($0.name) }.joined(separator: ", ")
+        let retried: Bool
+        do { retried = try await deps.forge.retryJobs(project: spec, jobs: jobs) }
+        catch {
+            log.error("\(r.card): re-running the CI jobs that pass on \(r.base) (\(names)) failed: \(error); handling the failure as real")
+            return false
+        }
+        guard retried else {
+            log.warning("\(r.card): the forge can't re-run the CI jobs that pass on \(r.base) (\(names)); handling the failure as real")
+            return false
+        }
+        ciWatches[id]?.pipeline = PipelineStatus(state: .running, url: pipeline?.url)
+        log.warning("\(r.card): CI failed on \(r.sha.prefix(12)) in jobs that pass on \(r.base) (\(names)); re-ran them once")
+        return true
+    }
+
     func ciPassed(_ id: String, _ card: Card, _ r: CIWatchRecord, _ pipeline: PipelineStatus?) async {
         let link = (pipeline?.url ?? r.review.url).absoluteString
-        do { try await deps.backlog.markReview(card, review: r.review, note: "CI passed on `\(r.sha.prefix(12))`: \(link)") }
+        await ciReview(id, card, r, note: "CI passed on `\(r.sha.prefix(12))`: \(link)", verdict: "CI passed")
+    }
+
+    /// Moves to review a card whose failed jobs all fail on the base branch too, with a note
+    /// that links each job on both branches.
+    func ciPreexisting(_ id: String, _ card: Card, _ r: CIWatchRecord, _ pipeline: PipelineStatus, _ baselines: [String: CIJobBaseline]) async {
+        let link = (pipeline.url ?? r.review.url).absoluteString
+        let jobs = pipeline.failedJobs.map { job in
+            let name = Self.inlineMarkdown(job.name)
+            let here = job.url.map { "[\(name)](\($0.absoluteString))" } ?? name
+            guard case .failed(let url?) = baselines[job.name] else { return "- \(here)" }
+            return "- \(here), on `\(r.base)`: \(url.absoluteString)"
+        }
+        let note = "CI failed on `\(r.sha.prefix(12))` only in jobs that also fail on `\(r.base)`, so no fix round ran: \(link)\n\n"
+            + jobs.joined(separator: "\n")
+        await ciReview(id, card, r, note: note, verdict: "CI failed only in jobs that also fail on \(r.base)")
+    }
+
+    func ciReview(_ id: String, _ card: Card, _ r: CIWatchRecord, note: String, verdict: String) async {
+        do { try await deps.backlog.markReview(card, review: r.review, note: note) }
         catch {
-            ciExitFailed(id, "CI passed, but moving it to review failed: \(error)")
+            ciExitFailed(id, "\(verdict), but moving it to review failed: \(error)")
             return
         }
-        log.info("\(r.card): CI passed on \(r.sha.prefix(12)); moved to review: \(r.review.display) \(r.review.url.absoluteString)")
+        log.info("\(r.card): \(verdict) (\(r.sha.prefix(12))); moved to review: \(r.review.display) \(r.review.url.absoluteString)")
         unwatch(id)
     }
 
