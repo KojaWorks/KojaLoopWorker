@@ -1,13 +1,6 @@
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-.eggs/
-build/
-dist/
-.venv/
-venv/
+# Secrets
 .env
+secrets.env
 
 # Manager runtime state
 /state/

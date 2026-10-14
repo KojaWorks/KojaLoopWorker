@@ -132,12 +132,18 @@ public struct ScriptedSlotLifecycle: SlotLifecycle {
                 log.info("\(tag) still running after \(Self.describe(elapsed)) (killed at \(Self.describe(timeout)))")
             }
         }
-        defer { watchdog.cancel() }
+        let outcome: Result<ProcessResult, any Error>
+        do { outcome = .success(try await runner.run(spec)) } catch { outcome = .failure(error) }
+        // Awaited, so no "still running" line can land after the script's step has returned.
+        watchdog.cancel()
+        await watchdog.value
 
         let result: ProcessResult
-        do { result = try await runner.run(spec) }
-        catch is CancellationError { throw SlotFailure("\(Self.name(slot)): \(file) was cancelled") }
-        catch { throw SlotFailure("\(Self.name(slot)): couldn't start \(path.path): \(error)") }
+        switch outcome {
+        case .success(let r): result = r
+        case .failure(is CancellationError): throw SlotFailure("\(Self.name(slot)): \(file) was cancelled")
+        case .failure(let error): throw SlotFailure("\(Self.name(slot)): couldn't start \(path.path): \(error)")
+        }
         guard !result.succeeded else { return }
 
         let why = result.timedOut ? "timed out after \(Self.describe(timeout))"

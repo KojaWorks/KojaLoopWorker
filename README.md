@@ -1,140 +1,203 @@
 # LoopWorker
 
-An outer **Manager** that polls a shared backlog and spawns disposable **Workers** —
-each implements exactly one card in its own tmux `claude` session, then exits. It moves
-the build loop *out* of the Claude session (which was the fragile part) and into a small,
-deterministic, non-AI orchestrator.
+A **Manager** daemon that claims cards from a backlog and spawns one disposable **Worker** (a
+`claude` session in tmux) per card. The worker implements the card in its own slot, commits,
+and writes an outcome file. The Manager then pushes the branch, opens a review request and
+moves the card on. The Manager is deterministic and runs no model; workers hold no backlog or
+forge credentials.
 
-One Manager runs **per host** and serves every project in the shared backlog whose
-`worker_manager` is this host's — cloning each repo on demand. A teammate runs their own
-Manager on their own box (their compute, their `claude` login) against the same backlog,
-scoped to their projects. Adding a project is: ship a `.loopworker/` contract in its repo,
-add a row to the **projects** table.
-
-See [DESIGN.md](DESIGN.md) for the full architecture and the decisions behind it.
+One Manager runs per host and serves every project in its host config, cloning each repo on
+demand. Backlogs: GitLab issues and Patch. Forges: GitLab and GitHub. This README shows GitLab;
+the other backends document their config sections in their source.
+[DESIGN.md](DESIGN.md) has the architecture; [docs/glossary.md](docs/glossary.md) the terms.
 
 ## North star
 
-LoopWorker is heading toward a **releasable, fully self-managing product**: a Manager you
-start once that runs indefinitely and recovers from *most errors on its own* — a paused
-Docker engine, a revoked credential, a hung provision, a wedged worker, an orphaned stack —
-with no human restart or manual cleanup. Every failure mode should grow its own detection
-and recovery in the same change that introduces it, and the dashboard/log should make the
-rare thing a human *does* need to handle obvious. Self-healing and automation are the core
-of the product, not polish — weigh that work accordingly.
+A releasable, self-managing product: a Manager you start once that runs indefinitely and
+recovers from most errors on its own (a paused container engine, a revoked credential, a hung
+provision, a wedged worker) without a human restart. Every failure mode gets its detection and
+recovery in the change that introduces it, and the status and log make the rare thing a human
+must do obvious.
 
-## Status
-
-Running in production (autonomously shipping Patch cards), built and unit-tested:
-
-- `loopworker/host.py` — the per-host Manager: discover projects, clone on demand,
-  hot/cold slot pools under a host-wide budget
-- `loopworker/manager.py` — the per-project poll → reconcile → spawn → reap loop
-- `loopworker/backlog/patch.py` — Patch backlog adapter over PostgREST (atomic claims,
-  project-scoped to this host's `worker_manager`)
-- `loopworker/slots.py` — (worktree, port, stack) pool: warm for hot projects, on-demand
-  for cold, with reset-on-acquire
-- `loopworker/tmux.py` — Worker session spawn / liveness / reap
-- `loopworker/reconciler.py` — pure, tested decision logic
-- `loopworker/dashboard.py` — local HTTP status page
-
-## Quickstart
+## Install
 
 ```bash
-python3.13 -m venv .venv
-./.venv/bin/pip install -e .
-cp .env.example .env                       # set PATCH_PAT (mint in Patch → Settings → Tokens)
-cp config.toml.example ~/.loopworker/config.toml   # set worker_manager, backlog, clones_dir, max_slots
-
-./.venv/bin/loopworker                     # host mode: serve every project assigned to this host
+brew install nevyn/tap/loopworker
 ```
 
-## Run as a service (Linux)
+The host also needs `git`, the Claude Code CLI (`claude`), `git-lfs` for repos that use Git
+LFS, `storygrafter` for projects that ask for review guides, and a container engine if a
+project's lifecycle scripts start containers. macOS 14 or later.
 
-For a headless fleet box, install with `pipx` and supervise with `systemd --user` instead
-of a hand-run `tmux`:
+## Configuration
+
+Everything lives in `$LOOPWORKER_HOME`, which defaults to `~/.loopworker`. `config.toml` is the
+only config source; the Manager re-reads it when it changes (new projects start, removed ones
+drain, slot counts resize).
+
+A complete GitLab host config:
+
+```toml
+clones_dir             = "~/Dev/loopworker"   # clones and slot worktrees
+max_slots              = 4                    # host budget in weighted slot units
+max_concurrent_workers = 2                    # claude sessions at once; default ceil(max_slots)
+max_attempts           = 3                    # crashes per card before it is marked stuck
+# notify_command = "..."                      # receives alerts on stdin; empty disables them
+
+[engine]                                      # restarts a container engine that went down
+recover       = true
+start_command = "orb start"
+probe_command = "docker ps"
+
+[backlog]
+kind = "gitlab"
+
+[backlog.gitlab]
+base_url    = "https://gitlab.example.com"
+token_env   = "LOOPWORKER_GITLAB_TOKEN"       # the variable in secrets.env that holds the token
+allowed     = ["mygroup/"]                    # project path prefixes; anything else is ignored
+status_mode = "work_item_status"              # also set the status field: none, labels or work_item_status
+
+[backlog.gitlab.status]                       # status names per card state (these are the defaults)
+ready   = "To do"
+working = "In progress"
+review  = "In review"
+stuck   = "To do"
+
+[forge]
+kind = "gitlab"                               # [forge.gitlab] may override base_url and token_env
+
+[[project]]
+path        = "mygroup/myapp"                 # the forge path; also the backlog's project key
+slots       = 1
+hot         = false                           # hot slots stay provisioned between cards
+weight      = 1                               # slot cost against max_slots
+model       = "opus"                          # claude --model for this project's workers
+base_branch = "main"                          # default: the forge's default branch
+draft       = true                            # open review requests as drafts
+contract    = "~/.loopworker/contracts/myapp" # optional host-local overlay of the repo's .loopworker/
+worker_env  = ["MYAPP_LICENSE_SERVER"]        # Manager variables forwarded to this project's workers
+```
+
+`status_mode = "none"` (the default) changes only the `loopworker:*` labels. `labels` also
+adds the status names as labels. `work_item_status` sets GitLab's native status field
+(Premium and up).
+
+`worker_env` refuses the backlog and forge token variables: workers never get those.
+
+## Secrets
+
+Tokens go in `$LOOPWORKER_HOME/secrets.env`, one `NAME=value` per line, readable only by you:
 
 ```bash
-git clone https://github.com/KojaWorks/KojaLoopWorker.git && cd KojaLoopWorker
-bash packaging/install.sh          # pipx install + drop the systemd --user unit + enable it
+chmod 600 ~/.loopworker/secrets.env
 ```
 
-Then, before the first start:
+```
+LOOPWORKER_GITLAB_TOKEN=...
+CLAUDE_CODE_OAUTH_TOKEN=...
+```
 
-- `cp config.toml.example ~/.loopworker/config.toml` and edit it (worker_manager, backlog,
-  clones_dir, max_slots).
-- Put `PATCH_PAT=…` in `~/.loopworker/.env` (the service runs from there, so its `.env`
-  loader picks it up). Mint the token in Patch → Settings → Tokens.
-- `loopworker doctor` to confirm every host prerequisite (claude login, container engine,
-  tmux, git, backlog) is green.
+The Manager refuses to start when group or others can read the file. Values from it go only to
+the backends and, for `CLAUDE_CODE_OAUTH_TOKEN` and `worker_env` names, to workers; lifecycle
+scripts, git hooks and the notify command never see them. A variable in the Manager's own
+environment is used when `secrets.env` doesn't set it, but a launchd service has no shell
+environment, so put everything here.
 
-Day-to-day:
+`CLAUDE_CODE_OAUTH_TOKEN` comes from `claude setup-token`. Without it, workers use the host's
+interactive claude login, which a LaunchDaemon can't reach and which concurrent workers can
+log out by racing its refresh.
+
+## GitLab cards
+
+LoopWorker only works on cards that you vouched for. "You" is the user that the token belongs
+to (`loopworker doctor` names it). An issue is picked up when all of these hold:
+
+- it is open, in a configured `[[project]]` under an `allowed` prefix;
+- you assigned yourself;
+- you added the `loopworker:next` label.
+
+Adding the label vouches for the title, description and comments as they are at that moment.
+Later edits or comments by anyone else are withheld from the worker and named in the log. If a
+colleague assigned you, re-assign yourself before adding the label.
+
+Create the labels `loopworker:next`, `loopworker:working`, `loopworker:review` and
+`loopworker:stuck` once in the group. The Manager moves a card between them:
+
+| Label | Meaning | What happened on the issue |
+| --- | --- | --- |
+| `loopworker:next` | Ready to claim. | You added it, or the Manager released the card with a note saying why (a crash, a hang, an auth failure). |
+| `loopworker:working` | A worker is on it. | The Manager claimed it. |
+| `loopworker:review` | Done. | The Manager pushed the branch, opened a merge request and linked it in a note. |
+| `loopworker:stuck` | The worker needs a human. | A note says what blocks it. You stay assigned, so it stays in your queue; answer it on the issue, then replace `loopworker:stuck` with `loopworker:next`. A card with two `loopworker:*` labels is ignored. |
+
+A card that crashes `max_attempts` times becomes stuck. Closing an issue or removing its
+`loopworker:*` label while a worker runs stops that worker; nothing is written back.
+
+## Running
 
 ```bash
-systemctl --user start loopworker         # start (Restart=on-failure keeps it up)
-systemctl --user status loopworker        # or: loopworker status
-journalctl --user -u loopworker -f        # follow the log
-systemctl --user kill -s INT --kill-whom=main loopworker   # graceful drain (workers finish, none new spawn)
-systemctl --user stop loopworker          # force-stop (releases in-flight cards to Backlog)
-sudo loginctl enable-linger $USER         # keep it running after logout / across reboot
+loopworker doctor              # check the host first
+loopworker                     # run the Manager in the foreground (same as `loopworker run`)
 ```
 
-**Updating** is re-running `bash packaging/install.sh` (a `--force` pipx reinstall pulls the
-latest commit), then `systemctl --user restart loopworker`. `pipx install loopworker` from
-PyPI will replace the git URL once there's a second operator.
+As a launchd service, which starts at login and restarts after a crash:
 
-**Host mode (default).** `~/.loopworker/config.toml` is the source of truth: the backlog
-connection, this host's `worker_manager` id, where to clone projects, and `max_slots` (the
-host-wide RAM budget, in weighted slot-cost units). The Manager reads the **projects**
-table for rows whose `worker_manager` is yours, clones each repo under `clones_dir`, and
-runs them: `hot` projects keep a warm pool, `cold` projects provision a slot per card and
-tear it down after, all within `max_slots`. Each project may set a `weight` (default 1) —
-its relative RAM cost per slot, e.g. a warm Supabase stack (a dozen containers, several GB
-resident) might be `weight = 2` next to a cold native build's `weight = 1` — so the budget
-reflects that slots aren't equally expensive, not just how many are live. Each project may
-also set a `model` (a CLI alias: `opus`/`fable`/`sonnet`/`haiku`) — the default a worker on
-that project is spawned with; a card's own `Model` field (in the shared roadmap table)
-overrides it for that one card. Neither set -> the `claude` CLI's own default, unchanged
-from before this existed.
+```bash
+loopworker service install             # a LaunchAgent for the current user
+loopworker service install --daemon    # a LaunchDaemon for a host where nobody logs in
+loopworker service install --dry-run   # print the plist and commands, change nothing
+loopworker service uninstall
+```
 
-The **projects** table is live config, re-read every poll — no restart needed. Assign a new
-project to your host and it's cloned + started on the next tick; unassign one and it drains +
-tears down; change a project's `slots` and its pool resizes in place (a busy slot finishes its
-card before it's retired). Only a `hot`⇄`cold` flip still needs a restart (it changes the whole
-provisioning model); the Manager logs a note when it sees one.
+`--daemon` needs root, so it writes the plist to `$LOOPWORKER_HOME/state` and prints the `sudo`
+commands to install it. The service runs the binary at the path you installed it from, with
+`LOOPWORKER_HOME` and a `PATH` of `~/.local/bin`, Homebrew's bin and the system dirs; doctor
+warns about tools outside that `PATH`. The service writes its output to
+`$LOOPWORKER_HOME/state/manager.out`; the redacted log is `state/manager.log`. Use either this
+or `brew services`, not both.
 
-**Single-project mode.** `loopworker --project ~/Dev/myproject` serves just that one working
-copy (its `.loopworker/manifest.toml` is the source of truth) — handy for local testing.
-Useful flags: `--slots N`, `--poll-interval S`, `--once` (single tick), `--no-dashboard`.
+## Doctor
 
-Pause spawning at any time by creating the killswitch file the Manager prints on start
-(`state/<project>/PAUSED`); delete it to resume. Dashboard: http://127.0.0.1:8787.
+`loopworker doctor` prints `ok`, `warn` or `FAIL` per check, with a remedy for each problem,
+and exits 1 when anything fails. `--json` prints the same as JSON. It checks:
 
-**Stopping (⌃C escalates):** one `⌃C` *drains* — current workers finish, no new ones
-start, then it exits. A second `⌃C` *force-stops* — kills the workers and releases their
-cards back to Backlog. A third `⌃C` hard-exits immediately (dumps state; may leak). A
-`SIGTERM` (e.g. from a supervisor) goes straight to force-stop.
+- `config.toml` parses, and lists the projects;
+- `secrets.env` is mode 600, and each token is set there (a token only in your shell warns);
+- `tmux`, `git`, `claude` and `bash` are on `PATH`; `git-lfs` and `storygrafter` warn when absent;
+- claude answers `claude -p` headless, the same check that gates claims;
+- the container engine answers its probe (a warning only);
+- the backlog and forge accept their tokens, and whose they are;
+- `$LOOPWORKER_HOME` is writable, and whether a Manager is running.
+
+## Status, pause and stop
+
+```bash
+loopworker status              # projects, slots, cards, auth, recent log; exits 1 when no Manager runs
+loopworker status --json       # state/status.json as is
+loopworker pause [project]     # no new claims for the host or one project; running workers finish
+loopworker resume [project]
+```
+
+`status` also says when the Manager holds its lock but stopped updating (wedged).
+
+Stopping escalates. The first SIGINT (Ctrl-C) drains: running workers finish, nothing new is
+claimed, then the Manager exits. A second SIGINT force-stops: it reaps every worker and releases
+its card back to `loopworker:next`. A third exits at once. SIGTERM force-stops. For the
+LaunchAgent:
+
+```bash
+launchctl kill SIGINT gui/$(id -u)/dev.nevyn.loopworker    # drain
+launchctl kill SIGTERM gui/$(id -u)/dev.nevyn.loopworker   # force-stop
+launchctl kickstart gui/$(id -u)/dev.nevyn.loopworker      # start again
+```
 
 ## Making a project compatible
 
-Add a `.loopworker/` directory to the project repo: a `manifest.toml` plus four lifecycle
-scripts (`provision.sh`, `reset.sh`, `verify.sh`, `teardown.sh`). Templates are in
-[`examples/`](examples/). The Manager owns git/worktree mechanics; these scripts own the
-project's stack.
+Give the repo a `.loopworker/` contract (`manifest.toml`, lifecycle scripts, an optional
+`BRIEF.md`), or keep one on the host and point the project's `contract` at it. See
+[docs/project-contract.md](docs/project-contract.md) and [examples/](examples/).
 
-## Tests
+## Development
 
-```bash
-./.venv/bin/pip install pytest
-./.venv/bin/python -m pytest pytests/ -q
-```
-
-## Host setup (needs you)
-
-- **Credentials:** a `PATCH_PAT` in `.env` (mint in Patch → Settings → Tokens) — backlog
-  access only, never the owner's LLM budget.
-- **`claude` logged in** on the host (Workers spend this host's compute, not the owner's
-  tokens), with the `patch` + `chrome-devtools` MCPs configured at user scope so each
-  spawned Worker inherits them.
-- **A projects-table row** per project this host serves, with `worker_manager` set to your
-  host's id and a `repo` to clone.
+See [docs/dev_guide.md](docs/dev_guide.md).

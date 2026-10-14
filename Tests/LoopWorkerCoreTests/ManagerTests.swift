@@ -857,7 +857,7 @@ func fileMode(_ url: URL) throws -> Int {
         await h.cycle()
         let status = try h.status()
         #expect(status.pid == getpid())
-        #expect(status.version == LoopWorkerVersion)
+        #expect(status.version == loopworkerVersion)
         #expect(status.auth.state == "ok")
         let slot = status.projects[0].slots[0]
         #expect(slot.state == "busy")

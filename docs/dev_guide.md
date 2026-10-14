@@ -1,70 +1,104 @@
 # Dev guide
 
-How to develop and test LoopWorker, and the gotchas that cost time on a live host.
+How to build and test LoopWorker, how to run a real Manager without touching a live one, and
+the gotchas that cost time on a live host.
 
-## Setup + tests
-
-```bash
-python3 -m venv .venv
-./.venv/bin/pip install -e ".[dev]"      # httpx (runtime) + pytest (tests)
-./.venv/bin/python -m pytest pytests/ -q
-```
-
-The whole suite runs in seconds and needs **no network, git, supabase, or real tmux** — it
-mocks the I/O and tests the decisions. Two patterns to match when you add a test:
-
-- **Pure decision logic lives in `reconciler.py`** and is tested directly (`test_reconciler.py`):
-  feed it a slot + card + liveness and assert the `SlotAction`. Keep new reconcile decisions
-  pure and put them here.
-- **Manager/host behavior** is tested by monkeypatching the `tmux` module (spawn/kill/
-  worker_running/capture) and using a `FakeBacklog` adapter — see `test_manager_integration.py`
-  and `test_host.py`. No real process is ever spawned. `AuthGate` is inert in tests
-  (`enabled=False`), so constructing a Manager never shells out to `claude`.
-
-## Running it for real
-
-**Single-project mode** is the way to exercise the loop locally without touching the host
-config or the shared backlog wiring:
+## Build and test
 
 ```bash
-./.venv/bin/loopworker --project ~/Dev/myproject --once   # one tick, then exit
+swift build
+swift test
+.build/debug/loopworker --help
 ```
 
-Useful flags: `--slots N`, `--poll-interval S`, `--once`, `--no-dashboard`. The dashboard
-(host + single-project modes) serves JSON + HTML at http://127.0.0.1:8787 — `/json` is the
-machine-readable snapshot.
+The suite needs no network, no tmux, no claude and no forge. CI runs the same two commands on
+GitHub's `macos-15` image (Swift 6.1), so don't use anything newer.
 
-**Host mode** (`./.venv/bin/loopworker`, no `--project`) reads `~/.loopworker/config.toml`
-and serves every project assigned to this host. Don't start a second Manager against a
-backlog a real one already serves — the lockfile guards one per host, and workers spend the
-host's real `claude` login.
+## How the tests fake the world
 
-## Gotchas that cost time on the live host (miquon)
+Every piece of I/O sits behind a protocol, and the tests swap in an in-memory fake:
+
+| Protocol | Fake | Where |
+| --- | --- | --- |
+| `ProcessRunning` | `ScriptedRunner` records each `ProcessSpec` and answers from a closure, so no test runs a real `claude`. | `Tests/LoopWorkerCoreTests/Fakes/` |
+| `TmuxDriving` | `FakeTmux`: sessions in memory; a test sets pane text and liveness to play a worker. | same |
+| `GitDriving` | `FakeGit` records calls; `cloneOrFetch` creates the clone dir so a test's contract is found. | same |
+| `SlotLifecycle`, `EngineRecovering` | `FakeLifecycle`, `FakeEngine`: record calls, inject failures per verb. | same |
+| `Backlog`, `Forge` | `FakeBacklog`, `FakeForge`: cards and review requests in memory. | same |
+| GitLab HTTP | `FakeGitLab` stubs REST and GraphQL by method and path; `World` sets up one trusted card. | `Tests/GitLabBackendTests/` |
+| Patch HTTP | `FakePatch`: the PAT exchange and a PostgREST subset. | `Tests/PatchBackendTests/` |
+
+`ManagerHarness` wires a real `Manager` to all of these in a fresh `LOOPWORKER_HOME`, with a
+`TestClock` that moves only when the test advances it. A Manager test claims a card, writes the
+worker's outcome file itself, ticks, and asserts what the Manager did to the fakes. `Reconciler`
+is pure, so its decisions are tested without a harness.
+
+## Running a real Manager end to end
+
+Never start a Manager against a live host's `LOOPWORKER_HOME`: one Manager per home holds the
+lock, and the live one serves a real backlog. This recipe runs the whole loop (claim, slot,
+tmux worker, outcome, push, merge request, labels) against a sandbox, with a stub instead of a
+model:
+
+1. Make a throwaway home with a short path. The Manager's tmux socket is
+   `$LOOPWORKER_HOME/state/tmux`, and a Unix socket path must fit in 104 bytes, so stay in
+   `/tmp`:
+
+   ```bash
+   export LOOPWORKER_HOME=$(mktemp -d /tmp/lw.XXXX)
+   ```
+
+2. Create a private sandbox project on the forge with a `.loopworker/` contract: copy
+   `examples/loopworker-manifest.toml` to `.loopworker/manifest.toml` and add four scripts
+   that `exit 0`.
+
+3. Write `$LOOPWORKER_HOME/config.toml` with only that project (see the README's
+   "Configuration"; `allowed` should name only the sandbox's group), and put the sandbox token
+   in `secrets.env`:
+
+   ```bash
+   printf 'LOOPWORKER_GITLAB_TOKEN=...\n' > $LOOPWORKER_HOME/secrets.env
+   chmod 600 $LOOPWORKER_HOME/secrets.env
+   ```
+
+4. Put the stub first on `PATH` as `claude`. It answers the auth preflight, and as a worker it
+   commits a change and writes `$LOOPWORKER_OUTCOME`:
+
+   ```bash
+   mkdir $LOOPWORKER_HOME/bin
+   cp examples/stub-claude.sh $LOOPWORKER_HOME/bin/claude
+   export PATH=$LOOPWORKER_HOME/bin:$PATH
+   ```
+
+   To exercise the stuck path, add `worker_env = ["STUB_OUTCOME"]` to the project and run
+   with `STUB_OUTCOME=stuck`.
+
+5. Check and run:
+
+   ```bash
+   .build/debug/loopworker doctor
+   .build/debug/loopworker
+   ```
+
+6. On a sandbox issue, assign yourself and add `loopworker:next`. Within a tick or two the
+   Manager claims it; `loopworker status` (with the same `LOOPWORKER_HOME`) shows the slot, and
+   `$LOOPWORKER_HOME/state/manager.log` the steps. The issue ends at `loopworker:review` with a
+   merge request linked in a note. Ctrl-C drains and exits.
+
+## Gotchas on a live host
 
 - **Worktree foot-gun.** This repo self-hosts, so you may be editing it inside
-  `.claude/worktrees/<name>`. A bare `cd`/`git` or a plain file path silently targets the
-  PRIMARY checkout. Use `git -C <worktree>` and worktree-absolute paths.
-- **Boot the Manager so it inherits the host env.** `tmux new-session … send-keys
-  './.venv/bin/loopworker'` does NOT reliably source the host's shell profile, so the Manager
-  can come up without `CLAUDE_CODE_OAUTH_TOKEN` (workers then fall back to the shared keychain
-  credential — the race-prone path). Launch through a login-interactive shell instead
-  (`tmux new-session -d -s loopworker -c <repo> "fish -lic './.venv/bin/loopworker'"`), and
-  verify from the Manager's OWN startup log line (`worker auth: … set — forwarding`), not
-  `ps` (macOS truncates long envs → false negatives). Env is frozen at process start, so a
-  config/`.env` change needs a fresh boot.
-- **Worker auth.** Headless workers should use a long-lived `claude setup-token`
-  (`CLAUDE_CODE_OAUTH_TOKEN`, forwarded by default), not the subscription keychain credential
-  — concurrent claudes racing the keychain's single-use refresh token trips server-side
-  session revocation that logs the account out everywhere. `max_concurrent_workers` +
-  staggered starts bound the concurrency; keeping the host's `claude` keychain logged *out*
-  (so only the setup-token is used) removes the race entirely.
-- **Docker / OrbStack.** Supabase-backed projects (e.g. Patch) need the Docker engine up.
-  OrbStack is the engine here (not Docker Desktop); it can be stopped by host **memory
-  pressure** (miquon is a 16GB Mac mini — the fleet can OOM it). A down engine fails every
-  Supabase provision → the affected hot slots go BROKEN. Recover with `orb start` (it may
-  print a spurious "timed out" while actually Running), then let the Manager re-provision.
-  Keep the fleet's footprint in check: the OrbStack VM cap (`memory_mib`),
-  `max_concurrent_workers`, and per-project hot-slot counts are the levers.
-- **Lifecycle scripts are foreign code.** They run under a hard per-script timeout in their
-  own process group; a hang is killed as a group, not left to freeze the loop. Don't remove
-  that guard.
+  `.claude/worktrees/<name>`. A plain `git` or file path silently targets the primary checkout.
+  Use `git -C <worktree>` and worktree-absolute paths.
+- **Worker auth.** Give workers a long-lived `claude setup-token` as `CLAUDE_CODE_OAUTH_TOKEN`
+  in `secrets.env`. Concurrent workers on the interactive keychain login race its single-use
+  refresh token, which can revoke the session everywhere. `max_concurrent_workers` bounds the
+  concurrency.
+- **`claude -p` exits 0 when it isn't logged in.** It prints "Not logged in" instead; the auth
+  gate and doctor both match that text rather than trust the exit status.
+- **Container engine.** Projects whose scripts start containers need the engine up. OrbStack
+  can be stopped by memory pressure; a down engine fails every provision and the hot slots go
+  broken. With `[engine] recover = true` the Manager runs `start_command` and re-provisions.
+  The levers on memory are the engine VM's cap, `max_concurrent_workers` and hot slot counts.
+- **Lifecycle scripts are foreign code.** They run in their own process group under a hard
+  timeout, and a hang is killed as a group. Don't remove that guard.

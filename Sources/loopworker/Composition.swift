@@ -19,10 +19,7 @@ func makeDependencies(config: HostConfig, environment: [String: String]) throws 
     let runner = ProcessRunner(secrets: secrets)
 
     let (backlog, forge) = try makeBackends(config: config, log: fileLog, environment: environment)
-    let leaked = config.projects.flatMap { p in p.workerEnv.filter { secretNames.contains($0) && $0 != "CLAUDE_CODE_OAUTH_TOKEN" }.map { "\(p.path): \($0)" } }
-    guard leaked.isEmpty else {
-        throw CompositionError(description: "worker_env must not forward backlog or forge credentials to workers: \(leaked.joined(separator: ", "))")
-    }
+    try checkWorkerEnv(config: config, secretNames: secretNames)
 
     let git = Git(runner: runner, log: fileLog)
     let notifier = Notifier(command: config.notifyCommand, runner: runner, log: fileLog)
@@ -42,18 +39,32 @@ func makeDependencies(config: HostConfig, environment: [String: String]) throws 
         environment: environment)
 }
 
+/// Throws when a project's `worker_env` would forward a backlog or forge credential to workers.
+func checkWorkerEnv(config: HostConfig, secretNames: [String]) throws {
+    let leaked = config.projects.flatMap { p in p.workerEnv.filter { secretNames.contains($0) && $0 != "CLAUDE_CODE_OAUTH_TOKEN" }.map { "\(p.path): \($0)" } }
+    guard leaked.isEmpty else {
+        throw CompositionError(description: "worker_env must not forward backlog or forge credentials to workers: \(leaked.joined(separator: ", "))")
+    }
+}
+
 /// Variable names whose values are redacted, kept out of tmux and refused in `worker_env`:
 /// the ones the configured backends read credentials from, whatever they are called, plus
 /// every name in `environment` that looks like a credential.
 func secretVariables(config: HostConfig, environment: [String: String]) throws -> [String] {
-    var names = environment.keys.filter(looksSecret)
+    Set(environment.keys.filter(looksSecret) + (try credentialVariables(config: config))).sorted()
+}
+
+/// The variables that the configured backends read their tokens from.
+func credentialVariables(config: HostConfig) throws -> [String] {
+    var names: [String] = []
     if config.backlogKind == "gitlab" || config.forgeKind == "gitlab" { names += try GitLabBackend.credentialVariables(config: config) }
     if config.backlogKind == "patch" { names += try PatchBackend.credentialVariables(config: config) }
     if config.forgeKind == "github" { names += try GitHubBackend.credentialVariables(config: config) }
-    return Set(names).sorted()
+    return names
 }
 
-private func makeBackends(config: HostConfig, log: LogSink, environment: [String: String]) throws -> (any Backlog, any Forge) {
+/// The backlog and forge that the config names, built from tokens in `environment`.
+func makeBackends(config: HostConfig, log: LogSink, environment: [String: String]) throws -> (any Backlog, any Forge) {
     let gitlab: (backlog: GitLabBacklog?, forge: GitLabForge?) = (config.backlogKind == "gitlab" || config.forgeKind == "gitlab")
         ? try GitLabBackend.make(config: config, log: log, environment: environment) : (nil, nil)
     let backlog: any Backlog

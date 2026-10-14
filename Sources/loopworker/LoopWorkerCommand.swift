@@ -8,8 +8,8 @@ struct LoopWorkerCommand: AsyncParsableCommand {
         commandName: "loopworker",
         abstract: "Claims cards from a backlog and runs one claude worker per card.",
         discussion: "State lives in $LOOPWORKER_HOME (default ~/.loopworker).",
-        version: LoopWorkerVersion,
-        subcommands: [Run.self, Status.self, Pause.self, Resume.self, Version.self],
+        version: loopworkerVersion,
+        subcommands: [Run.self, Status.self, Pause.self, Resume.self, Doctor.self, Service.self, Version.self],
         defaultSubcommand: Run.self)
 }
 
@@ -144,5 +144,82 @@ struct Resume: ParsableCommand {
 
 struct Version: ParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Print the version.")
-    func run() { print(LoopWorkerVersion) }
+    func run() { print(loopworkerVersion) }
+}
+
+struct Doctor: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Check this host's config, secrets, tools, claude login, backends and state. Exits 1 when a check fails.")
+
+    @Flag(help: "Print the checks as JSON.")
+    var json = false
+
+    func run() async throws {
+        let process = ProcessInfo.processInfo.environment
+        let userHome = FileManager.default.homeDirectoryForCurrentUser
+        let doctor = LoopWorkerCore.Doctor(
+            home: HostConfig.home(environment: process), environment: process, runner: ProcessRunner(),
+            servicePath: LaunchdService.path(userHome: userHome),
+            credentialVariables: { try credentialVariables(config: $0) },
+            makeBackends: { config, environment in
+                try checkWorkerEnv(config: config, secretNames: try secretVariables(config: config, environment: environment))
+                return try makeBackends(config: config, log: StderrLog(), environment: environment)
+            })
+        let checks = await doctor.run()
+        if json {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+            FileHandle.standardOutput.write(try encoder.encode(checks) + Data("\n".utf8))
+        } else {
+            print(LoopWorkerCore.Doctor.render(checks), terminator: "")
+        }
+        if !LoopWorkerCore.Doctor.passed(checks) { throw ExitCode.failure }
+    }
+}
+
+/// Backend log lines during `doctor`, redacted, on stderr.
+struct StderrLog: LogSink {
+    func log(_ level: LogLevel, _ message: String) {
+        FileHandle.standardError.write(Data("\(level.rawValue): \(Redactor.redact(message))\n".utf8))
+    }
+}
+
+struct Service: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Run the Manager under launchd.",
+        subcommands: [Install.self, Uninstall.self])
+
+    static func current() -> LaunchdService {
+        LaunchdService(
+            binary: invokedBinaryPath(), home: HostConfig.home(),
+            userHome: FileManager.default.homeDirectoryForCurrentUser,
+            userName: NSUserName(), uid: getuid(), runner: ProcessRunner(),
+            output: { print($0) })
+    }
+
+    struct Install: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Write a launchd plist for `loopworker run` and load it as a LaunchAgent.")
+
+        @Flag(help: "Make a LaunchDaemon for a host where nobody logs in: writes the plist to the state dir and prints the sudo commands that install it.")
+        var daemon = false
+
+        @Flag(help: "Print the plist and the commands; change nothing.")
+        var dryRun = false
+
+        func run() async throws {
+            do { try await Service.current().install(daemon: daemon, dryRun: dryRun) }
+            catch { throw fail("\(error)") }
+        }
+    }
+
+    struct Uninstall: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Unload and remove the LaunchAgent; print the sudo commands for a LaunchDaemon.")
+
+        func run() async throws {
+            do { try await Service.current().uninstall() }
+            catch { throw fail("\(error)") }
+        }
+    }
 }

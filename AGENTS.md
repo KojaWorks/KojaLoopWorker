@@ -6,7 +6,7 @@ You are a lazy senior developer. Lazy means efficient, not careless. The best co
 
 Your key word for any prose you write is "succinct": the least number of words that accurately describes the thing at hand, but never less. Documentation, comments, commit messages, PRs, log lines, turns.
 
-LoopWorker is operator-facing infrastructure, not a UI product — but it still has a user: the person reading the dashboard and the log at 2am wondering why nothing spawned. Every log line and dashboard field is that UI. Make it legible, honest, and actionable — say what happened, why, and what a human would do about it. A silent failure, or a stale "running…" that's actually wedged, is the worst outcome.
+LoopWorker is operator-facing infrastructure, not a UI product — but it still has a user: the person reading `loopworker status` and the log at 2am wondering why nothing spawned. Every log line and status field is that UI. Make it legible, honest, and actionable — say what happened, why, and what a human would do about it. A silent failure, or a stale "running…" that's actually wedged, is the worst outcome.
 
 Before writing any code, stop at the first rung that holds:
 
@@ -50,9 +50,9 @@ Project is: @README.md
 
 Documentation index is: @docs/index.md
 
-**Mid-port.** LoopWorker is being rewritten in Swift (`Package.swift`, `Sources/`, `Tests/`). The Python in `loopworker/` and `pytests/` is the reference being ported and is deleted at cutover; don't extend it. The behaviors the port must have are in [docs/behavior-spec.md](docs/behavior-spec.md); cite its row ids (`B12`) in tests and commits that implement one.
+The behaviors LoopWorker must keep are in [docs/behavior-spec.md](docs/behavior-spec.md); cite their row ids (`B12`) in tests and commits that implement or change one.
 
-**CI + how changes land.** GitHub Actions runs `swift test` (and, until cutover, `pytest`) for every PR and push to `main` (`.github/workflows/ci.yml`); wait for green before merging. Run `swift build && swift test` locally before every commit. Merge with a **merge commit, never squash** (history stays readable). A merged change reaches a host when its `loopworker` binary is updated and the Manager restarted; if a change only takes effect after a restart, say so in the PR.
+**CI + how changes land.** GitHub Actions runs `swift build` and `swift test` for every PR and push to `main` (`.github/workflows/ci.yml`); wait for green before merging. Run `swift build && swift test` locally before every commit. Merge with a **merge commit, never squash** (history stays readable). A merged change reaches a host when its `loopworker` binary is updated and the Manager restarted; if a change only takes effect after a restart, say so in the PR.
 
 **LoopWorker self-hosts.** Once the Swift Manager serves Patch again, cards filed for this project may be built by the loop itself. That's intentional; the north star is a fully self-managing product.
 
