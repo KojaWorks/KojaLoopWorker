@@ -222,6 +222,25 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.log.contains("claude login check failing: Invalid API key", level: .error))
         #expect(try h.status().auth.state == "failing")
     }
+
+    @Test func timedOutPreflightDoesNotStopTheNextFill() async throws {  // B176
+        let h = try ManagerHarness(projects: oneColdProject)
+        h.runner.handler { $0 = { $0.executable == "claude" ? ProcessResult(status: -9, output: "", timedOut: true) : ProcessResult(status: 0, output: "") } }
+        h.addCard(1)
+        try await h.boot()
+        await h.cycle()
+        #expect(h.backlog.writes.isEmpty)
+        #expect(h.log.contains("claude login check inconclusive (1 in a row): claude -p timed out after 120 s; next check in 30 s", level: .warning))
+        #expect(try h.status().auth.state == "unknown")
+        #expect(try h.status().auth.detail?.contains("inconclusive (1 in a row)") == true)
+
+        h.runner.handler { $0 = { _ in ProcessResult(status: 0, output: "") } }
+        h.clock.advance(30)
+        await h.cycle()
+        await h.cycle()
+        #expect(h.backlog.card(id: "id-1")?.state == .working)
+        #expect(!h.log.contains("claude login check failing"))
+    }
 }
 
 @Suite struct ManagerLaunchScriptTests {

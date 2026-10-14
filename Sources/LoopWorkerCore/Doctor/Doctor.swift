@@ -218,11 +218,17 @@ public struct Doctor: Sendable {
     }
 
     private func claude(_ overlaid: [String: String], secretsFile: URL) async -> DoctorCheck {
-        let r = await AuthGate.preflight(runner: runner, environment: overlaid)
         let via = overlaid["CLAUDE_CODE_OAUTH_TOKEN"].map { $0.isEmpty ? "the host login" : "CLAUDE_CODE_OAUTH_TOKEN" } ?? "the host login"
-        if r.ok { return DoctorCheck("claude login", .ok, "claude -p answered, using \(via)") }
-        return DoctorCheck("claude login", .fail, r.detail,
-                           remedy: "run `claude setup-token` and put CLAUDE_CODE_OAUTH_TOKEN=... in \(secretsFile.path); the Manager forwards it to workers and to its own preflight")
+        switch await AuthGate.preflight(runner: runner, environment: overlaid) {
+        case .ok:
+            return DoctorCheck("claude login", .ok, "claude -p answered, using \(via)")
+        case .inconclusive(let why):
+            return DoctorCheck("claude login", .fail, "\(why); this says nothing about the login",
+                               remedy: "run doctor again when the host is less loaded")
+        case .failed(let why):
+            return DoctorCheck("claude login", .fail, why,
+                               remedy: "run `claude setup-token` and put CLAUDE_CODE_OAUTH_TOKEN=... in \(secretsFile.path); the Manager forwards it to workers and to its own preflight")
+        }
     }
 
     private func engine(_ engine: HostConfig.EngineConfig) async -> DoctorCheck {

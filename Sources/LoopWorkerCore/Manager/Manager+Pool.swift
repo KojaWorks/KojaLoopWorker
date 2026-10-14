@@ -402,15 +402,17 @@ extension Manager {
         authGate.checking = true
         let runner = deps.runner, env = deps.environment
         track {
-            let r = await AuthGate.preflight(runner: runner, environment: env)
+            let verdict = await AuthGate.preflight(runner: runner, environment: env)
             if Task.isCancelled { return }
-            await self.authChecked(ok: r.ok, detail: r.detail)
+            await self.authChecked(verdict)
         }
     }
 
-    func authChecked(ok: Bool, detail: String) {
+    func authChecked(_ verdict: AuthGate.Verdict) {
         let wasOK = authGate.health == .ok
-        switch authGate.record(ok: ok, detail: detail, at: clock.now()) {
+        let transition = authGate.record(verdict, at: clock.now())
+        if let detail = authGate.detail { log.warning("claude login check \(detail)") }
+        switch transition {
         case .failed(let why)?:
             log.error("claude login check failing: \(why); claiming nothing until it passes")
             notify(key: "auth-failure", "LoopWorker on \(hostName): claude login check failing (\(why)); claims paused")
@@ -420,7 +422,7 @@ extension Manager {
         case nil:
             break
         }
-        if ok && !wasOK { fillSoon = true }
+        if authGate.health == .ok && !wasOK { fillSoon = true }
     }
 
     // MARK: Live config reload
