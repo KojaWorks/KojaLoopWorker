@@ -3,7 +3,8 @@ import Foundation
 /// A card's stable identity, owned by its backlog.
 ///
 /// The Manager never parses `id`; it only compares it and hands it back to the backlog that
-/// produced it. `display` is what logs, notes and the status file show a human.
+/// produced it. `display` is what logs, notes and the status file show a human; it can change
+/// (a renamed prefix), so it plays no part in equality.
 public struct CardRef: Hashable, Sendable, Codable, CustomStringConvertible {
     /// Backlog-specific and stable for the card's lifetime, e.g. the GitLab global issue id.
     public var id: String
@@ -16,6 +17,10 @@ public struct CardRef: Hashable, Sendable, Codable, CustomStringConvertible {
     }
 
     public var description: String { display }
+
+    /// Equal by `id` alone: a backlog may show the same card under a new `display`.
+    public static func == (a: CardRef, b: CardRef) -> Bool { a.id == b.id }
+    public func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }
 
 /// The Manager's normalized view of where a card is in the loop. Each backlog maps its own

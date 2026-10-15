@@ -140,7 +140,9 @@ public struct Doctor: Sendable {
         return checks.map { c in
             let level = c.level == .fail ? "FAIL" : c.level.rawValue
             var line = "\(level.padding(toLength: 5, withPad: " ", startingAt: 0))\(c.name.padding(toLength: width + 2, withPad: " ", startingAt: 0))\(c.detail)\n"
-            if c.level != .ok, let remedy = c.remedy { line += "     -> \(remedy)\n" }
+            if c.level != .ok, let remedy = c.remedy {
+                line += "     -> \(remedy.replacingOccurrences(of: "\n", with: "\n        "))\n"
+            }
             return line
         }.joined()
     }

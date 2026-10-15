@@ -7,11 +7,12 @@ One term per concept. Code, docs, logs and commits use the term in the left colu
 | **LoopWorker** | The product: the `loopworker` CLI and the daemon it runs. | KojaLoopWorker (that is only the repo name), Koja Loops Manager |
 | **Manager** | The deterministic, non-AI daemon. One per host; it serves every configured project. | host manager, HostManager, orchestrator |
 | **Worker** | One `claude` session that implements exactly one card in one slot, then stops. Holds no loop state and no forge or backlog credentials. | agent, runner, loop session |
-| **Backlog** | Where cards live and change state: GitLab issues, Patch, later GitHub issues or Notion. A pluggable backend behind the `Backlog` protocol. | tracker, board, roadmap (Patch's table name only) |
+| **Backlog** | Where cards live and change state: GitLab issues, Patch, a Notion database, later GitHub issues. A pluggable backend behind the `Backlog` protocol. | tracker, board, roadmap (Patch's table name only) |
 | **Forge** | Where code is pushed and reviewed: GitLab, GitHub. A pluggable backend behind the `Forge` protocol, independent of the backlog. | host, remote, SCM |
-| **Card** | One unit of work in a backlog: a GitLab issue, a Patch roadmap row. | ticket, issue (except when naming GitLab's own object), row, item |
+| **Card** | One unit of work in a backlog: a GitLab issue, a Patch roadmap row, a Notion page in a database. | ticket, issue (except when naming GitLab's own object), row, item |
 | **Card ref** | A card's stable identity, opaque to the Manager and owned by its backlog (`group/project#12`, `~802`). | card num, id |
 | **Card state** | The Manager's normalized view of a card: `ready`, `working`, `verifying`, `review`, `stuck`, or `other`. Each backlog maps its own statuses and labels onto it. | status (except a backlog's own field) |
+| **State property** | The Notion select property that holds a card's state for the Manager alone (`LoopWorker` by default: `next`, `working`, `ci`, `review`, `stuck`), the counterpart of GitLab's `loopworker::*` labels. A team's own status property is never used. | status property, LoopWorker column |
 | **Verifying** | The card state between opening the review request and its CI passing, for projects that set `wait_for_ci`. No worker runs and no slot is held; the Manager polls the pipeline of the pushed commit. | waiting for CI, CI pending |
 | **Fix round** | A worker run that fixes a `verifying` card's failed CI on its existing branch and review request. | CI retry, rework |
 | **Pipeline** | The forge's CI run for one commit: a GitLab pipeline, or a GitHub commit's check runs taken together. | CI job (that is one part of it), build |
@@ -22,7 +23,9 @@ One term per concept. Code, docs, logs and commits use the term in the left colu
 | **Finish** | The Manager applying an outcome: pushing the branch, opening the review request and moving the card to `review` or `stuck`. | wind down, ship |
 | **Push ledger** | `state/pushes.json`: the branch and commit that the Manager last pushed for each card. A push leases on it, and a re-queued card whose branch is still on the forge resumes from it. | push record, lease file |
 | **Review request** | A forge's request to merge a branch: a GitLab merge request, a GitHub pull request. | MR, PR (except when naming one forge's object) |
-| **Trusted** | A card that the backlog identity itself vouched for: assigned and labelled by that user, with content that nobody else changed afterwards. Only trusted cards are claimed. | authorized, safe |
+| **Vouch** | A human's act that makes a card trusted: on GitLab, the token's user adding the `next` label; on Notion, a trusted user being the last to edit a card in `next`. | approve, authorize |
+| **Trusted user** | A Notion user listed in `[backlog.notion] trusted_users`. Their edits vouch for cards and their blocks and comments reach the worker. | allowed user, owner |
+| **Trusted** | A card that a human vouched for, with only content that the trust check accepts. Only trusted cards are claimed. | authorized, safe |
 | **Snapshot** | The trusted content of a card (description and comments) that the Manager renders to a file for the worker. Content that fails the trust check is left out. | card body, prompt |
 | **Project** | A repository the Manager serves, declared in the host config. | repo (when meaning the configured unit) |
 | **Project contract** | A project's `.loopworker/` directory: `manifest.toml`, the lifecycle scripts and an optional `BRIEF.md`. May live in the repo or in a host-local overlay. | manifest (that is one file in it), scaffolding |

@@ -41,9 +41,10 @@ learned the hard way, and which the port must keep or fix, is listed in
 | `GitLabBackend` | `GitLabBacklog`, `GitLabForge`, the REST/GraphQL client. | Core |
 | `PatchBackend` | `PatchBacklog` (PostgREST). | Core |
 | `GitHubBackend` | `GitHubForge`; later `GitHubBacklog`. | Core |
+| `NotionBackend` | `NotionBacklog` (Notion REST API, data sources). | Core |
 | `loopworker` | The CLI (swift-argument-parser). Builds backends from config and runs the Manager. | all of the above |
 
-Core never imports a backend. A future Notion backlog is one more target.
+Core never imports a backend.
 
 ## Backlog and forge are separate seams
 
@@ -83,14 +84,14 @@ The source of truth for these signatures is `Sources/LoopWorkerCore/Backend/`.
 
 Every backlog maps its own fields onto six states:
 
-| State | Meaning | GitLab (labels mode) | Patch |
-| --- | --- | --- | --- |
-| `ready` | Trusted and waiting to be claimed. | open, assigned to me, `loopworker::next`, status To do | Backlog, unassigned |
-| `working` | Claimed; a worker should be running. | `loopworker::working`, status In progress | In progress |
-| `verifying` | The review request exists; the Manager waits for its CI. No slot is held. | `loopworker::ci`, status In progress | Verifying |
-| `review` | Finished; a review request exists. | `loopworker::review`, status In review | In review |
-| `stuck` | The worker needs a human. | `loopworker::stuck`, status To do, still assigned to me | Needs refinement |
-| `other` | Anything else. Never claimed, never reaped on its own. | closed, or no single `loopworker::*` label | |
+| State | Meaning | GitLab (labels mode) | Patch | Notion (state property) |
+| --- | --- | --- | --- | --- |
+| `ready` | Trusted and waiting to be claimed. | open, assigned to me, `loopworker::next`, status To do | Backlog, unassigned | `next`, last edited by a trusted user, or by the integration after its own release |
+| `working` | Claimed; a worker should be running. | `loopworker::working`, status In progress | In progress | `working`, claimed by LoopWorker |
+| `verifying` | The review request exists; the Manager waits for its CI. No slot is held. | `loopworker::ci`, status In progress | Verifying | `ci`, claimed by LoopWorker |
+| `review` | Finished; a review request exists. | `loopworker::review`, status In review | In review | `review` |
+| `stuck` | The worker needs a human. | `loopworker::stuck`, status To do, still assigned to me | Needs refinement | `stuck` |
+| `other` | Anything else. Never claimed, never reaped on its own. | closed, or no single `loopworker::*` label | | empty or an unknown option; `next` without a vouch; `working` or `ci` that LoopWorker never claimed; in the trash |
 
 A card that a human closes, or moves to `other` in any way, while a worker runs is abandoned:
 the worker is reaped and nothing is written back.
@@ -98,6 +99,12 @@ the worker is reaped and nothing is written back.
 GitLab can express status either as the native work-item status field or as labels; the
 adapter supports both (`status_mode` in the host config). The `loopworker::*` labels always
 carry the Manager's own state, so the Manager never depends on how a team uses its board.
+
+Notion keeps the Manager's state the same way, in a select property that only LoopWorker uses
+(the **state property**, `LoopWorker` by default, with the options `next`, `working`, `ci`,
+`review` and `stuck`). The team's own status property is never read or written: if `working`
+were a team status such as In progress, the stranded-card sweep would release every teammate's
+card in it.
 
 ### Trust
 
@@ -123,6 +130,80 @@ something.
 Every piece of worker-written text that the Manager posts (blockers, review request titles and
 bodies) is posted under my name, so the GitLab backend neutralizes quick actions in it: a line
 that starts with `/` is escaped, so `/merge` or `/label` from a worker is shown, never executed.
+
+#### Trust in Notion
+
+Notion records no per-property history: a page has one `last_edited_by` and one
+`last_edited_time` (rounded to the minute) for every edit to it, whether to a property, the
+title or a body block. Nothing in the public API says who set the state property to `next`. Blocks
+and comments do carry their own authors, and Notion sets those itself.
+
+The token is an internal integration's secret, so it belongs to a bot, not a person. The
+people who vouch therefore come from the host config: `trusted_users`, one or more Notion user
+ids. A token that belongs to a person (a personal access token) is refused, because the
+Manager's writes would then look like that person's edits.
+
+A Notion card is `ready` when its state property is `next` and the page's `last_edited_by` is
+a trusted user. It is also `ready` when the integration edited it last and released it: the
+integration's newest comment is a release, and the integration's comment before that is a
+claim, a CI notice or a release. A release after a stuck or review comment vouches for nothing,
+because the Manager never releases a card that it doesn't own. Trust follows authorship, not
+time, so there is no cutoff. A `trusted_users` list that holds the integration's own id is
+refused, because every write of the Manager would then vouch.
+
+A `working` or `ci` card is the Manager's only while the integration's newest comment is a
+claim, a CI notice or a release (a release whose state write failed). Otherwise the card is
+`other`: an untrusted editor who sets `working` can't make the stranded-card sweep release the
+card, and its release can't become a vouch. For the same reason `markStuck`, `markReview` and
+`markVerifying` set the state before they comment, so a crash between the two writes leaves a
+card that the Manager still owns, or one that is no longer `working`.
+
+The title has no author record of its own, so the claim comment records the title that was
+vouched for (`Vouched title: ...`): the page's title when a trusted user edited it last, or the
+previous claim's vouched title when the card was claimed through a release. The snapshot shows
+the vouched title from the newest claim comment, CI fix rounds included. When the page's title
+has changed since, `excluded` says so without quoting the new title, because `excluded`
+reaches the worker. `Card.title` stays the page's title; the Manager only uses it for branch
+names.
+
+The snapshot holds:
+
+- the vouched title;
+- each block of the page body whose own `last_edited_by` is a trusted user;
+- comments written by a trusted user on the page itself. Comments on a body block (inline
+  discussions) aren't read.
+
+A mention of a page or a database renders as a link without its title, because that title is
+someone else's text.
+
+Comments that the integration wrote are left out of the snapshot and reach the worker through
+`managerNotes` instead. Every withheld block and comment is named in `excluded`.
+
+What this covers: text that an untrusted person wrote reaches a worker only after a trusted
+user edited it last. What it does not cover: someone untrusted sets `next`, and a trusted user
+then edits the same page for any reason before the Manager reads it; the Manager reads that
+edit as the vouch. So does a trusted user's typo fix in a block that someone else wrote. Any
+edit by a trusted user to a card in `next` counts as vouching for it. Use a database that only
+trusted users can edit when that is not acceptable.
+
+Notion has no compare-and-set. `claim` lists the page's comments first and remembers the claim
+comments that are already there, then re-reads the page, writes `working` and posts a claim
+comment that names the host and a nonce. Of the new claim comments that follow the integration's
+previous other comment, the oldest wins, and every other claimer returns false and deletes its
+own comment. The claims listed before the re-read are left out: they belong to a Manager that
+crashed after claiming, and a rival's claim can't be among them, because the rival writes
+`working` before it posts, so the re-read would have stopped this claim. Comment times are
+rounded to the minute too, so claims in the same minute keep the order in which the API lists
+them.
+
+The claim comments only keep two claims from both starting work. They don't make it safe for
+two Managers to share a database: each Manager's stranded-card sweep would release the other's
+cards. The rule in "Reconcile" holds: one Manager per backlog identity and project, and for
+Notion one Manager per database.
+
+Notion answers 404 both for a deleted page and for a page that is no longer shared with the
+integration. On a 404, `card(_:)` re-reads the page's database and throws when the integration
+lost access to it, so a revoked connection never reaps running workers.
 
 ## The worker lifecycle
 
@@ -246,7 +327,7 @@ against its slots. A `working` card with no slot is either finishable (its slot 
 outcome file) or stranded (released with reason "Manager restarted", not counted as an
 attempt). `verifying` cards hold no slot and are never released; see "Waiting for CI". This
 assumes one Manager per backlog identity and project: two Managers that share a GitLab user and
-a project would release each other's cards.
+a project, or a Notion database, would release each other's cards.
 
 ## Host config
 

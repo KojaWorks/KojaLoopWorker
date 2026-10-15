@@ -2,6 +2,7 @@ import Foundation
 import GitHubBackend
 import GitLabBackend
 import LoopWorkerCore
+import NotionBackend
 import PatchBackend
 
 struct CompositionError: Error, CustomStringConvertible {
@@ -59,6 +60,7 @@ func credentialVariables(config: HostConfig) throws -> [String] {
     var names: [String] = []
     if config.backlogKind == "gitlab" || config.forgeKind == "gitlab" { names += try GitLabBackend.credentialVariables(config: config) }
     if config.backlogKind == "patch" { names += try PatchBackend.credentialVariables(config: config) }
+    if config.backlogKind == "notion" { names += try NotionBackend.credentialVariables(config: config) }
     if config.forgeKind == "github" { names += try GitHubBackend.credentialVariables(config: config) }
     return names
 }
@@ -71,7 +73,8 @@ func makeBackends(config: HostConfig, log: LogSink, environment: [String: String
     switch config.backlogKind {
     case "gitlab": backlog = gitlab.backlog!
     case "patch": backlog = try PatchBackend.makeBacklog(config: config, log: log, environment: environment)
-    default: throw CompositionError(description: "config.toml: unknown [backlog] kind \"\(config.backlogKind)\" (known: gitlab, patch)")
+    case "notion": backlog = try NotionBackend.makeBacklog(config: config, log: log, environment: environment)
+    default: throw CompositionError(description: "config.toml: unknown [backlog] kind \"\(config.backlogKind)\" (known: gitlab, patch, notion)")
     }
     let forge: any Forge
     switch config.forgeKind {
