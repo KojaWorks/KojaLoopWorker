@@ -7,6 +7,7 @@ enum Trust {
     static let failedAttemptMarker = "<!-- loopworker:failed-attempt -->"
     static let cutoffMarkerPrefix = "<!-- loopworker:cutoff="
     static let holderMarkerPrefix = "<!-- loopworker:holder="
+    static let pushedMarkerPrefix = "<!-- loopworker:pushed="
     /// A `next` label added this soon after a release note by me is that release's re-add.
     static let releaseWindow: TimeInterval = 120
 
@@ -102,6 +103,25 @@ enum Trust {
         guard let line = header.first(where: { $0.hasPrefix(holderMarkerPrefix) && $0.hasSuffix(" -->") }) else { return nil }
         let id = line.dropFirst(holderMarkerPrefix.count).dropLast(4)
         return id.isEmpty ? nil : String(id)
+    }
+
+    /// The push that my newest note with a pushed marker names; nil when none does. Only marker
+    /// lines in my own notes' headers count.
+    static func lastPush(notes: [GLNote], me: GLUser) -> PushRecord? {
+        notes
+            .filter { $0.author.id == me.id && !$0.system }
+            .sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
+            .lazy.reversed()
+            .compactMap { note in
+                managerHeader(note.body)
+                    .first { $0.hasPrefix(pushedMarkerPrefix) && $0.hasSuffix(" -->") }
+                    .flatMap { PushRecord(line: $0.dropFirst(pushedMarkerPrefix.count).dropLast(4)) }
+            }
+            .first
+    }
+
+    static func pushedMarker(_ pushed: PushRecord?) -> String {
+        pushed.map { "\(pushedMarkerPrefix)\($0.line) -->\n" } ?? ""
     }
 
     static func countsAsAttempt(_ note: GLNote, me: GLUser) -> Bool {

@@ -18,6 +18,16 @@ func temporaryDirectory() throws -> URL {
     }
 }
 
+@Suite struct PushRecordTests {
+    @Test("B235: a push line round-trips; the commit is what follows the last @")
+    func pushLines() {
+        let record = PushRecord(branch: "feature@2", commit: "abc123")
+        #expect(record.line == "feature@2@abc123")
+        #expect(PushRecord(line: record.line) == record)
+        for bad in ["", "abc", "@abc", "branch@", "a b@c", "branch@abc\n"] { #expect(PushRecord(line: bad) == nil) }
+    }
+}
+
 @Suite struct BudgetTests {
     @Test func affordableToleratesFractionalWeights() {  // B47
         #expect(Budget.affordable(remaining: 0.3, weight: 0.1) == 3)

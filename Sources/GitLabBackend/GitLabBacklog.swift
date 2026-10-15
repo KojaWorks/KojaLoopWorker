@@ -6,7 +6,9 @@ import LoopWorkerCore
 ///
 /// `claim` posts a Manager note whose header carries `<!-- loopworker:holder=<id> -->`. A
 /// card's `holder` is the one in the token's user's newest claim note, unless a release note
-/// (the one with the cutoff marker) is newer. Every read already loads the notes.
+/// (the one with the cutoff marker) is newer. A note that follows a push carries
+/// `<!-- loopworker:pushed=<branch>@<commit> -->` in its header (`lastPush`). Every read already
+/// loads the notes.
 ///
 /// `CardRef.id` is `<project id>/<issue iid>`, `display` is `<project path>#<iid>`.
 public actor GitLabBacklog: Backlog {
@@ -214,6 +216,19 @@ public actor GitLabBacklog: Backlog {
             }
     }
 
+    public func lastPush(_ card: Card) async throws -> PushRecord? {
+        guard let read = try await read(card.ref) else { return nil }
+        return Trust.lastPush(notes: read.notes, me: try await client.me())
+    }
+
+    public func recordPush(_ card: Card, pushed: PushRecord) async throws {
+        guard let read = try await read(card.ref) else {
+            throw GitLabError("recordPush \(card.ref.display): the issue is gone or no longer served")
+        }
+        guard Trust.lastPush(notes: read.notes, me: try await client.me()) != pushed else { return }
+        try await postNote(read, "LoopWorker pushed `\(pushed.branch)` at `\(pushed.commit.prefix(12))`.", markers: Trust.pushedMarker(pushed))
+    }
+
     // MARK: - Writes
 
     /// Posts the claim note that names `holder` before it moves the labels, so the card is
@@ -231,20 +246,21 @@ public actor GitLabBacklog: Backlog {
         return true
     }
 
-    public func markReview(_ card: Card, review: ReviewRequest, note: String?) async throws {
+    public func markReview(_ card: Card, review: ReviewRequest, note: String?, pushed: PushRecord?) async throws {
         let read = try await require(card, in: [.working, .verifying], for: "markReview")
-        try await postNote(read, "Review request: \(review.url.absoluteString)" + (note.map { "\n\n\($0)" } ?? ""))
+        try await postNote(read, "Review request: \(review.url.absoluteString)" + (note.map { "\n\n\($0)" } ?? ""),
+                           markers: Trust.pushedMarker(pushed))
         try await move(read, to: .review)
     }
 
-    public func markVerifying(_ card: Card, review: ReviewRequest, plan: VerifyingPlan) async throws {
+    public func markVerifying(_ card: Card, review: ReviewRequest, plan: VerifyingPlan, pushed: PushRecord?) async throws {
         let read = try await require(card, in: [.working], for: "markVerifying")
         let waits = switch plan {
         case .ciThenReview: "Waiting for CI before review."
         case .ciThenMerge: "Waiting for CI before merging."
         case .merge: "Merging into the base branch."
         }
-        try await postNote(read, "Review request: \(review.url.absoluteString)\n\n\(waits)")
+        try await postNote(read, "Review request: \(review.url.absoluteString)\n\n\(waits)", markers: Trust.pushedMarker(pushed))
         try await move(read, to: .verifying)
     }
 
@@ -263,9 +279,9 @@ public actor GitLabBacklog: Backlog {
         return true
     }
 
-    public func markStuck(_ card: Card, blocker: String) async throws {
+    public func markStuck(_ card: Card, blocker: String, pushed: PushRecord?) async throws {
         let read = try await require(card, in: [.working, .verifying], for: "markStuck")
-        try await postNote(read, "LoopWorker is stuck on this card:\n\n\(blocker)")
+        try await postNote(read, "LoopWorker is stuck on this card:\n\n\(blocker)", markers: Trust.pushedMarker(pushed))
         try await move(read, to: .stuck)
     }
 

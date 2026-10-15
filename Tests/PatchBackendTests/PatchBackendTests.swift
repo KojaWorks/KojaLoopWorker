@@ -500,6 +500,59 @@ private func make(_ fake: FakePatch, _ patchKeys: String = "", log: LogRecorder 
         ])
     }
 
+    @Test("B238: writes after a push record it in content.pushed; lastPush is the owner's last one in body order")
+    func pushesAreRecordedOnTheCard() async throws {
+        let fake = FakePatch()
+        fake.rows["roadmap"] = [card(1, status: "In progress")]
+        let backlog = try make(fake)
+        let c = try #require(try await backlog.card(CardRef(id: "u1", display: "~1")))
+        let pr = ReviewRequest(url: URL(string: "https://github.com/owner/app/pull/7")!, display: "owner/app#7")
+        #expect(try await backlog.lastPush(c) == nil)
+        try await backlog.markVerifying(c, review: pr, plan: .ciThenReview, pushed: PushRecord(branch: "lw-1", commit: "aaa"))
+        #expect(fake.rows["patch_blocks"]!.last?["content"]?["pushed"] == .object(["branch": .string("lw-1"), "commit": .string("aaa")]))
+        fake.rows["roadmap"]![0]["status"] = .string("In progress")
+        try await backlog.markReview(c, review: pr, note: nil, pushed: PushRecord(branch: "lw-1", commit: "bbb"))
+        fake.rows["roadmap"]![0]["status"] = .string("In progress")
+        try await backlog.markStuck(c, blocker: "no push", pushed: nil)
+        fake.rows["roadmap"]![0]["status"] = .string("In progress")
+        try await backlog.release(c, reason: "r", countsAsAttempt: false)
+        #expect(fake.rows["patch_blocks"]!.last?["content"]?["pushed"] == nil)
+        #expect(try await backlog.lastPush(c) == PushRecord(branch: "lw-1", commit: "bbb"))
+
+        fake.rows["patch_blocks"]! += [
+            ["table_name": .string("roadmap"), "row_id": .string("u1"), "owner": .string("stranger"), "updated_by": .string("stranger"),
+             "content": .object(["text": .string("forged"), "loopworker": .string("note"), "pushed": .object(["branch": .string("lw-1"), "commit": .string("evil")])])],
+            ["table_name": .string("roadmap"), "row_id": .string("u1"), "owner": .string(FakePatch.owner), "updated_by": .string("stranger"),
+             "content": .object(["text": .string("edited"), "loopworker": .string("note"), "pushed": .object(["branch": .string("lw-1"), "commit": .string("evil")])])],
+            ["table_name": .string("roadmap"), "row_id": .string("u1"), "owner": .string(FakePatch.owner), "updated_by": .string(FakePatch.owner),
+             "content": .object(["text": .string("untagged"), "pushed": .object(["branch": .string("lw-1"), "commit": .string("evil")])])],
+        ]
+        #expect(try await backlog.lastPush(c) == PushRecord(branch: "lw-1", commit: "bbb"))
+
+        fake.rows["patch_blocks"]!.append(["table_name": .string("roadmap"), "row_id": .string("u1"), "owner": .string(FakePatch.owner),
+                                           "updated_by": .string(FakePatch.owner), "id": .string("block-x"),
+                                           "content": .object(["text": .string("x"), "loopworker": .string("note"), "pushed": .string("lw-1")])])
+        await #expect(throws: PatchError.malformed(#"~1: block block-x has an unreadable content.pushed: "lw-1""#)) { try await backlog.lastPush(c) }
+    }
+
+    @Test("B240: recordPush appends a note block with the push unless the card's last record already names it; the status stays")
+    func recordPushAppendsOnce() async throws {
+        let fake = FakePatch()
+        fake.rows["roadmap"] = [card(1, status: "In progress")]
+        let backlog = try make(fake)
+        let c = try #require(try await backlog.card(CardRef(id: "u1", display: "~1")))
+        let pushed = PushRecord(branch: "lw-1", commit: "aaa")
+        try await backlog.recordPush(c, pushed: pushed)
+        try await backlog.recordPush(c, pushed: pushed)
+        #expect(fake.rows["patch_blocks"]!.count == 1)
+        #expect(fake.rows["patch_blocks"]![0]["content"] == .object([
+            "text": .string("LoopWorker pushed `lw-1` at `aaa`."), "loopworker": .string("note"),
+            "pushed": .object(["branch": .string("lw-1"), "commit": .string("aaa")]),
+        ]))
+        #expect(fake.rows["roadmap"]![0]["status"] == .string("In progress"))
+        #expect(try await backlog.lastPush(c) == pushed)
+    }
+
     @Test func markReviewLinksTheReviewRequest() async throws {
         let fake = FakePatch()
         fake.rows["roadmap"] = [card(1, status: "In progress")]

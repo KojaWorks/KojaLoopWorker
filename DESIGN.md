@@ -64,11 +64,14 @@ public protocol Backlog: Sendable {
     func verifying(in projects: [ProjectSpec]) async throws -> [Card] // to resume CI watches
     func claim(_ card: Card, holder: String) async throws -> Bool     // false: lost a race, skip
     func snapshot(_ card: Card) async throws -> CardSnapshot
-    func markReview(_ card: Card, review: ReviewRequest, note: String?) async throws
-    func markVerifying(_ card: Card, review: ReviewRequest, plan: VerifyingPlan) async throws
+    func managerNotes(_ card: Card) async throws -> [String]          // background for the next worker
+    func lastPush(_ card: Card) async throws -> PushRecord?           // see "Push records and the lease"
+    func recordPush(_ card: Card, pushed: PushRecord) async throws    // a finish failed after its push
+    func markReview(_ card: Card, review: ReviewRequest, note: String?, pushed: PushRecord?) async throws
+    func markVerifying(_ card: Card, review: ReviewRequest, plan: VerifyingPlan, pushed: PushRecord?) async throws
     func markMerged(_ card: Card, review: ReviewRequest, note: String?) async throws
     func resumeFix(_ card: Card) async throws -> Bool                 // false: a human moved it
-    func markStuck(_ card: Card, blocker: String) async throws
+    func markStuck(_ card: Card, blocker: String, pushed: PushRecord?) async throws
     func release(_ card: Card, reason: String, countsAsAttempt: Bool) async throws
 }
 
@@ -162,13 +165,13 @@ Manager's writes would then look like that person's edits.
 A Notion card is `ready` when its state property is `next` and the page's `last_edited_by` is
 a trusted user. It is also `ready` when the integration edited it last and released it: the
 integration's newest comment is a release, and the integration's comment before that is a
-claim, a CI or merging notice, or a release. A release after a stuck, review or merged comment
+claim, a CI, merging or push notice, or a release. A release after a stuck, review or merged comment
 vouches for nothing, because the Manager never releases a card that it doesn't own. Trust follows authorship, not
 time, so there is no cutoff. A `trusted_users` list that holds the integration's own id is
 refused, because every write of the Manager would then vouch.
 
 A `working` or `ci` card is the Manager's only while the integration's newest comment is a
-claim, a CI or merging notice, or a release (a release whose state write failed). Otherwise the
+claim, a CI, merging or push notice, or a release (a release whose state write failed). Otherwise the
 card is `other`: an untrusted editor who sets `working` can't make the stranded-card sweep
 release the card, and its release can't become a vouch. For the same reason `markStuck`,
 `markReview`, `markVerifying` and `markMerged` set the state before they comment, so a crash
@@ -227,13 +230,13 @@ lost access to it, so a revoked connection never reaps running workers.
 2. **Acquire.** A task resets the slot's worktree to the base branch, checks out
    a branch named from the contract's template (default `loopworker-{number}-{slug}`, flat so it
    can't collide with a branch named `loopworker`; a project whose commit hooks parse branch
-   names sets its own), and runs `reset.sh` (hot) or `provision.sh` (cold). When the push ledger
-   says an earlier attempt of this card pushed that branch (it went stuck, and a human sent it
-   back to ready), the Manager fetches, and if the forge still has the branch, resets to it
-   instead, and the brief tells the worker to continue from that work. The commit that the slot
-   was reset to goes into the push ledger, so the finish leases on it even when the card's owner
-   pushed to the branch since. If the branch is gone, the card starts over from the base and its
-   ledger entry is dropped.
+   names sets its own), and runs `reset.sh` (hot) or `provision.sh` (cold). When the card's push
+   record says that an earlier attempt pushed that branch (it went stuck, and a human sent it
+   back to ready, maybe to another host's Manager), the Manager fetches, and if the forge still
+   has the branch and its history contains that push, resets to it instead, and the brief tells
+   the worker to continue from that work. The commit that the slot was reset to becomes the
+   lease tip, so the finish leases on it even when the card's owner pushed to the branch since.
+   If the branch is gone, the card starts over from the base. See "Push records and the lease".
 3. **Spawn.** The Manager writes the snapshot, the brief and a launch script into the slot's
    state directory (never into the worktree) and starts `claude` in a tmux session. The worker
    gets `LOOPWORKER_OUTCOME`, the path where its outcome goes, and an MCP config that contains
@@ -280,6 +283,55 @@ lost access to it, so a revoked connection never reaps running workers.
      doesn't hold the card forever.
 6. **Recycle.** Hot slots detach HEAD and wait; the next acquire resets them. Cold slots tear
    down.
+
+### Push records and the lease
+
+LoopWorker never overwrites a branch that it didn't push, nor commits that someone pushed to
+its branch while a worker ran. Two facts decide that, each with one home:
+
+- **The card records each push.** The backlog write that follows a push (`markReview`,
+  `markVerifying`, or `markStuck`) carries the branch and the commit, and `lastPush` returns the
+  newest. The card, not a Manager's state directory, is the record of what LoopWorker pushed, so
+  a Manager on another host (a replaced host, a card moved between Managers) resumes the branch
+  too. Only the Manager's own notes count, as for the holder, and a release doesn't clear it.
+  So Managers share push records only when they use the same backlog identity: the GitLab
+  token's user, the Patch PAT owner, the Notion integration. A Manager with another identity
+  doesn't trust the records and refuses the branch as someone else's. On Notion, a human who
+  resolves the Manager's comment hides its record from the API, so the next claim refuses the
+  branch.
+
+  | Backlog | Where the push record lives |
+  | --- | --- |
+  | GitLab | `<!-- loopworker:pushed=<branch>@<commit> -->` in the Manager note's header. |
+  | Patch | `content.pushed` (`{"branch", "commit"}`) on the note block; only the PAT owner's blocks that nobody else edited count. |
+  | Notion | A `Pushed: <branch>@<commit>` line right after the comment's header line. |
+
+- **The slot's `card.json` holds the lease tip**: the commit that the branch's next push expects
+  on the forge. A fresh start has none, so the branch must not exist yet. A resumed card or a
+  fix, review or rebase round sets it to the commit that the slot was reset to, and each push
+  sets it to its own commit, so a retried finish leases on its own push. It survives a Manager
+  restart mid-run.
+
+The happy path writes no extra note: the record rides on the write that moves the card. A finish
+that fails after its push calls `recordPush` before it backs off, which posts a short Manager
+note with the record (on Notion, a push notice) unless the card's newest record already names
+that push, so the card names its branch even when a human moves it, or another Manager claims
+it, before the retried finish lands. A Manager that crashes between the push and that write
+leaves the push unrecorded. After a restart it adopts the slot and leases on `card.json` as
+usual, but if the card moves to another Manager first, that Manager refuses the branch as
+someone else's.
+
+A card resumes only when the fetched branch still contains the recorded commit. A branch that
+someone recreated or rewrote doesn't, so the Manager treats it as someone else's, and the
+blocker names the missing commit; a failed check counts as missing.
+
+A push that the forge refuses with a lease tip means that someone pushed during the run; without
+one, that the branch is someone else's. Each ends the card `stuck` with a blocker that says so.
+
+Versions before the push record kept both facts in `state/pushes.json`. The Manager no longer
+writes that file, but reads it for a card that records no push and for a `card.json` without a
+lease, so cards and slots that an older version left behind keep working. A later release
+drops this fallback.
 
 ## Waiting for CI and merging
 
@@ -347,7 +399,7 @@ card branch, and writes `ci.md` into the slot's state directory: each failed job
 link, how it did on the base branch and the redacted tail of its log. CI logs are untrusted
 data, like card content: `ci.md` says so, fences the logs, and the brief tells the worker to
 read it as data. The worker fixes the failures and writes an outcome as usual; finish pushes,
-leasing on the branch tip that the round started from, posts the outcome body as a note on the
+leasing on the branch tip that the round started from, records the push on the card, posts the outcome body as a note on the
 existing review request, and returns the card to `verifying` with the new commit, the next round
 and the same plan. A crash in a fix round releases the card like any crash.
 
@@ -558,8 +610,9 @@ $LOOPWORKER_HOME/
   state/PAUSED                host killswitch; state/projects/<key>/PAUSED per project
   state/tmux                  the Manager's own tmux server socket
   state/ci/<card id>.json     CI watch record of a verifying card (the id percent-encoded)
-  state/pushes.json           push ledger: per card id, the branch and the commit that its next push leases on
+  state/pushes.json           legacy push ledger, read only (see "Push records and the lease")
   slots/<key>/<n>/            brief, snapshot, launch script, outcome, MCP config, ci.md;
+                              card.json: the card that the slot holds, its round and lease tip;
                               last-outcome.json: the last finished outcome and its card id
 <clones_dir>/<key>/           the clone; its working tree tracks origin/<base>
 <clones_dir>/<key>.slots/<n>/ slot worktrees

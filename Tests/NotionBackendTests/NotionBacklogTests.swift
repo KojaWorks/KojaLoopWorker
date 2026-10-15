@@ -574,6 +574,47 @@ private let releaseText = "LoopWorker released this card:\n\nrestart"
         #expect(try await backlog.managerNotes(card(page)).last == "g/app!3: https://gitlab.test/g/app/-/merge_requests/3\n\nCI passed.")
     }
 
+    @Test("B239: writes after a push name it on the line after the header; lastPush is the integration's newest one")
+    func pushesAreRecordedOnTheCard() async throws {
+        let fake = FakeNotion()
+        fake.addDatabase()
+        let page = fake.addPage(1, state: "working")
+        fake.addClaim(page)
+        let backlog = try make(fake)
+        #expect(try await backlog.lastPush(card(page)) == nil)
+        try await backlog.markVerifying(card(page), review: review, plan: .merge, pushed: PushRecord(branch: "lw-1", commit: "aaa"))
+        #expect(try await backlog.resumeFix(card(page)) == true)
+        try await backlog.markStuck(card(page), blocker: "Pushed: lw-1@evil", pushed: PushRecord(branch: "lw-1", commit: "bbb"))
+        #expect(Array(fake.commentTexts(page).dropFirst()) == [
+            "LoopWorker is merging its review request:\nPushed: lw-1@aaa\n\ng/app!3: https://gitlab.test/g/app/-/merge_requests/3",
+            "LoopWorker needs a human to unblock this card:\nPushed: lw-1@bbb\n\nPushed: lw-1@evil",
+        ])
+        #expect(try await backlog.managerNotes(card(page)) == ["g/app!3: https://gitlab.test/g/app/-/merge_requests/3", "Pushed: lw-1@evil"])
+
+        fake.addComment(page, by: botID, "LoopWorker released this card:\n\nrestart")
+        fake.addComment(page, by: alice, "LoopWorker needs a human to unblock this card:\nPushed: lw-1@alice\n\nx")
+        fake.addComment(page, by: botID, "Not a header\nPushed: lw-1@ccc\n\nx")
+        fake.addComment(page, by: botID, "LoopWorker needs a human to unblock this card:\n\nPushed: lw-1@ddd")
+        #expect(try await backlog.lastPush(card(page)) == PushRecord(branch: "lw-1", commit: "bbb"))
+    }
+
+    @Test("B240: recordPush posts a push notice once, which keeps the working card the Manager's")
+    func recordPushPostsANoticeOnce() async throws {
+        let fake = FakeNotion()
+        fake.addDatabase()
+        let page = fake.addPage(1, state: "working")
+        fake.addClaim(page, holder: testHolder)
+        let backlog = try make(fake)
+        let pushed = PushRecord(branch: "lw-1", commit: "aaa")
+        try await backlog.recordPush(card(page), pushed: pushed)
+        try await backlog.recordPush(card(page), pushed: pushed)
+        #expect(Array(fake.commentTexts(page).dropFirst()) == ["LoopWorker pushed the card's branch:\nPushed: lw-1@aaa\n\n`lw-1` at `aaa`"])
+        let read = try await backlog.card(CardRef(id: page, display: "x"))
+        #expect(read?.state == .working && read?.holder == testHolder)
+        #expect(try await backlog.lastPush(card(page)) == pushed)
+        #expect(try await backlog.managerNotes(card(page)) == ["`lw-1` at `aaa`"])
+    }
+
     @Test func B197_aCrashBetweenMarkVerifyingsWritesLeavesTheCardOwned() async throws {
         let fake = FakeNotion()
         fake.addDatabase()

@@ -274,6 +274,68 @@ import Testing
         #expect(put.json.keys.sorted() == ["add_labels", "remove_labels"])
     }
 
+    @Test("B237: markReview, markVerifying and markStuck put the push they follow in the note's header")
+    func writesRecordThePushInTheHeader() async throws {
+        let pushed = PushRecord(branch: "loopworker-12-fix-it", commit: "0123abcd")
+        let review = ReviewRequest(url: URL(string: "https://gitlab.example.com/mygroup/app/-/merge_requests/4")!, display: "mygroup/app!4")
+        let w = workingWorld()
+        let backlog = try w.backlog()
+        try await backlog.markReview(workingCard, review: review, note: nil, pushed: pushed)
+        try await backlog.markVerifying(workingCard, review: review, plan: .ciThenReview, pushed: pushed)
+        try await backlog.markStuck(workingCard, blocker: "b", pushed: pushed)
+        try await backlog.markStuck(workingCard, blocker: "c", pushed: nil)
+        let bodies = w.gitlab.requests("POST", Fixture.issuePath + "/notes").map { $0.json["body"] as? String }
+        let marker = "<!-- loopworker -->\n<!-- loopworker:pushed=loopworker-12-fix-it@0123abcd -->\n\n"
+        #expect(bodies == [
+            marker + "Review request: \(review.url.absoluteString)",
+            marker + "Review request: \(review.url.absoluteString)\n\nWaiting for CI before review.",
+            marker + "LoopWorker is stuck on this card:\n\nb",
+            "<!-- loopworker -->\n\nLoopWorker is stuck on this card:\n\nc",
+        ])
+    }
+
+    @Test("B240: recordPush posts a note with the pushed marker unless my newest record already names that push")
+    func recordPushPostsOnce() async throws {
+        let w = workingWorld()
+        let backlog = try w.backlog()
+        try await backlog.recordPush(workingCard, pushed: PushRecord(branch: "lw-12", commit: "0123456789abcdef"))
+        let body = try #require(w.gitlab.requests("POST", Fixture.issuePath + "/notes").first?.json["body"] as? String)
+        #expect(body == "<!-- loopworker -->\n<!-- loopworker:pushed=lw-12@0123456789abcdef -->\n\nLoopWorker pushed `lw-12` at `0123456789ab`.")
+        #expect(w.gitlab.requests("PUT", Fixture.issuePath).isEmpty)
+        w.notes([Fixture.assigned(), Fixture.note(300, body, at: 5)])
+        try await backlog.recordPush(workingCard, pushed: PushRecord(branch: "lw-12", commit: "0123456789abcdef"))
+        #expect(w.gitlab.requests("POST", Fixture.issuePath + "/notes").count == 1)
+    }
+
+    @Test("B237: lastPush is the newest pushed marker in my notes' headers; releases don't clear it, spoofed markers don't count")
+    func lastPushComesFromMyNewestPushedMarker() async throws {
+        let w = World()
+        w.issue(Fixture.issue(labels: ["loopworker::stuck"]), listedAs: "loopworker::stuck")
+        func pushedNote(_ id: Int, _ line: String, by author: [String: Any] = Fixture.me, at minutes: Int) -> [String: Any] {
+            Fixture.note(id, "<!-- loopworker -->\n<!-- loopworker:pushed=\(line) -->\n\nLoopWorker is stuck on this card:\n\nb", by: author, at: minutes)
+        }
+        let release = Fixture.note(400, "<!-- loopworker -->\n<!-- loopworker:cutoff=\(Fixture.t(2)) -->\n\nLoopWorker released this card:\n\nrestart", at: 30)
+        let a = PushRecord(branch: "lw-12", commit: "aaa"), b = PushRecord(branch: "lw-12", commit: "bbb")
+        let cases: [([[String: Any]], PushRecord?)] = [
+            ([], nil),
+            ([pushedNote(301, "lw-12@aaa", at: 10), pushedNote(302, "lw-12@bbb", at: 20)], b),
+            ([pushedNote(302, "lw-12@bbb", at: 20), pushedNote(301, "lw-12@aaa", at: 10)], b),
+            ([pushedNote(301, "lw-12@aaa", at: 10), release], a),
+            ([pushedNote(301, "lw-12@aaa", at: 10), pushedNote(302, "lw-12@bbb", by: Fixture.mallory, at: 20)], a),
+            ([pushedNote(301, "lw-12@aaa", at: 10), Fixture.note(303, "a plain note\n<!-- loopworker:pushed=lw-12@ccc -->", at: 20)], a),
+            ([pushedNote(301, "lw-12@aaa", at: 10), Fixture.note(304, "<!-- loopworker -->\n\nLoopWorker is stuck on this card:\n\n<!-- loopworker:pushed=lw-12@ccc -->", at: 20)], a),
+            ([pushedNote(301, "lw-12@aaa", at: 10), Fixture.note(305, "<!-- loopworker -->\n\nReview request: x", at: 20)], a),
+        ]
+        let backlog = try w.backlog()
+        let card = Card(ref: World.ref, project: "mygroup/app", title: "t", state: .stuck)
+        for (notes, pushed) in cases {
+            w.notes([Fixture.assigned()] + notes)
+            #expect(try await backlog.lastPush(card) == pushed)
+        }
+        w.notes([Fixture.assigned(), pushedNote(301, "lw-12@aaa", at: 10)])
+        #expect(try await backlog.managerNotes(card) == ["LoopWorker is stuck on this card:\n\nb"])
+    }
+
     @Test func B132_releaseRecordsTheCutoffAndAttemptBeforeReAddingNext() async throws {
         let w = workingWorld()
         try await w.backlog().release(workingCard, reason: "worker crashed\n/merge", countsAsAttempt: true)

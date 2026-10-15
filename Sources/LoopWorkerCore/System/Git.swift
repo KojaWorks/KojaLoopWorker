@@ -71,6 +71,12 @@ public protocol GitDriving: Sendable {
     /// True when `ancestor` (a commit or ref, such as `origin/main`) is HEAD or an ancestor of it.
     func isAncestor(_ worktree: URL, ancestor: String) async throws -> Bool
 
+    /// True when `origin/<branch>` in `repo` is `commit` or contains it in its history; false
+    /// when it doesn't, or when `repo` doesn't have `commit` at all, as after a fetch of a branch
+    /// that someone recreated or rewrote. Throws `GitError` for any other failure, such as a
+    /// missing `origin/<branch>`.
+    func branchContains(_ repo: URL, branch: String, commit: String) async throws -> Bool
+
     /// Pushes HEAD to `branch` at `url` without running hooks, and returns the pushed commit.
     /// - Parameter expected: the commit that `branch` must be at on the forge, the one the
     ///   Manager last pushed for this card; nil means the branch must not exist yet. A branch
@@ -211,6 +217,21 @@ public struct Git: GitDriving {
         let result = try await runner.run(Self.spec(arguments, Self.localTimeout, [:]))
         if result.succeeded { return true }
         if result.status == 1 && !result.timedOut { return false }  // not an ancestor; other codes are errors
+        throw GitError(command: arguments.joined(separator: " "), result: result)
+    }
+
+    public func branchContains(_ repo: URL, branch: String, commit: String) async throws -> Bool {
+        let verify = ["-C", repo.path, "rev-parse", "--verify", "--quiet", "--end-of-options", "\(commit)^{commit}"]
+        let found = try await runner.run(Self.spec(verify, Self.localTimeout, [:]))
+        guard found.succeeded else {
+            if found.status == 1 && !found.timedOut { return false }  // --quiet: an unknown commit exits 1
+            throw GitError(command: verify.joined(separator: " "), result: found)
+        }
+        let sha = found.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let arguments = ["-C", repo.path, "merge-base", "--is-ancestor", sha, "refs/remotes/origin/\(branch)"]
+        let result = try await runner.run(Self.spec(arguments, Self.localTimeout, [:]))
+        if result.succeeded { return true }
+        if result.status == 1 && !result.timedOut { return false }
         throw GitError(command: arguments.joined(separator: " "), result: result)
     }
 

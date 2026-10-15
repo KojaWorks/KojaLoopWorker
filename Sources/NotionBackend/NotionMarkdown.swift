@@ -47,9 +47,12 @@ enum ManagerComment: Equatable {
     case ci
     case merging
     case merged
+    case pushed
 
     static let claimPrefix = "LoopWorker claimed this card ("
     static let vouchedTitlePrefix = "Vouched title: "
+    /// Starts the line after the header of a comment that follows a push: `Pushed: <branch>@<commit>`.
+    static let pushedPrefix = "Pushed: "
 
     var header: String {
         switch self {
@@ -61,6 +64,7 @@ enum ManagerComment: Equatable {
         case .ci: "LoopWorker is waiting for CI on its review request:"
         case .merging: "LoopWorker is merging its review request:"
         case .merged: "LoopWorker merged its review request:"
+        case .pushed: "LoopWorker pushed the card's branch:"
         }
     }
 
@@ -69,13 +73,14 @@ enum ManagerComment: Equatable {
     static func kind(_ text: String) -> ManagerComment? {
         let first = text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
         if first.hasPrefix(claimPrefix) { return .claim(holder: "", nonce: "") }
-        return [.release, .failedRelease, .stuck, .review, .ci, .merging, .merged].first { $0.header == first }
+        return [.release, .failedRelease, .stuck, .review, .ci, .merging, .merged, .pushed].first { $0.header == first }
     }
 
     var isClaim: Bool { if case .claim = self { true } else { false } }
     var isRelease: Bool { self == .release || self == .failedRelease }
     /// A comment of this kind as the integration's newest one leaves a `working` or `ci` card the Manager's.
-    var keepsOwnership: Bool { isClaim || isRelease || self == .ci || self == .merging }
+    /// A push notice comes only from a finish of a card that the Manager owns.
+    var keepsOwnership: Bool { isClaim || isRelease || self == .ci || self == .merging || self == .pushed }
 
     /// The holder id that a claim comment names; nil for any other text and for a claim
     /// posted by a LoopWorker without holder ids (`host <name>, <nonce>`).
@@ -94,9 +99,18 @@ enum ManagerComment: Equatable {
         return body.hasPrefix(vouchedTitlePrefix) ? String(body.dropFirst(vouchedTitlePrefix.count)) : nil
     }
 
-    /// The text after the header line and the blank line that follows it.
+    /// The push that a Manager comment records on the line after its header; nil for any other
+    /// text. Only call it for comments that the integration wrote.
+    static func pushed(_ text: String) -> PushRecord? {
+        let lines = text.split(separator: "\n", maxSplits: 2, omittingEmptySubsequences: false)
+        guard kind(text) != nil, lines.count >= 2, lines[1].hasPrefix(pushedPrefix) else { return nil }
+        return PushRecord(line: lines[1].dropFirst(pushedPrefix.count))
+    }
+
+    /// The text after the header line, the pushed line if any, and the blank line that follows.
     static func body(_ text: String) -> String {
-        let rest = text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).dropFirst().first ?? ""
+        var rest = text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).dropFirst().first ?? ""
+        if pushed(text) != nil { rest = rest.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).dropFirst().first ?? "" }
         return String(rest.drop { $0 == "\n" })
     }
 }

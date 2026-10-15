@@ -606,7 +606,7 @@ private func graphQLBody(_ req: URLRequest) -> [String: Any] {
         }
     }
 
-    @Test("B235: the token's user and a pushable repository pass")
+    @Test("B242: the token's user and a pushable repository pass")
     func passes() async throws {
         let checks = try await forge(answer(repo: (200, #"{"permissions": {"push": true}}"#))).diagnose()
         #expect(checks.map(\.name) == ["forge github", "forge github owner/app"])
@@ -614,21 +614,21 @@ private func graphQLBody(_ req: URLRequest) -> [String: Any] {
         #expect(checks[0].detail.contains("@octo"))
     }
 
-    @Test("B235: a repository the token can't see fails with the access remedy")
+    @Test("B242: a repository the token can't see fails with the access remedy")
     func invisibleRepository() async throws {
         let checks = try await forge(answer(repo: (404, #"{"message": "Not Found"}"#))).diagnose()
         #expect(checks[1].level == .fail)
         #expect(checks[1].remedy?.contains("fine-grained token needs the repository selected") == true)
     }
 
-    @Test("B235: a repository the user may not push to fails")
+    @Test("B242: a repository the user may not push to fails")
     func noPush() async throws {
         let checks = try await forge(answer(repo: (200, #"{"permissions": {"push": false}}"#))).diagnose()
         #expect(checks[1].level == .fail)
         #expect(checks[1].detail == "@octo may not push to owner/app")
     }
 
-    @Test("B235: a rejected token fails once and skips the repositories")
+    @Test("B242: a rejected token fails once and skips the repositories")
     func badToken() async throws {
         let checks = try await forge(answer(user: (401, #"{"message": "Bad credentials"}"#), repo: (200, "{}"))).diagnose()
         #expect(checks.count == 1)

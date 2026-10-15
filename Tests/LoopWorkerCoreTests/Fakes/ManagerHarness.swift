@@ -16,10 +16,10 @@ final class TestClock: ManagerClock, @unchecked Sendable {
 /// already in place where the clone will be.
 final class ManagerHarness: @unchecked Sendable {
     let home: URL
-    let backlog = FakeBacklog()
-    let forge = FakeForge()
+    let backlog: FakeBacklog
+    let forge: FakeForge
     let tmux = FakeTmux()
-    let git = FakeGit()
+    let git: FakeGit
     let lifecycle = FakeLifecycle()
     let engine = FakeEngine()
     let runner = ScriptedRunner()
@@ -33,8 +33,13 @@ final class ManagerHarness: @unchecked Sendable {
     /// - Parameters:
     ///   - projects: `[[project]]` tables.
     ///   - top: top-level keys, before any table.
-    init(projects: String, top: String = "", manifest: String = "", environment: [String: String] = defaultEnvironment) throws {
+    ///   - sharing: another install whose backlog, forge and remote this one uses, as a second host would.
+    init(projects: String, top: String = "", manifest: String = "", environment: [String: String] = defaultEnvironment,
+         sharing other: ManagerHarness? = nil) throws {
         home = try temporaryDirectory()
+        backlog = other?.backlog ?? FakeBacklog()
+        forge = other?.forge ?? FakeForge()
+        git = other?.git ?? FakeGit()
         self.environment = environment
         lifecycle.state { [git] in $0.tip = { git.state.get.remoteTips[$0] } }
         try writeConfig(projects: projects, top: top)

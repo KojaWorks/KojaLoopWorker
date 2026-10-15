@@ -12,6 +12,7 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
         case markVerifying(String, url: URL)
         case markMerged(String, url: URL)
         case resumeFix(String)
+        case recordPush(String, PushRecord)
     }
 
     struct State {
@@ -47,6 +48,12 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
         /// Manager notes by card id: `markStuck` and `release` append theirs.
         var notes: [String: [String]] = [:]
         var failManagerNotes = false
+        /// The next `markStuck` throws this instead.
+        var failMarkStuckOnce: (any Error)?
+        /// Every push that a write recorded, in order; `lastPush` returns the card's last one.
+        var pushes: [(card: String, push: PushRecord)] = []
+        var failLastPush = false
+        var failRecordPush = false
     }
 
     let state = Guarded(State())
@@ -103,10 +110,29 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
         }
     }
 
-    func markVerifying(_ card: Card, review: ReviewRequest, plan: VerifyingPlan) async throws {
+    func lastPush(_ card: Card) async throws -> PushRecord? {
+        try state {
+            if $0.failLastPush { throw FakeError("lastPush \(card.ref) failed") }
+            return $0.pushes.last { $0.card == card.ref.id }?.push
+        }
+    }
+
+    func recordPush(_ card: Card, pushed: PushRecord) async throws {
+        try state {
+            if $0.failRecordPush { throw FakeError("recordPush \(card.ref) failed") }
+            guard $0.pushes.last(where: { $0.card == card.ref.id })?.push != pushed else { return }
+            $0.writes.append(.recordPush(card.ref.id, pushed))
+            $0.pushes.append((card.ref.id, pushed))
+        }
+    }
+
+    func pushes(_ id: String) -> [PushRecord] { state.get.pushes.filter { $0.card == id }.map(\.push) }
+
+    func markVerifying(_ card: Card, review: ReviewRequest, plan: VerifyingPlan, pushed: PushRecord?) async throws {
         try state {
             if let e = $0.failMarkVerifying { throw e }
             guard $0.cards[card.ref.id]?.state == .working else { throw FakeError("markVerifying \(card.ref): not working") }
+            if let pushed { $0.pushes.append((card.ref.id, pushed)) }
             $0.writes.append(.markVerifying(card.ref.id, url: review.url))
             $0.verifyingPlans[card.ref.id] = plan
             $0.cards[card.ref.id]?.state = .verifying
@@ -163,17 +189,20 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
         }
     }
 
-    func markReview(_ card: Card, review: ReviewRequest, note: String?) async throws {
+    func markReview(_ card: Card, review: ReviewRequest, note: String?, pushed: PushRecord?) async throws {
         try state {
             if let e = $0.failMarkReview { throw e }
+            if let pushed { $0.pushes.append((card.ref.id, pushed)) }
             $0.writes.append(.markReview(card.ref.id, url: review.url))
             $0.reviewNotes[card.ref.id] = note
             $0.cards[card.ref.id]?.state = .review
         }
     }
 
-    func markStuck(_ card: Card, blocker: String) async throws {
-        state {
+    func markStuck(_ card: Card, blocker: String, pushed: PushRecord?) async throws {
+        try state {
+            if let e = $0.failMarkStuckOnce { $0.failMarkStuckOnce = nil; throw e }
+            if let pushed { $0.pushes.append((card.ref.id, pushed)) }
             $0.writes.append(.markStuck(card.ref.id, blocker: blocker))
             $0.notes[card.ref.id, default: []].append(blocker)
             $0.cards[card.ref.id]?.state = .stuck

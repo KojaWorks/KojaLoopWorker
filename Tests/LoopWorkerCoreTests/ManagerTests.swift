@@ -557,8 +557,7 @@ func fileMode(_ url: URL) throws -> Int {
         await h.cycle()
         #expect(h.tmux.spawned.count == 2)
         #expect(h.log.contains("continuing g/app#12 from human-1, which includes commits pushed after LoopWorker's last push commit-1", level: .info))
-        let ledger = try Data(contentsOf: h.home.appending(path: "state/pushes.json"))
-        #expect(try JSONDecoder().decode([String: PushRecord].self, from: ledger)["id-12"] == PushRecord(branch: "loopworker-12-fix-it", commit: "human-1"))
+        #expect(CardRecord.read(h.stateDir().appending(path: "card.json"))?.lease == CardRecord.Lease(tip: "human-1"))
 
         try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
         h.tmux.set("lw_g--app_0", alive: false)
@@ -670,6 +669,7 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.log.contains("replying in thread d2 of g/app!1 failed: reply in d2 failed", level: .error))
         #expect(h.log.contains("g/app#12's worker replied to thread d`9\n, which g/app!1 doesn't have", level: .warning))
         #expect(h.backlog.card(id: "id-12")?.state == .review)
+        #expect(h.backlog.pushes("id-12").map(\.commit) == ["commit-1", "commit-2"])  // B235
     }
 
     @Test("B207: a failed round note fails the finish, and the retry posts it once without repeating the replies")
@@ -780,7 +780,7 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(!(try String(contentsOf: h.stateDir().appending(path: "brief.md"), encoding: .utf8)).contains("## Previous attempt"))
     }
 
-    @Test func aRequeuedCardWhoseBranchIsGoneStartsOverAndDropsItsLedgerEntry() async throws {  // B178
+    @Test func aRequeuedCardWhoseBranchIsGoneStartsOver() async throws {  // B178
         let h = try await spawned()
         try await requeuedAfterStuck(h)
         h.git.state { $0.remoteTips = [:] }  // a human deleted the branch on the forge
@@ -789,8 +789,7 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.lifecycle.state.get.acquiredBases == ["main", "main"])
         #expect(h.log.contains("origin/loopworker-12-fix-it, which an earlier attempt of g/app#12 pushed, is gone from the forge; starting over from origin/main", level: .warning))
         #expect(!(try String(contentsOf: h.stateDir().appending(path: "brief.md"), encoding: .utf8)).contains("## Resuming"))
-        let ledger = try Data(contentsOf: h.home.appending(path: "state/pushes.json"))
-        #expect(try JSONDecoder().decode([String: PushRecord].self, from: ledger)["id-12"] == nil)
+        #expect(CardRecord.read(h.stateDir().appending(path: "card.json"))?.lease == CardRecord.Lease(tip: nil))
 
         try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
         h.tmux.set("lw_g--app_0", alive: false)
@@ -812,8 +811,198 @@ func fileMode(_ url: URL) throws -> Int {
         await h.cycle()
         #expect(h.tmux.spawned.count == 1)
         #expect(h.backlog.writes.last == .release("id-12", reason: "Couldn't start a worker: checking whether loopworker-12-fix-it is still on the forge: git rev-parse origin/loopworker-12-fix-it failed", countsAsAttempt: false))
-        let ledger = try Data(contentsOf: h.home.appending(path: "state/pushes.json"))
-        #expect(try JSONDecoder().decode([String: PushRecord].self, from: ledger)["id-12"] == PushRecord(branch: "loopworker-12-fix-it", commit: "commit-1"))
+        #expect(h.git.state.get.pushes.count == 1)
+        #expect(h.log.contains("not claiming it again for 30 s (1 failure(s) in a row)", level: .error))
+    }
+
+    @Test("B178, B211, B235: a failed read of the card's last push releases the card before acquiring, and backs off its claim")
+    func aFailedLastPushReadReleasesTheCard() async throws {
+        let h = try await spawned()
+        try await requeuedAfterStuck(h)
+        h.backlog.state { $0.failLastPush = true }
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 1)
+        #expect(h.backlog.writes.last == .release("id-12", reason: "Couldn't start a worker: reading g/app#12's last push: lastPush g/app#12 failed", countsAsAttempt: false))
+        #expect(h.lifecycle.calls.filter { $0.hasPrefix("acquire") }.count == 1)
+        let claims = { h.backlog.writes.filter { $0 == .claim("id-12") }.count }
+        let before = claims()
+        h.clock.advance(20)
+        await h.cycle()
+        #expect(claims() == before)  // backing off instead of claiming and releasing every tick
+        #expect(h.log.contains("not claiming it again for 30 s (1 failure(s) in a row)", level: .error))
+    }
+
+    @Test("B178, B235: a card that one install pushed, then went stuck and was re-queued, resumes on another install and pushes under the lease")
+    func anotherInstallResumesThePushedBranch() async throws {
+        let a = try await spawned()
+        try await requeuedAfterStuck(a)
+        let b = try ManagerHarness(projects: oneColdProject, sharing: a)
+        try await b.boot()
+        await b.cycle()
+        #expect(b.tmux.spawned.count == 1)
+        #expect(b.lifecycle.state.get.acquiredBases == ["loopworker-12-fix-it"])
+        #expect(b.log.contains("resuming g/app#12 from origin/loopworker-12-fix-it, which an earlier attempt pushed at commit-1", level: .info))
+        try b.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        b.tmux.set("lw_g--app_0", alive: false)
+        await b.cycle()
+        #expect(b.git.state.get.pushes.map(\.expected) == [nil, "commit-1"])
+        #expect(b.backlog.card(id: "id-12")?.state == .review)
+        #expect(b.backlog.pushes("id-12").map(\.commit) == ["commit-1", "commit-2"])
+        #expect(!FileManager.default.fileExists(atPath: a.home.appending(path: "state/pushes.json").path))
+    }
+
+    @Test("B178, B210: a branch that no push on the card names is someone else's, even when it exists")
+    func aBranchWithoutAPushRecordIsRefused() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        h.addCard(12)
+        h.git.state { $0.remoteTips["loopworker-12-fix-it"] = "someone-1" }
+        try await h.boot()
+        await h.cycle()
+        #expect(h.lifecycle.state.get.acquiredBases == ["main"])
+        #expect(!h.git.calls.contains { $0.hasPrefix("hasRemoteBranch") })
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.git.state.get.pushes.isEmpty)
+        guard case .markStuck("id-12", let blocker)? = h.backlog.writes.last else {
+            Issue.record("expected markStuck, got \(h.backlog.writes)")
+            return
+        }
+        #expect(blocker.hasPrefix("Branch `loopworker-12-fix-it` already exists on the forge and wasn't created by LoopWorker for this card"))
+    }
+
+    @Test("B241: a branch whose history lacks LoopWorker's last push is someone else's, and the blocker says why")
+    func aRewrittenBranchIsRefusedWithAnAccurateBlocker() async throws {
+        let h = try await spawned()
+        try await requeuedAfterStuck(h)
+        h.git.state { $0.remoteTips["loopworker-12-fix-it"] = "someone-1"; $0.rewritten["loopworker-12-fix-it"] = ["commit-1"] }
+        await h.cycle()
+        #expect(h.lifecycle.state.get.acquiredBases == ["main", "main"])
+        #expect(h.git.calls.contains("branchContains loopworker-12-fix-it commit-1"))
+        #expect(h.log.contains("origin/loopworker-12-fix-it doesn't contain commit-1, LoopWorker's last push for g/app#12: someone recreated or rewrote it", level: .warning))
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.git.state.get.pushes.count == 1)
+        #expect(h.backlog.writes.last == .markStuck("id-12", blocker: "Branch `loopworker-12-fix-it` is on the forge, but its history doesn't contain `commit-1`, LoopWorker's last push for this card: someone recreated or rewrote it. LoopWorker didn't overwrite it and didn't push the worker's commits. Rename or delete that branch, or push `commit-1` back to it, then move the card back to ready."))
+    }
+
+    @Test("B241: a failed history check treats the branch as someone else's and logs the error")
+    func aFailedHistoryCheckIsAForeignBranch() async throws {
+        let h = try await spawned()
+        try await requeuedAfterStuck(h)
+        h.git.state { $0.failBranchContains = true }
+        await h.cycle()
+        #expect(h.lifecycle.state.get.acquiredBases == ["main", "main"])
+        #expect(h.log.contains("can't check that origin/loopworker-12-fix-it contains commit-1, LoopWorker's last push for g/app#12: git merge-base --is-ancestor commit-1 origin/loopworker-12-fix-it failed; treating the branch as someone else's", level: .error))
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        let host = await h.manager.hostName
+        #expect(h.backlog.writes.last == .markStuck("id-12", blocker: "Branch `loopworker-12-fix-it` is on the forge, but LoopWorker couldn't check that its history contains `commit-1`, LoopWorker's last push for this card (the Manager's log on \(host) has the error), so LoopWorker didn't overwrite it and didn't push the worker's commits. If someone recreated or rewrote the branch, rename or delete it, or push `commit-1` back to it. Then move the card back to ready, which checks again."))
+    }
+
+    @Test("B202: a Manager restart mid-run keeps the lease tip that the resumed card started from")
+    func aRestartKeepsTheLeaseTip() async throws {
+        let h = try await spawned()
+        try await requeuedAfterStuck(h)
+        h.git.state { $0.remoteTips["loopworker-12-fix-it"] = "human-1" }
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 2)
+        try h.restart()
+        try await h.manager.start()
+        await h.manager.settle()
+        #expect(h.log.contains("adopted the worker for g/app#12 on loopworker-12-fix-it", level: .info))
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.git.state.get.pushes.map(\.expected) == [nil, "human-1"])
+        #expect(h.backlog.card(id: "id-12")?.state == .review)
+    }
+
+    func writeLegacyLedger(_ h: ManagerHarness, commit: String) throws {
+        try Data(#"{"id-12":{"branch":"loopworker-12-fix-it","commit":"\#(commit)"}}"#.utf8).write(to: h.home.appending(path: "state/pushes.json"))
+    }
+
+    @Test("B236: an older version's push ledger resumes a card that records no push, and only then")
+    func theLegacyLedgerIsAFallback() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        h.addCard(12)
+        h.addCard(13)
+        h.git.state { $0.remoteTips["loopworker-12-fix-it"] = "old-1"; $0.remoteTips["loopworker-13-fix-it"] = "old-2" }
+        try FileManager.default.createDirectory(at: h.home.appending(path: "state"), withIntermediateDirectories: true)
+        try Data(#"{"id-12":{"branch":"loopworker-12-fix-it","commit":"old-1"},"id-13":{"branch":"loopworker-13-fix-it","commit":"old-2"}}"#.utf8)
+            .write(to: h.home.appending(path: "state/pushes.json"))
+        h.backlog.state { $0.pushes = [("id-13", PushRecord(branch: "renamed-13", commit: "new-1"))] }
+        try await h.boot()
+        await h.cycle()
+        #expect(h.lifecycle.state.get.acquiredBases == ["loopworker-12-fix-it"])
+        #expect(h.log.contains("resuming g/app#12 from origin/loopworker-12-fix-it, which an earlier attempt pushed at old-1 (as \(h.home.appending(path: "state/pushes.json").path) records)", level: .info))
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.git.state.get.pushes.map(\.expected) == ["old-1"])
+        h.clock.advance(60)
+        await h.cycle()
+        #expect(h.lifecycle.state.get.acquiredBases == ["loopworker-12-fix-it", "main"])  // 13's own record names another branch
+    }
+
+    @Test("B236: a card.json without a lease, from an older version, leases on the legacy ledger")
+    func anOldCardRecordLeasesOnTheLegacyLedger() async throws {
+        let h = try await spawned()
+        let file = h.stateDir().appending(path: "card.json")
+        var record = try #require(CardRecord.read(file))
+        record.lease = nil
+        try record.write(file)
+        try writeLegacyLedger(h, commit: "old-1")
+        h.git.state { $0.remoteTips["loopworker-12-fix-it"] = "old-1" }
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.git.state.get.pushes.map(\.expected) == ["old-1"])
+        #expect(h.backlog.card(id: "id-12")?.state == .review)
+    }
+
+    @Test("B235: every finish that pushes records the push on the card with its next backlog write; one that doesn't push records nothing")
+    func finishesRecordTheirPushOnTheCard() async throws {
+        let pushed = { (commit: String) in PushRecord(branch: "loopworker-12-fix-it", commit: commit) }
+        let review = try await spawned()
+        try review.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        review.tmux.set("lw_g--app_0", alive: false)
+        await review.cycle()
+        #expect(review.backlog.card(id: "id-12")?.state == .review)
+        #expect(review.backlog.pushes("id-12") == [pushed("commit-1")])
+
+        let stuck = try await spawned()
+        try stuck.writeOutcome(#"{"outcome":"stuck","blocker":"Which endpoint?"}"#)
+        stuck.tmux.set("lw_g--app_0", alive: false)
+        await stuck.cycle()
+        #expect(stuck.backlog.card(id: "id-12")?.state == .stuck)
+        #expect(stuck.backlog.pushes("id-12") == [pushed("commit-1")])
+
+        let rejected = try await spawned()
+        rejected.backlog.state { $0.failMarkReview = BackendRejection("PUT /issues/12: 422 bad label") }
+        try rejected.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        rejected.tmux.set("lw_g--app_0", alive: false)
+        await rejected.cycle()
+        #expect(rejected.backlog.card(id: "id-12")?.state == .stuck)
+        #expect(rejected.backlog.pushes("id-12") == [pushed("commit-1")])
+
+        let noCommits = try await spawned()
+        noCommits.git.state { $0.defaultCommitsAhead = 0 }
+        try noCommits.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        noCommits.tmux.set("lw_g--app_0", alive: false)
+        await noCommits.cycle()
+        #expect(noCommits.backlog.card(id: "id-12")?.state == .stuck)
+        #expect(noCommits.backlog.pushes("id-12").isEmpty)
+
+        let refused = try await spawned()
+        refused.git.state { $0.pushFailure = PushRejected(branch: "loopworker-12-fix-it", url: "https://forge.example/g/app.git") }
+        try refused.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        refused.tmux.set("lw_g--app_0", alive: false)
+        await refused.cycle()
+        #expect(refused.backlog.card(id: "id-12")?.state == .stuck)
+        #expect(refused.backlog.pushes("id-12").isEmpty)
     }
 
     @Test func backendRejectionEndsTheCardStuck() async throws {  // B90
@@ -824,6 +1013,61 @@ func fileMode(_ url: URL) throws -> Int {
         await h.cycle()
         #expect(h.backlog.writes.last == .markStuck("id-12", blocker: "Couldn't finish: the forge or backlog refused: PUT /issues/12: 422 bad label"))
         #expect(try h.status().projects[0].slots[0].state == "idle")
+    }
+
+    @Test("B90, B235: a rejected stuck after a rejection that followed the push still records the push when the retry lands")
+    func aRetriedRejectionStuckKeepsThePush() async throws {
+        let h = try await spawned()
+        h.git.state { $0.head = "head-1" }
+        h.backlog.state {
+            $0.failMarkReview = BackendRejection("PUT /issues/12: 422 bad label")
+            $0.failMarkStuckOnce = BackendRejection("POST /notes: 422")
+        }
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.backlog.card(id: "id-12")?.state == .working)
+        h.clock.advance(31)
+        await h.cycle()
+        #expect(h.backlog.writes.last == .markStuck("id-12", blocker: "Couldn't finish: the forge or backlog refused: PUT /issues/12: 422 bad label"))
+        #expect(h.backlog.pushes("id-12").last == PushRecord(branch: "loopworker-12-fix-it", commit: "head-1"))
+    }
+
+    @Test("B240: a finish that fails after its push records the push on the card once, so another install resumes the branch after the card moved")
+    func aFailedFinishRecordsItsPush() async throws {
+        let a = try await spawned()
+        a.git.state { $0.head = "head-1" }
+        a.backlog.state { $0.failMarkReview = FakeError("502 Bad Gateway") }
+        try a.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        a.tmux.set("lw_g--app_0", alive: false)
+        await a.cycle()
+        let pushed = PushRecord(branch: "loopworker-12-fix-it", commit: "head-1")
+        #expect(a.backlog.writes.last == .recordPush("id-12", pushed))
+        a.clock.advance(31)
+        await a.cycle()  // the retry fails again; the card already records the push
+        #expect(a.backlog.writes.filter { $0 == .recordPush("id-12", pushed) }.count == 1)
+        #expect(a.git.state.get.pushes.count == 2)
+
+        a.backlog.setState("id-12", .ready)  // a human moves it while the finish backs off
+        a.backlog.state { $0.failMarkReview = nil }
+        let b = try ManagerHarness(projects: oneColdProject, sharing: a)
+        try await b.boot()
+        await b.cycle()
+        #expect(b.lifecycle.state.get.acquiredBases == ["loopworker-12-fix-it"])
+    }
+
+    @Test("B240: a stuck finish whose markStuck fails after the push records the push; a failed record is logged")
+    func aFailedStuckRecordsItsPush() async throws {
+        let h = try await spawned()
+        h.backlog.state { $0.failMarkStuckOnce = FakeError("503"); $0.failRecordPush = true }
+        try h.writeOutcome(#"{"outcome":"stuck","blocker":"Which endpoint?"}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.log.contains("finishing g/app#12 failed after pushing loopworker-12-fix-it at commit-1, and recording that push on the card failed too: recordPush g/app#12 failed", level: .error))
+        h.backlog.state { $0.failRecordPush = false; $0.failMarkStuckOnce = FakeError("503") }
+        h.clock.advance(31)
+        await h.cycle()
+        #expect(h.backlog.writes.last == .recordPush("id-12", PushRecord(branch: "loopworker-12-fix-it", commit: "commit-2")))
     }
 
     @Test func crashReleasesWithTheRedactedPaneTail() async throws {  // B57

@@ -107,3 +107,28 @@ public struct CardSnapshot: Sendable, Equatable {
         self.vouchedAt = vouchedAt
     }
 }
+
+/// A push of a card branch by LoopWorker: the branch and the commit that the push left on the
+/// forge. The backlog keeps the newest one on the card (`Backlog.lastPush`), so any Manager that
+/// claims the card later can tell its branch from someone else's.
+public struct PushRecord: Sendable, Equatable, Codable {
+    public var branch: String
+    public var commit: String
+
+    public init(branch: String, commit: String) {
+        self.branch = branch
+        self.commit = commit
+    }
+
+    /// `<branch>@<commit>`, as backlogs write it into a note's header.
+    public var line: String { "\(branch)@\(commit)" }
+
+    /// Parses `line`. Nil when either part is empty or the text has whitespace; a branch may
+    /// contain `@`, a commit can't.
+    public init?(line: some StringProtocol) {
+        guard let at = line.lastIndex(of: "@"), !line.contains(where: \.isWhitespace) else { return nil }
+        let branch = line[..<at], commit = line[line.index(after: at)...]
+        guard !branch.isEmpty, !commit.isEmpty else { return nil }
+        self.init(branch: String(branch), commit: String(commit))
+    }
+}

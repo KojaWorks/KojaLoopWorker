@@ -30,6 +30,9 @@ final class FakeGit: GitDriving, @unchecked Sendable {
         var refs: [String: String] = [:]
         /// `isAncestor` per ancestor ref; else true.
         var ancestors: [String: Bool] = [:]
+        /// Commits that `branchContains` doesn't find, per branch.
+        var rewritten: [String: Set<String>] = [:]
+        var failBranchContains = false
     }
 
     let state = Guarded(State())
@@ -95,6 +98,14 @@ final class FakeGit: GitDriving, @unchecked Sendable {
         state {
             $0.calls.append("isAncestor \(ancestor)")
             return $0.ancestors[ancestor] ?? true
+        }
+    }
+
+    func branchContains(_ repo: URL, branch: String, commit: String) async throws -> Bool {
+        try state {
+            $0.calls.append("branchContains \(branch) \(commit)")
+            if $0.failBranchContains { throw FakeError("git merge-base --is-ancestor \(commit) origin/\(branch) failed") }
+            return !($0.rewritten[branch]?.contains(commit) ?? false)
         }
     }
 

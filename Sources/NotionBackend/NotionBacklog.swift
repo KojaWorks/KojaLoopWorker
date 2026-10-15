@@ -12,6 +12,7 @@ import LoopWorkerCore
 /// notes are page comments that the integration wrote, each under a header line (`ManagerComment`).
 /// A claim comment names the claiming Manager's holder id; a `working` or `ci` card's `holder`
 /// is the winner of its newest claim round, unless a release comment is newer (`holder(of:)`).
+/// A comment that follows a push names it on the line after its header (`lastPush`).
 ///
 /// `CardRef.id` is the page id; `display` is the unique-id property (`CARD-12`) when the
 /// database has one, else `notion:` and the page id's first 8 hex digits.
@@ -137,6 +138,17 @@ public actor NotionBacklog: Backlog {
         }
     }
 
+    /// The push named by the integration's newest comment that names one.
+    public func lastPush(_ card: Card) async throws -> PushRecord? {
+        let me = try await meID()
+        return try await comments(card.ref.id).reversed().lazy.filter { $0.author == me }.compactMap { ManagerComment.pushed($0.text) }.first
+    }
+
+    public func recordPush(_ card: Card, pushed: PushRecord) async throws {
+        guard try await lastPush(card) != pushed else { return }
+        try await post(card.ref.id, .pushed, [("`\(pushed.branch)` at `\(pushed.commit.prefix(12))`", nil)], pushed: pushed)
+    }
+
     // MARK: Writes
 
     public func claim(_ card: Card, holder: String) async throws -> Bool {
@@ -174,22 +186,22 @@ public actor NotionBacklog: Backlog {
         return false
     }
 
-    public func markReview(_ card: Card, review: ReviewRequest, note: String?) async throws {
+    public func markReview(_ card: Card, review: ReviewRequest, note: String?, pushed: PushRecord?) async throws {
         try await require(card, ["working", "ci"], for: "markReview")
         var segments: [(text: String, link: URL?)] = [("\(review.display): ", nil), (review.url.absoluteString, review.url)]
         if let note { segments.append(("\n\n\(note)", nil)) }
         try await setState(card.ref.id, "review")
-        try await post(card.ref.id, .review, segments)
+        try await post(card.ref.id, .review, segments, pushed: pushed)
     }
 
-    public func markVerifying(_ card: Card, review: ReviewRequest, plan: VerifyingPlan) async throws {
+    public func markVerifying(_ card: Card, review: ReviewRequest, plan: VerifyingPlan, pushed: PushRecord?) async throws {
         try await require(card, ["working"], for: "markVerifying")
         let link: [(text: String, link: URL?)] = [("\(review.display): ", nil), (review.url.absoluteString, review.url)]
         try await setState(card.ref.id, "ci")
         switch plan {
-        case .ciThenReview: try await post(card.ref.id, .ci, link + [("\n\nWaiting for CI before review.", nil)])
-        case .ciThenMerge: try await post(card.ref.id, .ci, link + [("\n\nWaiting for CI before merging.", nil)])
-        case .merge: try await post(card.ref.id, .merging, link)
+        case .ciThenReview: try await post(card.ref.id, .ci, link + [("\n\nWaiting for CI before review.", nil)], pushed: pushed)
+        case .ciThenMerge: try await post(card.ref.id, .ci, link + [("\n\nWaiting for CI before merging.", nil)], pushed: pushed)
+        case .merge: try await post(card.ref.id, .merging, link, pushed: pushed)
         }
     }
 
@@ -211,10 +223,10 @@ public actor NotionBacklog: Backlog {
         return true
     }
 
-    public func markStuck(_ card: Card, blocker: String) async throws {
+    public func markStuck(_ card: Card, blocker: String, pushed: PushRecord?) async throws {
         try await require(card, ["working", "ci"], for: "markStuck")
         try await setState(card.ref.id, "stuck")
-        try await post(card.ref.id, .stuck, [(blocker, nil)])
+        try await post(card.ref.id, .stuck, [(blocker, nil)], pushed: pushed)
     }
 
     public func release(_ card: Card, reason: String, countsAsAttempt: Bool) async throws {
@@ -245,10 +257,11 @@ public actor NotionBacklog: Backlog {
         ]))
     }
 
-    /// Posts a Manager comment and returns its id.
+    /// Posts a Manager comment, with `pushed` on the line after its header, and returns its id.
     @discardableResult
-    private func post(_ page: String, _ kind: ManagerComment, _ segments: [(text: String, link: URL?)]) async throws -> String {
-        let all = [(text: kind.header + (segments.isEmpty ? "" : "\n\n"), link: URL?.none)] + segments
+    private func post(_ page: String, _ kind: ManagerComment, _ segments: [(text: String, link: URL?)], pushed: PushRecord? = nil) async throws -> String {
+        let header = kind.header + (pushed.map { "\n" + ManagerComment.pushedPrefix + $0.line } ?? "")
+        let all = [(text: header + (segments.isEmpty ? "" : "\n\n"), link: URL?.none)] + segments
         let created = try await client.request("POST", "comments", body: .object([
             "parent": .object(["page_id": .string(page)]),
             "rich_text": .array(NotionMarkdown.richText(all)),
@@ -310,8 +323,8 @@ public actor NotionBacklog: Backlog {
 
     /// Maps a page to a card (B190). A `next` card is `ready` when a trusted user edited it
     /// last, or the integration did and its newest comment is a release that follows a claim,
-    /// a CI or merging notice or a release. A `working` or `ci` card is the Manager's only while
-    /// the integration's newest comment is a claim, a CI or merging notice or a release. Anything else is
+    /// a CI, merging or push notice or a release. A `working` or `ci` card is the Manager's only while
+    /// the integration's newest comment is a claim, a CI, merging or push notice or a release. Anything else is
     /// `other`, logged once. Reads the comments unless the state property alone makes it `other`.
     private func evaluate(_ page: Page, project: String) async throws -> Evaluation {
         let me = try await meID()
