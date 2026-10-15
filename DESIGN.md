@@ -135,7 +135,7 @@ that starts with `/` is escaped, so `/merge` or `/label` from a worker is shown,
 
 Notion records no per-property history: a page has one `last_edited_by` and one
 `last_edited_time` (rounded to the minute) for every edit to it, whether to a property, the
-title or the body. Nothing in the public API says who set the state property to `next`. Blocks
+title or a body block. Nothing in the public API says who set the state property to `next`. Blocks
 and comments do carry their own authors, and Notion sets those itself.
 
 The token is an internal integration's secret, so it belongs to a bot, not a person. The
@@ -164,6 +164,8 @@ trusted users can edit when that is not acceptable.
 Notion has no compare-and-set. `claim` writes `working`, then posts a claim comment that names
 the host and a nonce; when several claim comments follow the integration's previous other
 comment, the oldest wins, and every other claimer returns false and deletes its own comment.
+Comment times are rounded to the minute too, so claims in the same minute keep the order in
+which the API lists them.
 
 ## The worker lifecycle
 
