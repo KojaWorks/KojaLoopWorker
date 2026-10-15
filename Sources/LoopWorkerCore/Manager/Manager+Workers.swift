@@ -627,6 +627,8 @@ extension Manager {
                 case .stuck(let blocker):
                     try await finishStuck(spec, card: card, branch: branch, base: base, blocker: blocker)
                 }
+            } catch is PushRejected where readPushes()[card.ref.id]?.branch == branch {
+                try await stuck(spec, card: card, blocker: "Someone pushed to `\(branch)` while the worker ran, so LoopWorker didn't overwrite those commits and didn't push the worker's. Move the card back to ready to redo this round on top of them.")
             } catch is PushRejected {
                 try await stuck(spec, card: card, blocker: "Branch `\(branch)` already exists on the forge and wasn't created by LoopWorker for this card, so LoopWorker didn't overwrite it. Rename or delete that branch (or change the project's branch template), then move the card back to ready.")
             }

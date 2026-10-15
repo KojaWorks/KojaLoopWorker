@@ -654,6 +654,19 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.forge.state.get.notes.isEmpty)
     }
 
+    @Test("B210: a push refused because someone pushed during the run says so, instead of calling the branch foreign")
+    func aPushDuringTheRunEndsStuckWithAnHonestBlocker() async throws {
+        let h = try await spawned()
+        try await requeuedAfterStuck(h)
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 2)
+        h.git.state { $0.remoteTips["loopworker-12-fix-it"] = "human-2" }
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.backlog.writes.last == .markStuck("id-12", blocker: "Someone pushed to `loopworker-12-fix-it` while the worker ran, so LoopWorker didn't overwrite those commits and didn't push the worker's. Move the card back to ready to redo this round on top of them."))
+    }
+
     @Test("B184: the next attempt's brief carries the previous outcome and LoopWorker's notes as background")
     func aRequeuedCardGetsThePreviousAttempt() async throws {
         let h = try await spawned()
