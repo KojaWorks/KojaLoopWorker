@@ -21,6 +21,7 @@ public enum PatchBackend {
     /// working = "In progress"
     /// verifying = "Verifying"                       # waiting for CI (projects with wait_for_ci)
     /// review  = "In review"
+    /// merged  = "Merged"                            # merged, a human still looks (finish merges)
     /// stuck   = "Needs refinement"
     /// shipped = "Shipped"                           # what a blocked_by target must reach
     /// ```
