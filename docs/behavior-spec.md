@@ -51,6 +51,7 @@ Status: `keep` ports the Python behavior as is; `fix` states the corrected behav
 | B157 | `usesLFS` is true when a `.gitattributes` at any depth in HEAD contains `filter=lfs`. `lfsPull` runs `git lfs install --local --skip-smudge --skip-repo` (the worker's checkouts don't download either, and no hooks are installed), then `git lfs pull` with the contract's include and exclude patterns, under the contract's pull timeout. Both run with the credentialed flags and the forge's environment, with `lfs.url` and `lfs.pushurl` set to `<clone URL>/info/lfs`, so no endpoint comes from repo config. | changed | none |
 | B158 | `lfsPush` runs `git lfs push origin HEAD` with the same flags, endpoint and environment, under a 60 min timeout. It uploads the objects that HEAD references and no `origin/*` tracking ref does; `-c remote.origin.url=<clone URL>` keeps `origin` valid when the worker removed the remote. | changed | none |
 | B28 | `removeWorktree` runs `git worktree remove --force` then `git worktree prune`. It logs failures and never throws. | keep | `slots.py:153-178`, `slots.py:275-281`; `test_teardown_timeout_stays_best_effort` |
+| B244 | When a git command fails with git's `Unable to create '<path>.lock': File exists`, and that lock is more than 60 s old, the Manager removes it, logs a warning with its path and age, and runs the command once more. A younger lock leaves the failure as it was, so a git process that is still running keeps its lock. | fix | none |
 
 ## SlotLifecycle
 

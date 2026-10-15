@@ -126,14 +126,22 @@ public protocol GitDriving: Sendable {
 public struct Git: GitDriving {
     private let runner: any ProcessRunning
     private let log: any LogSink
+    private let now: @Sendable () -> Date
 
     /// - Parameters:
     ///   - runner: Runs every git command.
-    ///   - log: Receives the failures of `removeWorktree`, which never throws.
-    public init(runner: any ProcessRunning, log: any LogSink) {
+    ///   - log: Receives the failures of `removeWorktree`, which never throws, and each stale
+    ///     lock that a command removed.
+    ///   - now: The clock that judges a lock's age.
+    public init(runner: any ProcessRunning, log: any LogSink, now: @escaping @Sendable () -> Date = Date.init) {
         self.runner = runner
         self.log = log
+        self.now = now
     }
+
+    /// A lock that git refuses to replace and that is older than this is left over from a git
+    /// process that was killed, typically with a reaped worker, and is removed.
+    static let staleLockAge: TimeInterval = 60
 
     private static let cloneTimeout: Duration = .seconds(30 * 60)
     private static let networkTimeout: Duration = .seconds(10 * 60)
@@ -320,10 +328,33 @@ public struct Git: GitDriving {
     }
 
     @discardableResult
+    /// Runs git. When git refuses because a `.lock` file exists that is older than
+    /// `staleLockAge`, removes it, logs it and runs the command once more (B244).
     private func git(_ arguments: [String], _ timeout: Duration = localTimeout, _ environment: [String: String] = [:]) async throws -> ProcessResult {
-        let result = try await runner.run(Self.spec(arguments, timeout, environment))
-        guard result.succeeded else { throw GitError(command: arguments.joined(separator: " "), result: result) }
+        let command = arguments.joined(separator: " ")
+        var result = try await runner.run(Self.spec(arguments, timeout, environment))
+        if !result.succeeded, let lock = Self.blockingLock(result.output), removeIfStale(lock, blocking: command) {
+            result = try await runner.run(Self.spec(arguments, timeout, environment))
+        }
+        guard result.succeeded else { throw GitError(command: command, result: result) }
         return result
+    }
+
+    /// The lock file in git's "Unable to create '<path>.lock': File exists." message.
+    static func blockingLock(_ output: String) -> String? {
+        guard let match = output.firstMatch(of: #/Unable to create '([^']+\.lock)': File exists/#) else { return nil }
+        return String(match.1)
+    }
+
+    private func removeIfStale(_ path: String, blocking command: String) -> Bool {
+        let modified = (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
+        guard let modified, now().timeIntervalSince(modified) > Self.staleLockAge else { return false }
+        do { try FileManager.default.removeItem(atPath: path) } catch {
+            log.error("can't remove the stale git lock \(path) that blocks `git \(command)`: \(error.localizedDescription)")
+            return false
+        }
+        log.warning("removed the stale git lock \(path), \(Int(now().timeIntervalSince(modified))) s old, that blocked `git \(command)`")
+        return true
     }
 
     private static func spec(_ arguments: [String], _ timeout: Duration, _ environment: [String: String]) -> ProcessSpec {

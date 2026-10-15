@@ -474,3 +474,45 @@ struct LFSFixture {
         #expect(try await f.git.usesLFS(f.seed))
     }
 }
+
+@Suite struct GitStaleLockTests {
+    /// A lock file `age` seconds old, and a runner whose first git call fails on it like git does.
+    private func setUp(age: TimeInterval) throws -> (lock: URL, runner: ScriptedRunner, now: Date) {
+        let dir = FileManager.default.temporaryDirectory.appending(path: "lw-lock-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let lock = dir.appending(path: "index.lock")
+        let now = Date(timeIntervalSince1970: 2_000_000)
+        try Data().write(to: lock)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-age)], ofItemAtPath: lock.path)
+        let calls = Guarded(0)
+        let runner = ScriptedRunner { _ in
+            let n = calls { $0 += 1; return $0 }
+            return n == 1
+                ? ProcessResult(status: 128, output: "fatal: Unable to create '\(lock.path)': File exists.\n\nAnother git process seems to be running")
+                : ProcessResult(status: 0, output: "")
+        }
+        return (lock, runner, now)
+    }
+
+    @Test func B244_aStaleLockIsRemovedAndTheCommandRetried() async throws {
+        let (lock, runner, now) = try setUp(age: 75)
+        let log = RecordingLog()
+        try await Git(runner: runner, log: log, now: { now }).detach(URL(filePath: "/w/0"))
+        #expect(!FileManager.default.fileExists(atPath: lock.path))
+        #expect(runner.specs.get.count == 2)
+        #expect(log.lines.contains { $0.0 == .warning && $0.1.contains("removed the stale git lock \(lock.path), 75 s old") })
+    }
+
+    @Test func B244_aYoungLockStaysAndTheCommandFails() async throws {
+        let (lock, runner, now) = try setUp(age: 5)
+        await #expect(throws: GitError.self) { try await Git(runner: runner, log: RecordingLog(), now: { now }).detach(URL(filePath: "/w/0")) }
+        #expect(FileManager.default.fileExists(atPath: lock.path))
+        #expect(runner.specs.get.count == 1)
+    }
+
+    @Test func B244_onlyGitsLockMessageCounts() {
+        #expect(Git.blockingLock("fatal: Unable to create '/r/.git/worktrees/0/index.lock': File exists.") == "/r/.git/worktrees/0/index.lock")
+        #expect(Git.blockingLock("fatal: Unable to create '/r/.git/config': File exists.") == nil)
+        #expect(Git.blockingLock("error: some other failure") == nil)
+    }
+}
