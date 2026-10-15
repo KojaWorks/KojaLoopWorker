@@ -95,6 +95,12 @@ public actor Manager {
         var ciRound: Int?
         /// For a CI fix round: the pushed commit whose pipeline failed, where the round started.
         var ciCommit: String?
+        /// For a fix round: it is a rebase round.
+        var rebaseRound = false
+        /// For a fix round: the watch's rebase rounds, this one included.
+        var rebases = 0
+        /// For a rebase round: the commit that `origin/<base>` pointed at when the round spawned.
+        var rebaseTarget: String?
         var spawnedAt: Date?
         var lastError: String?
         var lastAttemptFinished: Date?
@@ -165,6 +171,8 @@ public actor Manager {
     var lastStatusError: String?
     /// `verifying` cards whose CI the Manager watches, by card id.
     var ciWatches: [String: CIWatch] = [:]
+    /// Keys of the projects with a `Forge.merge` call in flight; one per project at a time.
+    var merging: Set<String> = []
 
     public init(config: HostConfig, dependencies: ManagerDependencies, clock: any ManagerClock = SystemClock()) {
         self.config = config
@@ -194,6 +202,7 @@ public actor Manager {
         log.info("LoopWorker \(loopworkerVersion) starting on \(hostName), pid \(getpid()), home \(config.home.path)")
         log.info("budget \(config.maxSlots) slot units, at most \(config.maxConcurrentWorkers) workers, max \(config.maxAttempts) attempts; backlog \(config.backlogKind), forge \(config.forgeKind); CLAUDE_CODE_OAUTH_TOKEN \(token)")
         if config.projects.isEmpty { log.warning("no [[project]] in \(configFile.path); idling until one is added") }
+        for warning in config.warnings { log.warning(warning) }
 
         for spec in config.projects { addProject(spec) }
         resizeAll()

@@ -100,6 +100,15 @@ private final class DiagnosableForge: Forge, Diagnosable, @unchecked Sendable {
         #expect(Doctor.passed(checks))
     }
 
+    @Test("B202: a deprecated config key is a warning")
+    func deprecatedKeyWarns() async throws {
+        try config("[backlog]\nkind = \"gitlab\"\n[[project]]\npath = \"g/app\"\ndraft = false\n")
+        let checks = await doctor().run()
+        let warnings = checks.filter { $0.name == "config" && $0.level == .warn }
+        #expect(warnings.map(\.detail) == ["config.toml: g/app: draft is deprecated; replace it with finish = \"ready\""])
+        #expect(Doctor.passed(checks))
+    }
+
     @Test func aReadableSecretsFileFailsWithChmod() async throws {
         try secrets("GL_TOKEN=\(Self.token)\n", mode: 0o644)
         let checks = await doctor(backends: ConfigError("GL_TOKEN is not set")).run()

@@ -193,6 +193,9 @@ extension Manager {
             $0.base = record.base
             $0.ciRound = record.ciRound
             $0.ciCommit = record.ciCommit
+            $0.rebaseRound = record.rebaseRound ?? false
+            $0.rebases = record.rebases ?? 0
+            $0.rebaseTarget = record.rebaseTarget
             $0.spawnedAt = record.claimedAt
             $0.prepared = true
         }
@@ -439,6 +442,7 @@ extension Manager {
             log.error("\(configFile.path) changed but can't be used: \(error); keeping the current config")
             return
         }
+        for warning in next.warnings { log.warning(warning) }
         apply(next)
     }
 

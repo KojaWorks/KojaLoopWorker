@@ -90,6 +90,7 @@ public struct Doctor: Sendable {
             checks.append(c.projects.isEmpty
                 ? DoctorCheck("config", .warn, "no projects", remedy: "add a [[project]] to \(home.appending(path: "config.toml").path)")
                 : DoctorCheck("config", .ok, "projects: \(c.projects.map(\.path).joined(separator: ", "))"))
+            checks += c.warnings.map { DoctorCheck("config", .warn, $0, remedy: "edit \(home.appending(path: "config.toml").path)") }
         } catch {
             config = nil
             checks.append(DoctorCheck("config", .fail, "\(error)", remedy: "create or fix \(home.appending(path: "config.toml").path); README.md \"Configuration\" shows a complete one"))
