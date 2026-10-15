@@ -81,6 +81,12 @@ struct Round: Sendable, Equatable {
     var readAt: Date?
 }
 
+/// A `BackendRejection` that ended a finish after its push, which the stuck card records.
+struct RejectedAfterPush: Error {
+    var rejection: BackendRejection
+    var pushed: PushRecord
+}
+
 /// A start or finish step failed; `step` says which, for the log.
 struct StepError: Error, CustomStringConvertible {
     var step: String
@@ -733,6 +739,8 @@ extension Manager {
                                              replies: replies, round: round, ciRound: s.ciRound, ciCommit: s.ciCommit,
                                              rebaseRound: s.rebaseRound, rebases: s.rebases, rebaseTarget: s.rebaseTarget,
                                              plan: Self.verifyingPlan(spec.project, contract: projects[ref.key]?.contract))
+                    } catch let rejected as RejectedAfterPush {
+                        try await stuck(spec, card: card, blocker: "Couldn't finish: the forge or backlog refused: \(rejected.rejection)", pushed: rejected.pushed)
                     } catch let rejection as BackendRejection {
                         try await stuck(spec, card: card, blocker: "Couldn't finish: the forge or backlog refused: \(rejection)")
                     }
@@ -846,7 +854,7 @@ extension Manager {
             let waits = plan == .merge ? "merges" : "waits for CI on \(commit.prefix(12)) before it \(plan == .ciThenMerge ? "merges" : "moves to review")"
             log.info("\(label(spec)): \(card.ref) \(waits): \(review.display) \(review.url.absoluteString)")
         } catch let rejection as BackendRejection {
-            try await stuck(spec, card: card, blocker: "Couldn't finish: the forge or backlog refused: \(rejection)", pushed: pushed)
+            throw RejectedAfterPush(rejection: rejection, pushed: pushed)
         }
     }
 

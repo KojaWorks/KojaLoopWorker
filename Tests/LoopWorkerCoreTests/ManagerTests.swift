@@ -984,6 +984,24 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(try h.status().projects[0].slots[0].state == "idle")
     }
 
+    @Test("B90, B235: a rejected stuck after a rejection that followed the push still records the push when the retry lands")
+    func aRetriedRejectionStuckKeepsThePush() async throws {
+        let h = try await spawned()
+        h.git.state { $0.head = "head-1" }
+        h.backlog.state {
+            $0.failMarkReview = BackendRejection("PUT /issues/12: 422 bad label")
+            $0.failMarkStuckOnce = BackendRejection("POST /notes: 422")
+        }
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.backlog.card(id: "id-12")?.state == .working)
+        h.clock.advance(31)
+        await h.cycle()
+        #expect(h.backlog.writes.last == .markStuck("id-12", blocker: "Couldn't finish: the forge or backlog refused: PUT /issues/12: 422 bad label"))
+        #expect(h.backlog.pushes("id-12").last == PushRecord(branch: "loopworker-12-fix-it", commit: "head-1"))
+    }
+
     @Test func crashReleasesWithTheRedactedPaneTail() async throws {  // B57
         let h = try await spawned()
         h.tmux.set("lw_g--app_0", pane: "working on it\nSECRET=abc leaked\n")

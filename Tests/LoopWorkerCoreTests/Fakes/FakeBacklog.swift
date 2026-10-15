@@ -47,6 +47,8 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
         /// Manager notes by card id: `markStuck` and `release` append theirs.
         var notes: [String: [String]] = [:]
         var failManagerNotes = false
+        /// The next `markStuck` throws this instead.
+        var failMarkStuckOnce: (any Error)?
         /// Every push that a write recorded, in order; `lastPush` returns the card's last one.
         var pushes: [(card: String, push: PushRecord)] = []
         var failLastPush = false
@@ -187,7 +189,8 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
     }
 
     func markStuck(_ card: Card, blocker: String, pushed: PushRecord?) async throws {
-        state {
+        try state {
+            if let e = $0.failMarkStuckOnce { $0.failMarkStuckOnce = nil; throw e }
             if let pushed { $0.pushes.append((card.ref.id, pushed)) }
             $0.writes.append(.markStuck(card.ref.id, blocker: blocker))
             $0.notes[card.ref.id, default: []].append(blocker)
