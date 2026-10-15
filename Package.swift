@@ -21,6 +21,10 @@ let package = Package(
             dependencies: ["LoopWorkerCore", .product(name: "TOMLDecoder", package: "TOMLDecoder")]
         ),
         .target(
+            name: "NotionBackend",
+            dependencies: ["LoopWorkerCore", .product(name: "TOMLDecoder", package: "TOMLDecoder")]
+        ),
+        .target(
             name: "GitHubBackend",
             dependencies: ["LoopWorkerCore", .product(name: "TOMLDecoder", package: "TOMLDecoder")]
         ),
@@ -34,6 +38,7 @@ let package = Package(
                 "LoopWorkerCore",
                 "GitLabBackend",
                 "PatchBackend",
+                "NotionBackend",
                 "GitHubBackend",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
@@ -41,6 +46,7 @@ let package = Package(
         .testTarget(name: "LoopWorkerCoreTests", dependencies: ["LoopWorkerCore"]),
         .testTarget(name: "GitLabBackendTests", dependencies: ["GitLabBackend"]),
         .testTarget(name: "PatchBackendTests", dependencies: ["PatchBackend"]),
+        .testTarget(name: "NotionBackendTests", dependencies: ["NotionBackend"]),
         .testTarget(name: "GitHubBackendTests", dependencies: ["GitHubBackend"]),
         .testTarget(name: "LoopWorkerCLITests", dependencies: ["loopworker"]),
     ]
