@@ -158,6 +158,18 @@ import Testing
         }
     }
 
+    @Test("B201: the agent asks how each project finishes, writes finish, and prepares the merged state")
+    func finishModes() {
+        let text = Prompt.instructions(version: "1.2.3", home: home)
+        for phrase in ["how a finished card ends", "`ci_then_merge` waits for the pushed commit's CI",
+                       #"finish      = "draft"           # draft, ready, merge or ci_then_merge"#,
+                       "`loopworker::merged` if a project's `finish` is `merge` or `ci_then_merge`",
+                       "also `merged` when the project's `finish` is `merge` or `ci_then_merge`"] {
+            #expect(text.contains(phrase), "missing: \(phrase)")
+        }
+        #expect(!text.contains("draft ="), "the config template still uses the deprecated draft key")
+    }
+
     @Test func docLinksPinTheReleaseTag() {
         #expect(Prompt.docs(version: "1.2.3") == "https://github.com/KojaWorks/KojaLoopWorker/blob/v1.2.3/")
         #expect(Prompt.docs(version: "0.0.0-dev") == "https://github.com/KojaWorks/KojaLoopWorker/blob/main/")
