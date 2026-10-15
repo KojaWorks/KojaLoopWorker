@@ -250,12 +250,12 @@ extension Manager {
         }
 
         let resumed: PushRecord?
+        // Read before acquiring, so a read that keeps failing doesn't provision a slot every time.
         do { resumed = try await resumesPushedBranch(spec, card: card, base: base, branch: branch) }
         catch {
-            await abortStart(ref, card: card, contract: contract, why: "\(error)", broken: nil)
+            await releaseBeforeAcquire(ref, card: card, why: "\(error)")
             return
         }
-        // Read before acquiring, so a read that keeps failing doesn't provision a slot every time.
         var snapshot: CardSnapshot?, reviewRound: WorkerBrief.ReviewRound?
         if resumed != nil {
             do {

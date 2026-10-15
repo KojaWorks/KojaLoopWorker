@@ -812,9 +812,10 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.tmux.spawned.count == 1)
         #expect(h.backlog.writes.last == .release("id-12", reason: "Couldn't start a worker: checking whether loopworker-12-fix-it is still on the forge: git rev-parse origin/loopworker-12-fix-it failed", countsAsAttempt: false))
         #expect(h.git.state.get.pushes.count == 1)
+        #expect(h.log.contains("not claiming it again for 30 s (1 failure(s) in a row)", level: .error))
     }
 
-    @Test("B178, B235: a failed read of the card's last push releases the card without starting it")
+    @Test("B178, B211, B235: a failed read of the card's last push releases the card before acquiring, and backs off its claim")
     func aFailedLastPushReadReleasesTheCard() async throws {
         let h = try await spawned()
         try await requeuedAfterStuck(h)
@@ -822,6 +823,13 @@ func fileMode(_ url: URL) throws -> Int {
         await h.cycle()
         #expect(h.tmux.spawned.count == 1)
         #expect(h.backlog.writes.last == .release("id-12", reason: "Couldn't start a worker: reading g/app#12's last push: lastPush g/app#12 failed", countsAsAttempt: false))
+        #expect(h.lifecycle.calls.filter { $0.hasPrefix("acquire") }.count == 1)
+        let claims = { h.backlog.writes.filter { $0 == .claim("id-12") }.count }
+        let before = claims()
+        h.clock.advance(20)
+        await h.cycle()
+        #expect(claims() == before)  // backing off instead of claiming and releasing every tick
+        #expect(h.log.contains("not claiming it again for 30 s (1 failure(s) in a row)", level: .error))
     }
 
     @Test("B178, B235: a card that one install pushed, then went stuck and was re-queued, resumes on another install and pushes under the lease")
