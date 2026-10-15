@@ -55,3 +55,119 @@ public enum NotionBackend {
         return String(decoding: buf.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
     }
 }
+
+extension NotionBacklog: Diagnosable {
+    /// B199: the token's integration, the trusted users, and per project the database's
+    /// connection, data source and properties. Never changes the schema.
+    public func diagnose() async -> [DoctorCheck] {
+        var checks = [await tokenCheck(), await trustedUsersCheck()]
+        for (db, path) in config.projectPaths.sorted(by: { $0.value < $1.value }) {
+            checks.append(await databaseCheck(db, path: path))
+        }
+        return checks
+    }
+
+    private func tokenCheck() async -> DoctorCheck {
+        let env = config.tokenEnv
+        do {
+            let me = try await client.me()
+            let workspace = me["bot"]?["workspace_name"]?.string.map { " in the workspace \($0)" } ?? ""
+            return DoctorCheck("backlog notion", .ok, "\(env) belongs to the integration \(me["name"]?.string ?? "unnamed")\(workspace) (id \(me["id"]?.string ?? "?"))")
+        } catch NotionError.personToken(let env, let name) {
+            return DoctorCheck("backlog notion", .fail, "\(NotionError.personToken(tokenEnv: env, name: name))",
+                               remedy: "create an internal integration and put its secret in secrets.env as \(env)")
+        } catch {
+            return DoctorCheck("backlog notion", .fail, "\(error)",
+                               remedy: "check that this host reaches api.notion.com and that \(env) in secrets.env holds an internal integration's secret")
+        }
+    }
+
+    private func trustedUsersCheck() async -> DoctorCheck {
+        var people: [String] = []
+        var problems: [String] = []
+        for user in config.trustedUsers {
+            do {
+                guard let u = try await client.request("GET", "users/\(user)", missing: .none) else {
+                    problems.append("\(user) is not a user in this workspace")
+                    continue
+                }
+                let name = u["name"]?.string ?? "unnamed"
+                if u["type"]?.string == "person" { people.append("\(name) (\(user))") }
+                else { problems.append("\(user) is a \(u["type"]?.string ?? "user of unknown type") (\(name)), not a person") }
+            } catch {
+                problems.append("\(user): \(error)")
+            }
+        }
+        let name = "backlog notion trusted users"
+        guard !problems.isEmpty else { return DoctorCheck(name, .ok, "trusted users: \(people.joined(separator: ", "))") }
+        let remedy: String
+        do {
+            let lines = try await client.list("GET", "users")
+                .filter { $0["type"]?.string == "person" }
+                .map { "\($0["name"]?.string ?? "unnamed"): \($0["id"]?.string ?? "?")" }
+                .sorted()
+            remedy = "set [backlog.notion] trusted_users to the ids of the people whose edits vouch for cards. The workspace's people:\n" + lines.joined(separator: "\n")
+        } catch {
+            remedy = "set [backlog.notion] trusted_users to people's ids; the workspace's people can't be listed (\(error)), so give the integration the capability to read user information"
+        }
+        return DoctorCheck(name, .fail, problems.joined(separator: "; "), remedy: remedy)
+    }
+
+    private func databaseCheck(_ db: String, path: String) async -> DoctorCheck {
+        let name = "backlog notion \(path)"
+        let properties: [String: JSON]
+        let source: String
+        do {
+            source = try await dataSource(db)
+            properties = try await schema(source, database: db)
+        } catch let e as NotionError {
+            let remedy = switch e {
+            case .notConnected: "open the database in Notion, choose ••• -> Connections (Add connections) and add the integration"
+            case .dataSources: "map \(path) in [backlog.notion.projects] to a database that has exactly one data source"
+            default: "check that this host reaches api.notion.com and that \(config.tokenEnv) holds an internal integration's secret"
+            }
+            return DoctorCheck(name, .fail, "\(e)", remedy: remedy)
+        } catch {
+            return DoctorCheck(name, .fail, "\(error)", remedy: "check \(db) in [backlog.notion.projects]")
+        }
+
+        var problems: [String] = []
+        var remedies: [String] = []
+        let state = config.stateProperty
+        let options = ["next", "working", "ci", "review", "stuck"]
+        if let p = properties[state] {
+            if p["type"]?.string != "select" {
+                problems.append("\(state) is a \(p["type"]?.string ?? "?") property, not a select")
+                remedies.append("replace \(state) with a select property named \(state) with the options \(options.joined(separator: ", ")), or set [backlog.notion] state_property to a property that only LoopWorker uses")
+            } else {
+                let have = Set((p["select"]?["options"]?.array ?? []).compactMap { $0["name"]?.string })
+                let missing = options.filter { !have.contains($0) }
+                if !missing.isEmpty {
+                    problems.append("\(state) lacks the options \(missing.joined(separator: ", "))")
+                    remedies.append("add the options \(missing.joined(separator: ", ")) to the select property \(state)")
+                }
+            }
+        } else {
+            problems.append("the database has no property \(state)")
+            remedies.append("add a select property named \(state) with the options \(options.joined(separator: ", "))")
+        }
+        for (key, property, usable) in [("priority_property", config.priorityProperty, ["number", "select", "multi_select"]),
+                                        ("model_property", config.modelProperty, ["select", "rich_text"])] {
+            guard let property else { continue }
+            let kinds = usable.dropLast().joined(separator: ", ") + " or " + usable.last!
+            guard let type = properties[property]?["type"]?.string else {
+                problems.append("the database has no property \(property)")
+                remedies.append("add a \(kinds) property named \(property), or remove [backlog.notion] \(key)")
+                continue
+            }
+            if !usable.contains(type) {
+                problems.append("\(property) is a \(type) property, not \(kinds)")
+                remedies.append("make \(property) a \(kinds) property, or point [backlog.notion] \(key) at one")
+            }
+        }
+        guard problems.isEmpty else {
+            return DoctorCheck(name, .fail, "database \(db): " + problems.joined(separator: "; "), remedy: remedies.joined(separator: "; "))
+        }
+        return DoctorCheck(name, .ok, "database \(db) (data source \(source)): \(state) has all five options")
+    }
+}
