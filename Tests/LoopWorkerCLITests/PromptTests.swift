@@ -118,6 +118,8 @@ import Testing
 
 /// B201: the built-in setup instructions.
 @Suite struct PromptInstructionsTests {
+    let home = URL(filePath: "/tmp/lw-home")
+
     @Test func everySectionIsPrinted() {
         let text = Prompt.instructions(version: "1.2.3", home: URL(filePath: "/tmp/lw-home"))
         let headings = ["What LoopWorker is", "Rules for you", "Ask the user", "Write config.toml", "Secrets",
@@ -126,6 +128,30 @@ import Testing
             #expect(text.contains("\n## \(n + 1). \(heading)\n"))
         }
         #expect(text.contains("Run `loopworker doctor`"))
+    }
+
+    @Test("B201: code fences pair up, so no section is swallowed by an open block")
+    func fencesPairUp() {
+        let fences = Prompt.instructions(version: "1.2.3", home: home).split(separator: "\n").filter { $0.hasPrefix("```") }
+        #expect(fences.count % 2 == 0)
+    }
+
+    @Test("B201: the secrets path is one shell word even when it contains a quote")
+    func secretsPathIsShellQuoted() {
+        #expect(Prompt.shellQuoted("/tmp/it's here") == #"'/tmp/it'\''s here'"#)
+        let text = Prompt.instructions(version: "1.2.3", home: URL(filePath: "/tmp/it's"))
+        #expect(text.contains(#"chmod 600 '/tmp/it'\''s/secrets.env'"#))
+    }
+
+    @Test("B201: the agent asks for the setup, looks up ids, never handles a token, asks before shared changes")
+    func requiredRules() {
+        let text = Prompt.instructions(version: "1.2.3", home: home)
+        for phrase in ["Which backlog holds the cards", "Which forge hosts the code", "Which projects should LoopWorker serve",
+                       "Who may vouch for cards", "Look up their Notion user ids",
+                       "Never read, print or write the value of a token",
+                       "Ask the user before you change a backlog that other people use"] {
+            #expect(text.contains(phrase), "missing: \(phrase)")
+        }
     }
 
     @Test func docLinksPinTheReleaseTag() {

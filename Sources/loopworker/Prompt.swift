@@ -22,11 +22,16 @@ struct Prompt: ParsableCommand {
         "https://github.com/KojaWorks/KojaLoopWorker/blob/\(version.hasPrefix("0.0.0") ? "main" : "v\(version)")/"
     }
 
+    /// `s` as one POSIX shell word: single-quoted, with each `'` written as `'\''`.
+    static func shellQuoted(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: #"'\''"#) + "'"
+    }
+
     /// The setup instructions that follow the context (B201). They ship in the binary because
     /// the release is one signed executable without a resource bundle.
     static func instructions(version: String, home: URL) -> String {
         let docs = docs(version: version)
-        let secrets = home.appending(path: "secrets.env").path
+        let secrets = shellQuoted(home.appending(path: "secrets.env").path)
         return #"""
         # Setting up LoopWorker on this host
 
@@ -38,7 +43,7 @@ struct Prompt: ParsableCommand {
 
         ## 2. Rules for you
 
-        - Never read, print or write the value of a token. Don't open or print `secrets.env`, and don't put a token on a command line. The user adds each token value to `secrets.env` themselves. You may create the file with empty `NAME=` lines and mode 600, or append an empty `NAME=` line to it without reading it, so that the user only has to paste the values.
+        - Never read, print or write the value of a token. Don't open or print `secrets.env`, and don't put a token on a command line. The user adds each token line to `secrets.env` themselves (step 5). You may create an empty `secrets.env` with mode 600, and nothing more.
         - Ask the user before you change a backlog that other people use, such as GitLab labels or Notion database properties.
         - Ask the user before you commit to their repository.
         - Never start a Manager on a home where one already runs. The context above says whether one runs.
@@ -155,17 +160,16 @@ struct Prompt: ParsableCommand {
         Create the file, or have the user create it, so that only the user can read it:
 
         ```bash
-        touch '\#(secrets)' && chmod 600 '\#(secrets)'
+        touch \#(secrets) && chmod 600 \#(secrets)
         ```
 
         Then the user copies each token and appends it with this command, one variable at a time. The token comes from the clipboard, so it stays out of the shell history, and the append keeps the file's mode. An editor that saves by replacing the file can reset the mode to 644.
 
         ```bash
-        printf 'LOOPWORKER_GITLAB_TOKEN=%s\n' "$(pbpaste)" >> '\#(secrets)'
+        printf 'LOOPWORKER_GITLAB_TOKEN=%s\n' "$(pbpaste)" >> \#(secrets)
         ```
 
         To check the result, run `loopworker prompt` again: the context says which variables are set, and which lines lack a `NAME=`, without showing any value. Never print the file or any part of a line from it to check it yourself.
-        ```
 
         ## 6. Prepare the backlog
 
