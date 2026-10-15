@@ -41,9 +41,10 @@ learned the hard way, and which the port must keep or fix, is listed in
 | `GitLabBackend` | `GitLabBacklog`, `GitLabForge`, the REST/GraphQL client. | Core |
 | `PatchBackend` | `PatchBacklog` (PostgREST). | Core |
 | `GitHubBackend` | `GitHubForge`; later `GitHubBacklog`. | Core |
+| `NotionBackend` | `NotionBacklog` (Notion REST API, data sources). | Core |
 | `loopworker` | The CLI (swift-argument-parser). Builds backends from config and runs the Manager. | all of the above |
 
-Core never imports a backend. A future Notion backlog is one more target.
+Core never imports a backend.
 
 ## Backlog and forge are separate seams
 
@@ -83,14 +84,14 @@ The source of truth for these signatures is `Sources/LoopWorkerCore/Backend/`.
 
 Every backlog maps its own fields onto six states:
 
-| State | Meaning | GitLab (labels mode) | Patch |
-| --- | --- | --- | --- |
-| `ready` | Trusted and waiting to be claimed. | open, assigned to me, `loopworker::next`, status To do | Backlog, unassigned |
-| `working` | Claimed; a worker should be running. | `loopworker::working`, status In progress | In progress |
-| `verifying` | The review request exists; the Manager waits for its CI. No slot is held. | `loopworker::ci`, status In progress | Verifying |
-| `review` | Finished; a review request exists. | `loopworker::review`, status In review | In review |
-| `stuck` | The worker needs a human. | `loopworker::stuck`, status To do, still assigned to me | Needs refinement |
-| `other` | Anything else. Never claimed, never reaped on its own. | closed, or no single `loopworker::*` label | |
+| State | Meaning | GitLab (labels mode) | Patch | Notion (state property) |
+| --- | --- | --- | --- | --- |
+| `ready` | Trusted and waiting to be claimed. | open, assigned to me, `loopworker::next`, status To do | Backlog, unassigned | `next`, last edited by a trusted user |
+| `working` | Claimed; a worker should be running. | `loopworker::working`, status In progress | In progress | `working` |
+| `verifying` | The review request exists; the Manager waits for its CI. No slot is held. | `loopworker::ci`, status In progress | Verifying | `ci` |
+| `review` | Finished; a review request exists. | `loopworker::review`, status In review | In review | `review` |
+| `stuck` | The worker needs a human. | `loopworker::stuck`, status To do, still assigned to me | Needs refinement | `stuck` |
+| `other` | Anything else. Never claimed, never reaped on its own. | closed, or no single `loopworker::*` label | | empty, or `next` without a trusted last editor; in the trash |
 
 A card that a human closes, or moves to `other` in any way, while a worker runs is abandoned:
 the worker is reaped and nothing is written back.
@@ -98,6 +99,12 @@ the worker is reaped and nothing is written back.
 GitLab can express status either as the native work-item status field or as labels; the
 adapter supports both (`status_mode` in the host config). The `loopworker::*` labels always
 carry the Manager's own state, so the Manager never depends on how a team uses its board.
+
+Notion keeps the Manager's state the same way, in a select property that only LoopWorker uses
+(the **state property**, `LoopWorker` by default, with the options `next`, `working`, `ci`,
+`review` and `stuck`). The team's own status property is never read or written: if `working`
+were a team status such as In progress, the stranded-card sweep would release every teammate's
+card in it.
 
 ### Trust
 
@@ -123,6 +130,40 @@ something.
 Every piece of worker-written text that the Manager posts (blockers, review request titles and
 bodies) is posted under my name, so the GitLab backend neutralizes quick actions in it: a line
 that starts with `/` is escaped, so `/merge` or `/label` from a worker is shown, never executed.
+
+#### Trust in Notion
+
+Notion records no per-property history: a page has one `last_edited_by` and one
+`last_edited_time` (rounded to the minute) for every edit to it, whether to a property, the
+title or the body. Nothing in the public API says who set the state property to `next`. Blocks
+and comments do carry their own authors, and Notion sets those itself.
+
+The token is an internal integration's secret, so it belongs to a bot, not a person. The
+people who vouch therefore come from the host config: `trusted_users`, one or more Notion user
+ids. A token that belongs to a person (a personal access token) is refused, because the
+Manager's writes would then look like that person's edits.
+
+A Notion card is `ready` when its state property is `next` and the page's `last_edited_by` is
+a trusted user, or is the integration itself when its newest Manager comment is a release.
+Trust follows authorship, not time, so there is no cutoff. The snapshot holds:
+
+- the title;
+- each block of the page body whose own `last_edited_by` is a trusted user;
+- comments written by a trusted user.
+
+Comments that the integration wrote are left out of the snapshot and reach the worker through
+`managerNotes` instead. Every withheld block and comment is named in `excluded`.
+
+What this covers: text that an untrusted person wrote reaches a worker only after a trusted
+user edited it last. What it does not cover: someone untrusted sets `next`, and a trusted user
+then edits the same page for any reason before the Manager reads it; the Manager reads that
+edit as the vouch. So does a trusted user's typo fix in a block that someone else wrote. Any
+edit by a trusted user to a card in `next` counts as vouching for it. Use a database that only
+trusted users can edit when that is not acceptable.
+
+Notion has no compare-and-set. `claim` writes `working`, then posts a claim comment that names
+the host and a nonce; when several claim comments follow the integration's previous other
+comment, the oldest wins, and every other claimer returns false and deletes its own comment.
 
 ## The worker lifecycle
 
