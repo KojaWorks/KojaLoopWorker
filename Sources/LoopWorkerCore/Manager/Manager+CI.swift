@@ -77,6 +77,33 @@ extension Manager {
         /// Consecutive failures to move the card on after a CI verdict, and when to poll again.
         var exitFailures = 0
         var exitRetryAt: Date?
+        /// A `Forge.merge` call for this card is in flight.
+        var merging = false
+        /// When the forge first answered `pending`, and its latest reason.
+        var pendingSince: Date?
+        var pendingReason: String?
+    }
+
+    /// What a finished card of `spec` waits for in `verifying`; nil sends it straight to
+    /// `review`. The only place that maps a finish mode and a contract to a plan.
+    static func verifyingPlan(_ spec: ProjectSpec, contract: ProjectContract?) -> VerifyingPlan? {
+        switch spec.finish {
+        case .merge: .merge
+        case .ciThenMerge: .ciThenMerge
+        case .draft, .ready: contract?.ci.waitForCI == true ? .ciThenReview : nil
+        }
+    }
+
+    /// The configured project at `path`; nil once it left the config, also while it drains.
+    func servedProject(_ path: String) -> Project? {
+        projects[ProjectSpec(path: path).key].flatMap { $0.removing ? nil : $0 }
+    }
+
+    /// The plan for a watched card under its project's current config. A project that left
+    /// the config counts as `finish = draft` without `wait_for_ci`, so it never merges.
+    func currentPlan(_ r: CIWatchRecord) -> VerifyingPlan? {
+        let p = servedProject(r.project)
+        return Self.verifyingPlan(p?.spec ?? ProjectSpec(path: r.project), contract: p?.contract)
     }
 
     // MARK: Watching
@@ -147,22 +174,36 @@ extension Manager {
             unwatch(id)
             return
         }
-        let project = projects[ProjectSpec(path: r.project).key]
+        guard ciWatches[id] != nil else { return }
+        ciWatches[id]!.card = fresh
+        let project = servedProject(r.project)
+        let spec = project?.spec ?? ProjectSpec(path: r.project)
+        let ci = (project?.contract ?? ProjectContract(directory: URL(filePath: "/"))).ci
+        let plan = currentPlan(r)
+        switch plan {
+        case .merge?:
+            await merge(id, fresh, r, spec: spec, ci: ci, passed: nil)
+            return
+        case nil:
+            await ciReview(id, fresh, r, note: nil, verdict: "its project no longer waits for CI or merges")
+            return
+        case .ciThenReview?, .ciThenMerge?:
+            break
+        }
+
         let observation: CIObservation
-        do { observation = .pipeline(try await deps.forge.pipeline(for: project?.spec ?? ProjectSpec(path: r.project), commit: r.sha)) }
+        do { observation = .pipeline(try await deps.forge.pipeline(for: spec, commit: r.sha)) }
         catch {
             log.error("CI watch for \(r.card): can't read the pipeline for \(r.sha.prefix(12)): \(error); trying again in \(Int(Self.ciPollInterval)) s")
             observation = .unreadable("\(error)")
         }
         var baselines: [String: CIJobBaseline] = [:]
         if case .pipeline(let p?) = observation, p.state == .failed {
-            baselines = await baselineJobs(project?.spec ?? ProjectSpec(path: r.project), r, p)
+            baselines = await baselineJobs(spec, r, p)
         }
         guard ciWatches[id] != nil else { return }
         let pipeline: PipelineStatus? = if case .pipeline(let p) = observation { p } else { ciWatches[id]?.pipeline }
-        ciWatches[id]!.card = fresh
         ciWatches[id]!.pipeline = pipeline
-        let ci = (project?.contract ?? ProjectContract(directory: URL(filePath: "/"))).ci
         let decide = { (retried: Bool) in
             Reconciler.decideCI(
                 observation, sincePush: self.clock.now().timeIntervalSince(r.pushedAt), round: r.round,
@@ -171,7 +212,7 @@ extension Manager {
         }
         var decision = decide(r.retriedCommit == r.sha)
         if case .retry(let jobs) = decision {
-            if await retryFlakyJobs(id, project?.spec ?? ProjectSpec(path: r.project), r, jobs, pipeline) { return }
+            if await retryFlakyJobs(id, spec, r, jobs, pipeline) { return }
             guard ciWatches[id] != nil else { return }
             decision = decide(true)
         }
@@ -180,7 +221,7 @@ extension Manager {
         case .wait, .retry:
             return
         case .passed:
-            await ciPassed(id, fresh, r, pipeline)
+            await ciPassed(id, fresh, r, pipeline!)
         case .preexisting:
             await ciPreexisting(id, fresh, r, pipeline!, baselines)
         case .fix:
@@ -236,9 +277,18 @@ extension Manager {
         return true
     }
 
-    func ciPassed(_ id: String, _ card: Card, _ r: CIWatchRecord, _ pipeline: PipelineStatus?) async {
-        let link = (pipeline?.url ?? r.review.url).absoluteString
-        await ciReview(id, card, r, note: "CI passed on `\(r.sha.prefix(12))`: \(link)", verdict: "CI passed")
+    /// The watched commit's pipeline passed: merges for `ci_then_merge`, else moves the card
+    /// to review with a note that links the pipeline.
+    func ciPassed(_ id: String, _ card: Card, _ r: CIWatchRecord, _ pipeline: PipelineStatus) async {
+        if currentPlan(r) == .ciThenMerge, let p = servedProject(r.project) {
+            await merge(id, card, r, spec: p.spec, ci: (p.contract ?? ProjectContract(directory: URL(filePath: "/"))).ci, passed: pipeline)
+            return
+        }
+        await ciReview(id, card, r, note: Self.passedLine(r, pipeline), verdict: "CI passed")
+    }
+
+    static func passedLine(_ r: CIWatchRecord, _ pipeline: PipelineStatus) -> String {
+        "CI passed on `\(r.sha.prefix(12))`: \((pipeline.url ?? r.review.url).absoluteString)"
     }
 
     /// Moves to review a card whose failed jobs all fail on the base branch too, with a note
@@ -256,7 +306,7 @@ extension Manager {
         await ciReview(id, card, r, note: note, verdict: "CI failed only in jobs that also fail on \(r.base)")
     }
 
-    func ciReview(_ id: String, _ card: Card, _ r: CIWatchRecord, note: String, verdict: String) async {
+    func ciReview(_ id: String, _ card: Card, _ r: CIWatchRecord, note: String?, verdict: String) async {
         do { try await deps.backlog.markReview(card, review: r.review, note: note) }
         catch {
             ciExitFailed(id, "\(verdict), but moving it to review failed: \(error)")
@@ -287,7 +337,7 @@ extension Manager {
             ciWatches[id]?.fixStarting = false
             ciWatches[id]?.pipeline = current
             ciWatches[id]?.lastPoll = clock.now()
-            if current?.state == .passed {
+            if let current, current.state == .passed {
                 await ciPassed(id, card, r, current)
             } else {
                 log.info("\(r.card): the pipeline for \(r.sha.prefix(12)) runs again; waiting for it instead of starting a fix round")
@@ -360,6 +410,74 @@ extension Manager {
             let rounds = r.round == 1 ? "1 fix round" : "\(r.round) fix rounds"
             return "CI still fails on \(sha) after \(rounds) (ci_fix_attempts is \(ci.fixAttempts)): \(link)"
                 + (jobs.isEmpty ? "" : "\n\nFailed jobs:\n" + jobs.joined(separator: "\n"))
+        }
+    }
+
+    // MARK: Merging
+
+    /// Merges the watched review request at the watched commit, one merge per project at a
+    /// time, and acts on the forge's answer.
+    /// - Parameter passed: the pipeline that passed, for `ci_then_merge`; the merged note links it.
+    func merge(_ id: String, _ card: Card, _ r: CIWatchRecord, spec: ProjectSpec, ci: ProjectContract.CI, passed: PipelineStatus?) async {
+        let key = spec.key
+        guard !merging.contains(key) else {
+            ciWatches[id]?.lastPoll = nil  // the next tick, not 120 s later
+            return
+        }
+        merging.insert(key)
+        ciWatches[id]?.merging = true
+        defer {
+            merging.remove(key)
+            ciWatches[id]?.merging = false
+        }
+        let result: MergeResult
+        do { result = try await deps.forge.merge(r.review, project: spec, head: r.sha) }
+        catch let rejection as BackendRejection {
+            await ciStuck(id, card, r, "The forge refused to merge \(r.review.display): \(Self.inlineMarkdown("\(rejection)"))")
+            return
+        } catch {
+            ciExitFailed(id, "merging \(r.review.display) failed: \(error)")
+            return
+        }
+        guard let w = ciWatches[id] else { return }
+        let pendingFor = w.pendingSince.map { clock.now().timeIntervalSince($0) }
+        switch Reconciler.decideMerge(result, pendingFor: pendingFor, rebases: 0, timeout: ci.timeoutMinutes * 60) {
+        case .merged(let commit):
+            await merged(id, card, r, commit: commit, passed: passed)
+        case .wait(let why):
+            if w.pendingSince == nil {
+                ciWatches[id]?.pendingSince = clock.now()
+                log.info("\(r.card): the forge can't merge \(r.review.display) yet: \(why); trying again every \(Int(Self.ciPollInterval)) s")
+            }
+            ciWatches[id]?.pendingReason = why
+        case .rebase(let why):
+            await ciStuck(id, card, r, "The forge can't merge \(r.review.display) because `\(r.base)` moved: \(Self.inlineMarkdown(why)). Rebase `\(r.branch)` onto `\(r.base)` and merge it by hand, then move the card on.")
+        case .stuck(let reason):
+            await ciStuck(id, card, r, mergeBlocker(reason, r, ci: ci))
+        }
+    }
+
+    func merged(_ id: String, _ card: Card, _ r: CIWatchRecord, commit: String?, passed: PipelineStatus?) async {
+        let at = commit.map { " as `\($0.prefix(12))`" } ?? ""
+        let note = "Merged into `\(r.base)`\(at)." + (passed.map { " " + Self.passedLine(r, $0) } ?? "")
+        do { try await deps.backlog.markMerged(card, review: r.review, note: note) }
+        catch {
+            ciExitFailed(id, "merged \(r.review.display), but moving it to review_merged failed: \(error)")
+            return
+        }
+        log.info("\(r.card): merged \(r.review.display) into \(r.base)\(commit.map { " as \($0.prefix(12))" } ?? ""); moved to review_merged: \(r.review.url.absoluteString)")
+        unwatch(id)
+    }
+
+    func mergeBlocker(_ reason: MergeStuckReason, _ r: CIWatchRecord, ci: ProjectContract.CI) -> String {
+        let rr = r.review.display
+        switch reason {
+        case .pendingTooLong(let why):
+            return "The forge couldn't merge \(rr) within \(Int(ci.timeoutMinutes)) min: \(Self.inlineMarkdown(why)). Merge it by hand, then move the card on."
+        case .outdatedAfterRebase(let why):
+            return "The forge still can't merge \(rr) after a rebase round, because `\(r.base)` moved: \(Self.inlineMarkdown(why)). Rebase `\(r.branch)` onto `\(r.base)` and merge it by hand, then move the card on."
+        case .blocked(let why):
+            return "The forge refused to merge \(rr): \(Self.inlineMarkdown(why)). Merge it by hand or change the rule that blocks it, then move the card on."
         }
     }
 
@@ -517,7 +635,7 @@ extension Manager {
     func returnToVerifying(_ card: Card, _ fix: FixRound, why: String) async {
         do { try fix.record.write(stateDir: stateDir) }
         catch { log.error("\(card.ref): can't rewrite its CI watch record: \(error)") }
-        do { try await deps.backlog.markVerifying(card, review: fix.record.review, plan: .ciThenReview) }
+        do { try await deps.backlog.markVerifying(card, review: fix.record.review, plan: currentPlan(fix.record) ?? .ciThenReview) }
         catch {
             log.error("\(card.ref): can't move it back to verifying after its fix round failed to start: \(error); the stranded-card sweep releases it")
         }

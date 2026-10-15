@@ -571,7 +571,7 @@ extension Manager {
                     do {
                         try await finishDone(spec, card: card, branch: branch, base: base, title: title, body: body, guide: guide,
                                              ciRound: s.ciRound, ciCommit: s.ciCommit,
-                                             waitForCI: projects[ref.key]?.contract?.ci.waitForCI ?? false)
+                                             plan: Self.verifyingPlan(spec.project, contract: projects[ref.key]?.contract))
                     } catch let rejection as BackendRejection {
                         try await stuck(spec, card: card, blocker: "Couldn't finish: the forge or backlog refused: \(rejection)")
                     }
@@ -593,9 +593,10 @@ extension Manager {
     ///   - ciRound: set for a CI fix round.
     ///   - ciCommit: set for a CI fix round: the failed commit, which the round's new commits
     ///     count from. Not `origin/<branch>`, which any later fetch moves to the round's own push.
+    ///   - plan: what the card waits for in `verifying`; nil moves it straight to `review`.
     func finishDone(
         _ spec: SlotSpec, card: Card, branch: String, base: String, title: String, body: String, guide: String?,
-        ciRound: Int? = nil, ciCommit: String? = nil, waitForCI: Bool = false
+        ciRound: Int? = nil, ciCommit: String? = nil, plan: VerifyingPlan? = nil
     ) async throws {
         let ahead = try await step("counting commits on \(branch)") {
             if let ciCommit { try await self.deps.git.commitsSince(spec.worktree, commit: ciCommit) }
@@ -615,7 +616,7 @@ extension Manager {
         }
         var guideLine = ""
         if let guide {
-            switch try await step("attaching \(guide)") { try await Attachments.upload(guide, in: spec.stateDir, attach: attach) } {
+            switch try await step("attaching \(guide)", { try await Attachments.upload(guide, in: spec.stateDir, attach: attach) }) {
             case .success(let url): guideLine = "\nReview guide: [\(guide)](\(url.absoluteString))"
             case .failure(let refusal): refused.append(refusal)
             }
@@ -630,7 +631,7 @@ extension Manager {
             project: spec.project, card: card, sourceBranch: branch, targetBranch: base, title: title,
             body: "\(text)\n\n---\n\(cardLine)\(guideLine)\n", draft: spec.project.finish.opensDraft, assignToOwner: true)
         let review = try await step("opening the review request") { try await self.deps.forge.openReviewRequest(draft) }
-        guard waitForCI else {
+        guard let plan else {
             try await step("moving \(card.ref) to review") { try await self.deps.backlog.markReview(card, review: review) }
             log.info("\(label(spec)): finished \(card.ref): \(review.display) \(review.url.absoluteString)")
             return
@@ -640,11 +641,12 @@ extension Manager {
                                    sha: commit, review: review, round: ciRound ?? 0, pushedAt: clock.now())
         do { try record.write(stateDir: stateDir) }
         catch { throw StepError(step: "writing the CI watch record", error: error) }
-        try await step("moving \(card.ref) to verifying") { try await self.deps.backlog.markVerifying(card, review: review, plan: .ciThenReview) }
+        try await step("moving \(card.ref) to verifying") { try await self.deps.backlog.markVerifying(card, review: review, plan: plan) }
         var verifying = card
         verifying.state = .verifying
-        watch(record, card: verifying, lastPoll: clock.now())
-        log.info("\(label(spec)): \(card.ref) waits for CI on \(commit.prefix(12)): \(review.display) \(review.url.absoluteString)")
+        watch(record, card: verifying, lastPoll: plan == .merge ? nil : clock.now())
+        let waits = plan == .merge ? "merges" : "waits for CI on \(commit.prefix(12)) before it \(plan == .ciThenMerge ? "merges" : "moves to review")"
+        log.info("\(label(spec)): \(card.ref) \(waits): \(review.display) \(review.url.absoluteString)")
     }
 
     /// Pushes the card branch with a lease on the commit the Manager last pushed for this

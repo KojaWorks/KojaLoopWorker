@@ -165,6 +165,8 @@ public actor Manager {
     var lastStatusError: String?
     /// `verifying` cards whose CI the Manager watches, by card id.
     var ciWatches: [String: CIWatch] = [:]
+    /// Keys of the projects with a `Forge.merge` call in flight; one per project at a time.
+    var merging: Set<String> = []
 
     public init(config: HostConfig, dependencies: ManagerDependencies, clock: any ManagerClock = SystemClock()) {
         self.config = config
