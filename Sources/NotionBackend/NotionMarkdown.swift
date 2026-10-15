@@ -47,6 +47,7 @@ enum ManagerComment: Equatable {
     case ci
 
     static let claimPrefix = "LoopWorker claimed this card ("
+    static let vouchedTitlePrefix = "Vouched title: "
 
     var header: String {
         switch self {
@@ -69,6 +70,15 @@ enum ManagerComment: Equatable {
 
     var isClaim: Bool { if case .claim = self { true } else { false } }
     var isRelease: Bool { self == .release || self == .failedRelease }
+    /// A comment of this kind as the integration's newest one leaves a `working` or `ci` card the Manager's.
+    var keepsOwnership: Bool { isClaim || isRelease || self == .ci }
+
+    /// The title that a claim comment records as vouched; nil for any other text.
+    static func vouchedTitle(_ text: String) -> String? {
+        guard kind(text)?.isClaim == true else { return nil }
+        let body = body(text)
+        return body.hasPrefix(vouchedTitlePrefix) ? String(body.dropFirst(vouchedTitlePrefix.count)) : nil
+    }
 
     /// The text after the header line and the blank line that follows it.
     static func body(_ text: String) -> String {
@@ -139,19 +149,32 @@ enum NotionMarkdown {
 
     // MARK: Snapshot
 
-    /// The worker's view of a card (B191): the title, the blocks whose own last editor is
-    /// trusted (a withheld block's children are judged one by one), and the comments that a
+    /// The worker's view of a card (B191): the vouched title, the blocks whose own last editor
+    /// is trusted (a withheld block's children are judged one by one), and the comments that a
     /// trusted user wrote. The integration's comments are left out; they reach the worker as
-    /// Manager notes. Every withheld block or comment is named in `excluded`.
-    /// - Parameter names: Display names by user id; a missing name falls back to the id.
-    static func snapshot(title: String, blocks: [Block], comments: [Comment], trusted: Set<String>, me: String, names: [String: String]) -> CardSnapshot {
+    /// Manager notes. Every withheld block or comment is named in `excluded`, never with its text.
+    /// - Parameters:
+    ///   - vouchedTitle: The title that the newest claim comment records; nil withholds the title.
+    ///   - pageTitle: The page's title now, untrusted; only compared with `vouchedTitle`.
+    ///   - comments: Oldest first.
+    ///   - names: Display names by user id; a missing name falls back to the id.
+    static func snapshot(vouchedTitle: String?, pageTitle: String, blocks: [Block], comments: [Comment], trusted: Set<String>, me: String, names: [String: String]) -> CardSnapshot {
         var excluded: [String] = []
         let name = { (id: String?) in id.map { names[$0] ?? $0 } ?? "an unknown user" }
-        var parts = ["# \(title)"]
+        var parts: [String] = []
+        if let vouchedTitle {
+            parts.append("# \(vouchedTitle)")
+            if vouchedTitle != pageTitle {
+                excluded.append("the page title changed after the vouch; the worker sees the vouched title")
+            }
+        } else {
+            parts.append("# (withheld: no LoopWorker claim comment records a vouched title)")
+            excluded.append("the page title, because no LoopWorker claim comment records a vouched title")
+        }
         parts += renderBlocks(blocks, trusted: trusted, name: name, excluded: &excluded)
 
         var commentParts: [String] = []
-        for c in comments.sorted(by: { ($0.created, $0.id) < ($1.created, $1.id) }) {
+        for c in comments {
             if c.author == me {
                 excluded.append("LoopWorker comment \(c.id)")
             } else if trusted.contains(c.author) {
@@ -269,6 +292,11 @@ enum NotionMarkdown {
     static func text(_ items: [JSON]) -> String {
         items.map { item in
             if item["type"]?.string == "equation" { return "$\(item["equation"]?["expression"]?.string ?? "")$" }
+            // A page's or database's current title is untrusted text, so a mention shows only the link.
+            if item["type"]?.string == "mention", let kind = item["mention"]?["type"]?.string, kind == "page" || kind == "database" {
+                let target = item["mention"]?[kind]?["id"]?.string.map { "https://www.notion.so/" + $0.replacingOccurrences(of: "-", with: "") }
+                return "[linked \(kind)](\(item["href"]?.string ?? target ?? ""))"
+            }
             var s = item["plain_text"]?.string ?? item["text"]?["content"]?.string ?? ""
             guard !s.isEmpty else { return "" }
             let a = item["annotations"] ?? .null
