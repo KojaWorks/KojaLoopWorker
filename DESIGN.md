@@ -426,7 +426,8 @@ without holder ids, or after a release):
 Each card that another Manager holds is logged once per holder and listed in `status.json` and
 `loopworker status` under "held by other Managers". When that Manager is gone for good, a human
 moves the card back to ready. A CI fix round doesn't write a new claim: only the holder of a
-`verifying` card starts one, so the holder is already right.
+`verifying` card starts one, or any Manager when nobody holds the card (claimed before holder
+ids), so the holder is already right.
 
 ## Host config
 
