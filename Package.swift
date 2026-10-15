@@ -38,6 +38,7 @@ let package = Package(
                 "LoopWorkerCore",
                 "GitLabBackend",
                 "PatchBackend",
+                "NotionBackend",
                 "GitHubBackend",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
