@@ -145,7 +145,7 @@ moves a card between them:
 | Label | Meaning | What happened on the issue |
 | --- | --- | --- |
 | `loopworker::next` | Ready to claim. | You added it, or the Manager released the card with a note saying why (a crash, a hang, an auth failure). |
-| `loopworker::working` | A worker is on it. | The Manager claimed it. |
+| `loopworker::working` | A worker is on it. | The Manager claimed it and posted a note that names its host ("LoopWorker on buildmac.local is working on this card."); a hidden marker in that note records which Manager holds the card. |
 | `loopworker::ci` | Waiting for CI. Only for projects whose contract sets `[review] wait_for_ci`. | The Manager pushed the branch, opened a merge request, linked it in a note and is watching its pipeline. No worker runs. If CI fails only in jobs that also fail on the base branch, the card goes to review with a note that says so. Failed jobs that pass on the base branch are re-run once, since they may be flaky. Any other failure is fixed by a worker on the same branch (the card shows `loopworker::working` meanwhile); if CI keeps failing, times out or is canceled, the card becomes stuck. `loopworker status` lists these cards under "waiting for CI". |
 | `loopworker::review` | Done. | The Manager pushed the branch, opened a merge request assigned to you and linked it in a note (and, after CI, the pipeline that passed). |
 | `loopworker::stuck` | The worker needs a human. | A note says what blocks it. You stay assigned, so it stays in your queue; answer it on the issue, then add `loopworker::next` (it replaces `loopworker::stuck`); the next worker continues from the pushed branch. A card with two `loopworker::*` labels is ignored. |
@@ -305,6 +305,12 @@ loopworker resume [project]
 ```
 
 `status` also says when the Manager holds its lock but stopped updating (wedged).
+
+One Manager serves each project. When a second one serves the same project with the same
+backlog (two hosts configured for it by mistake), each leaves the cards that the other claimed
+alone: `status` lists them under "held by other Managers" with the other Manager's
+`<host>:<home>`, and the log says so once per card. Remove the project from one host's config;
+if the other Manager is gone for good, move its cards back to ready.
 
 Stopping escalates. The first SIGINT (Ctrl-C) drains: running workers finish, nothing new is
 claimed, then the Manager exits. A second SIGINT force-stops: it reaps every worker and releases

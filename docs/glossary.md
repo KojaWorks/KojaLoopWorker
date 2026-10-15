@@ -19,6 +19,7 @@ One term per concept. Code, docs, logs and commits use the term in the left colu
 | **Review feedback** | The unresolved threads and newer plain comments on a review request that a review round's worker gets, with only the notes that the trust check accepts. | review comments, MR comments |
 | **Pipeline** | The forge's CI run for one commit: a GitLab pipeline, or a GitHub commit's check runs taken together. | CI job (that is one part of it), build |
 | **Claim** | The Manager moving a ready card to `working` before it spawns a worker. | pick, take, assign |
+| **Holder** | The Manager that a `working` or `verifying` card's newest claim names, by its holder id `<host name>:<LOOPWORKER_HOME>` (saved in `state/holder`). A Manager leaves cards that another Manager holds alone. | owner (that is the card's human), claimer, lock holder (the pid in `manager.lock`) |
 | **Release** | The Manager returning a `working` card to `ready` after a crash, hang or auth failure, with a note on the card. | reclaim, unclaim, bail |
 | **Outcome** | The JSON file that a worker writes as its last act: `done` (with review request text) or `stuck` (with the blocker). The worker's only output channel to the Manager. | result, exit signal |
 | **Attachment** | A file that a worker writes into its slot state directory and names in its outcome, as the `guide` or as `attachment:<path>` in the body. The Manager checks it and uploads it to the forge at finish. | upload, asset |
