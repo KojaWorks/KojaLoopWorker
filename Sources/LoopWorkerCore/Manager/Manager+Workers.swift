@@ -246,6 +246,14 @@ extension Manager {
             await abortStart(ref, card: card, contract: contract, why: "preparing the slot failed: \(error)", broken: error, fix: fix)
             return
         }
+        if fix != nil || resuming {
+            do { try leaseOnTip(spec, card: card, branch: branch, tip: baseCommit) }
+            catch {
+                await abortStart(ref, card: card, contract: contract, why: "recording \(branch) at \(baseCommit.prefix(12)) in \(pushLedger.path) failed: \(error)",
+                                 broken: nil, fix: fix)
+                return
+            }
+        }
 
         do {
             try await writeWorkerFiles(spec, card: card, contract: contract, base: base, branch: branch, fix: fix, resuming: resuming)
@@ -647,9 +655,10 @@ extension Manager {
         log.info("\(label(spec)): \(card.ref) waits for CI on \(commit.prefix(12)): \(review.display) \(review.url.absoluteString)")
     }
 
-    /// Pushes the card branch with a lease on the commit the Manager last pushed for this
-    /// card (none: the branch must not exist yet), so a branch that someone else made is never
-    /// overwritten, then records the new commit. Uploads the branch's LFS objects first.
+    /// Pushes the card branch with a lease on the card's commit in the push ledger (the
+    /// Manager's last push, or the tip that a resumed card or fix round started from; none: the
+    /// branch must not exist yet), so a branch that someone else made, or a commit that someone
+    /// pushed while the worker ran, is never overwritten, then records the new commit. Uploads the branch's LFS objects first.
     @discardableResult
     func pushBranch(_ spec: SlotSpec, card: Card, branch: String) async throws -> String {
         let last = readPushes()[card.ref.id].flatMap { $0.branch == branch ? $0.commit : nil }
@@ -667,6 +676,20 @@ extension Manager {
         do { try writePushes(pushes) }
         catch { log.error("\(label(spec)): pushed \(branch) at \(commit.prefix(12)) but can't record it in \(pushLedger.path): \(error); the card's next push will be refused as someone else's branch") }
         return commit
+    }
+
+    /// Records `tip`, the forge's commit that a resumed card or a fix round starts from, as the
+    /// card's last push, so the finish's lease expects it even when someone else pushed to the
+    /// branch after the Manager did.
+    func leaseOnTip(_ spec: SlotSpec, card: Card, branch: String, tip: String) throws {
+        var pushes = readPushes()
+        let last = pushes[card.ref.id]
+        guard last != PushRecord(branch: branch, commit: tip) else { return }
+        if let last, last.branch == branch {
+            log.info("\(label(spec)): continuing \(card.ref) from \(tip.prefix(12)), which includes commits pushed after LoopWorker's last push \(last.commit.prefix(12))")
+        }
+        pushes[card.ref.id] = PushRecord(branch: branch, commit: tip)
+        try writePushes(pushes)
     }
 
     var pushLedger: URL { stateDir.appending(path: "pushes.json") }

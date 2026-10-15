@@ -484,6 +484,24 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.backlog.card(id: "id-12")?.state == .review)
     }
 
+    @Test("B202: a commit that a human pushed before the resume becomes the lease, so the push succeeds")
+    func aHumanCommitBeforeTheResumeKeepsThePush() async throws {
+        let h = try await spawned()
+        try await requeuedAfterStuck(h)
+        h.git.state { $0.remoteTips["loopworker-12-fix-it"] = "human-1" }
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 2)
+        #expect(h.log.contains("continuing g/app#12 from human-1, which includes commits pushed after LoopWorker's last push commit-1", level: .info))
+        let ledger = try Data(contentsOf: h.home.appending(path: "state/pushes.json"))
+        #expect(try JSONDecoder().decode([String: PushRecord].self, from: ledger)["id-12"] == PushRecord(branch: "loopworker-12-fix-it", commit: "human-1"))
+
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.git.state.get.pushes.map(\.expected) == [nil, "human-1"])
+        #expect(h.backlog.card(id: "id-12")?.state == .review)
+    }
+
     @Test("B184: the next attempt's brief carries the previous outcome and LoopWorker's notes as background")
     func aRequeuedCardGetsThePreviousAttempt() async throws {
         let h = try await spawned()
@@ -522,7 +540,7 @@ func fileMode(_ url: URL) throws -> Int {
     @Test func aRequeuedCardWhoseBranchIsGoneStartsOverAndDropsItsLedgerEntry() async throws {  // B178
         let h = try await spawned()
         try await requeuedAfterStuck(h)
-        h.git.state { $0.remoteBranches = [] }  // a human deleted the branch on the forge
+        h.git.state { $0.remoteTips = [:] }  // a human deleted the branch on the forge
         await h.cycle()
         #expect(h.tmux.spawned.count == 2)
         #expect(h.lifecycle.state.get.acquiredBases == ["main", "main"])

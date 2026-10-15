@@ -322,6 +322,23 @@ let reviewURL = URL(string: "https://forge.example/g/app/-/merge_requests/1")!
         #expect(r.sha == "commit-2" && r.round == 1)
     }
 
+    @Test("B202: a fix round leases on the branch tip it started from, which a human may have pushed")
+    func fixRoundLeasesOnTheTip() async throws {
+        let h = try await verifying()
+        h.git.state { $0.remoteTips["loopworker-12-fix-it"] = "human-1" }
+        h.forge.state { $0.pipelines["commit-1"] = PipelineStatus(state: .failed, url: pipelineURL, failedJobs: [CIJob(name: "unit", stage: "", url: nil, logTail: "")]) }
+        h.clock.advance(121)
+        await h.cycle()
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 2)
+        #expect(h.log.contains("continuing g/app#12 from human-1, which includes commits pushed after LoopWorker's last push commit-1", level: .info))
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix CI","body":"Fixed the test."}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.git.state.get.pushes.map(\.expected) == [nil, "human-1"])
+        #expect(h.backlog.card(id: "id-12")?.state == .verifying)
+    }
+
     @Test("B168: a retried fix-round finish counts from the failed commit, not the moved origin/<branch>")
     func retriedFixRoundFinish() async throws {
         let h = try await fixRound()
