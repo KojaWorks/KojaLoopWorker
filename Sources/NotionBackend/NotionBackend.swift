@@ -37,7 +37,7 @@ public enum NotionBackend {
 
     static func makeBacklog(
         config: HostConfig, log: LogSink, environment: [String: String], transport: @escaping HTTPTransport,
-        sleep: @escaping @Sendable (Double) async throws -> Void = { try await Task.sleep(nanoseconds: UInt64($0 * 1e9)) },
+        sleep: @escaping @Sendable (Double) async throws -> Void = { try await Task.sleep(nanoseconds: NotionClient.nanoseconds($0)) },
         now: @escaping @Sendable () -> Date = Date.init,
         host: String = hostName()
     ) throws -> NotionBacklog {

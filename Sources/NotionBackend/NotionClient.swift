@@ -7,8 +7,16 @@ import FoundationNetworking
 /// Sends one HTTP request. Injected so that tests serve fabricated responses.
 typealias HTTPTransport = @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)
 
+/// Times every request out after 30 s in total, not only between bytes.
+private let session: URLSession = {
+    let c = URLSessionConfiguration.ephemeral
+    c.timeoutIntervalForRequest = 30
+    c.timeoutIntervalForResource = 30
+    return URLSession(configuration: c)
+}()
+
 let urlSessionTransport: HTTPTransport = { request in
-    let (data, response) = try await URLSession.shared.data(for: request)
+    let (data, response) = try await session.data(for: request)
     guard let http = response as? HTTPURLResponse else {
         throw NotionError.transport(request.url?.absoluteString ?? "?", "not an HTTP response")
     }
@@ -25,9 +33,11 @@ public enum NotionError: Error, CustomStringConvertible, Equatable {
     case forbidden(tokenEnv: String, request: String, message: String)
     /// A database or data source answered 403 or 404: the integration isn't connected to it.
     case notConnected(database: String, request: String)
+    /// `trusted_users` lists the integration itself, whose edits would then vouch for cards.
+    case integrationTrusted(id: String, name: String)
     /// A database with no data source or several.
     case dataSources(database: String, found: [String])
-    /// Notion didn't answer usefully (5xx, 408, or 429 after every retry); a later tick may succeed.
+    /// Notion didn't answer usefully (5xx, 408, 409, or 429 after every retry); a later tick may succeed.
     case unavailable(request: String, status: Int, body: String)
     case transport(String, String)
     /// A query that Notion cut off (`request_status`), so its result is partial.
@@ -45,6 +55,8 @@ public enum NotionError: Error, CustomStringConvertible, Equatable {
             "the token in \(env) belongs to the person \(name), not an integration. LoopWorker refuses it because the Manager's writes would look like that person's edits; put an internal integration's secret in \(env)"
         case .forbidden(let env, let request, let message):
             "\(request): 403 \(message). Give the integration in \(env) the capabilities read, update and insert content; read and insert comments; read user information"
+        case .integrationTrusted(let id, let name):
+            "[backlog.notion] trusted_users lists the integration \(name) (\(id)) itself. LoopWorker refuses it because the Manager's own writes would vouch for cards; remove it from trusted_users"
         case .notConnected(let database, let request):
             "\(request): the integration can't read database \(database). Open the database in Notion, choose ••• -> Connections (Add connections) and add the integration"
         case .dataSources(let database, let found):
@@ -129,6 +141,7 @@ actor NotionClient {
     static let pageSize = 100
     static let spacing = 1.0 / 3
     static let maxRetries = 3
+    static let maxRetryAfter = 60.0
 
     /// What a 403 or 404 means for one request.
     enum Missing {
@@ -248,7 +261,7 @@ actor NotionClient {
                     if status == 403 { throw NotionError.forbidden(tokenEnv: tokenEnv, request: label, message: Self.message(json, data)) }
                     throw BackendRejection("\(label): 404 \(Self.message(json, data))")
                 }
-            case 408, 500...: throw NotionError.unavailable(request: label, status: status, body: Self.excerpt(data))
+            case 408, 409, 500...: throw NotionError.unavailable(request: label, status: status, body: Self.excerpt(data))
             case 400..<500: throw BackendRejection("\(label): \(status) \(Self.message(json, data))")
             default: throw NotionError.unavailable(request: label, status: status, body: Self.excerpt(data))
             }
@@ -264,14 +277,25 @@ actor NotionClient {
         if at > t { try await sleep(at.timeIntervalSince(t)) }
     }
 
-    /// `Retry-After`, else the body's `additional_data.retry_after`, in seconds.
+    /// `Retry-After`, else the body's `additional_data.retry_after`, in seconds, at most 60.
     static func retryAfter(_ resp: HTTPURLResponse, _ json: JSON?) -> Double? {
-        if let h = resp.value(forHTTPHeaderField: "Retry-After"), let s = Double(h.trimmingCharacters(in: .whitespaces)) { return s }
-        switch json?["additional_data"]?["retry_after"] {
-        case .string(let s)?: return Double(s)
-        case .number(let n)?: return n
-        default: return nil
+        var value: Double?
+        if let h = resp.value(forHTTPHeaderField: "Retry-After") { value = Double(h.trimmingCharacters(in: .whitespaces)) }
+        if value == nil {
+            switch json?["additional_data"]?["retry_after"] {
+            case .string(let s)?: value = Double(s)
+            case .number(let n)?: value = n
+            default: break
+            }
         }
+        guard let value, value.isFinite else { return nil }
+        return min(max(value, 0), maxRetryAfter)
+    }
+
+    /// Nanoseconds for a sleep of `seconds`: 0 for a negative or non-finite value, at most an hour.
+    static func nanoseconds(_ seconds: Double) -> UInt64 {
+        guard seconds.isFinite, seconds > 0 else { return 0 }
+        return UInt64(min(seconds, 3600) * 1e9)
     }
 
     static func message(_ json: JSON?, _ data: Data) -> String {

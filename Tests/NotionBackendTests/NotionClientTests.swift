@@ -168,6 +168,43 @@ import Testing
         #expect(clock.sleeps.allSatisfy { abs($0 - 1.0 / 3) < 1e-6 })
     }
 
+    @Test func B193_a403OnTheDatabaseSaysToConnectTheIntegration() async throws {
+        let fake = FakeNotion()
+        fake.addDatabase()
+        fake.queued["GET /v1/databases/\(databaseID)"] = [(403, [:], .object(["code": "restricted_resource", "message": "no"]))]
+        let error = await #expect(throws: NotionError.self) { try await make(fake).workable(in: [app]) }
+        #expect(error == .notConnected(database: databaseID, request: "GET /v1/databases/\(databaseID)"))
+    }
+
+    @Test func B189_aDatabaseWithNoDataSourceFails() async throws {
+        let fake = FakeNotion()
+        fake.addDatabase(sources: [])
+        let error = await #expect(throws: NotionError.self) { try await make(fake).workable(in: [app]) }
+        #expect(error == .dataSources(database: databaseID, found: []))
+        #expect(error?.description.contains("has no data source") == true)
+    }
+
+    @Test func B193_a409ConflictIsUnavailableNotARejection() async throws {
+        let fake = FakeNotion()
+        fake.queued["GET /v1/users/me"] = [(409, [:], .object(["code": "conflict_error", "message": "Conflict occurred while saving."]))]
+        let error = await #expect(throws: NotionError.self) { try await make(fake).managerNotes(card(id(1, "c"))) }
+        guard case .unavailable(_, 409, _)? = error else { Issue.record("got \(String(describing: error))"); return }
+    }
+
+    @Test func B193_retryAfterIsCappedAt60Seconds() async throws {
+        let fake = FakeNotion()
+        let clock = TestClock()
+        fake.queued["GET /v1/users/me"] = [(429, ["Retry-After": "86400"], .object(["code": "rate_limited"])),
+                                           (429, [:], .object(["additional_data": .object(["retry_after": "inf"])]))]
+        _ = try await make(fake, clock: clock).managerNotes(card(id(1, "c")))
+        #expect(clock.sleeps.prefix(2) == [60, 4])
+        #expect(NotionClient.nanoseconds(.infinity) == 0)
+        #expect(NotionClient.nanoseconds(.nan) == 0)
+        #expect(NotionClient.nanoseconds(-3) == 0)
+        #expect(NotionClient.nanoseconds(1e300) == 3_600_000_000_000)
+        #expect(NotionClient.nanoseconds(0.5) == 500_000_000)
+    }
+
     @Test func B193_otherClientErrorsAreRejections() async throws {
         let fake = FakeNotion()
         fake.queued["GET /v1/users/me"] = [(400, [:], .object(["code": "validation_error", "message": "body failed validation"]))]
