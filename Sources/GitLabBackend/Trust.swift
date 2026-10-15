@@ -141,11 +141,11 @@ enum Trust {
                 excluded.append("\(by): posted by LoopWorker")
                 continue
             }
-            let editedLate = note.lastEditedAt.map { $0 > cutoff } ?? false
+            let editedLate = note.contentEditedAt.map { $0 > cutoff } ?? false
             let mine = isMe(note.author) && (!editedLate || isMe(note.lastEditedBy))
             let early = note.createdAt <= cutoff && !editedLate
             guard mine || early else {
-                if let edited = note.lastEditedAt, editedLate, note.createdAt <= cutoff {
+                if let edited = note.contentEditedAt, editedLate, note.createdAt <= cutoff {
                     excluded.append("\(by), edited by \(name(note.lastEditedBy)) at \(time(edited))")
                 } else {
                     excluded.append(by)

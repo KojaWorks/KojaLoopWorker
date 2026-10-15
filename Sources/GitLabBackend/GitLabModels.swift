@@ -124,12 +124,16 @@ struct GQLNote: Decodable, Sendable {
     var body: String
     var system: Bool
     var createdAt: Date
+    /// Also set, to `updatedAt`, on a note nobody edited, and bumped when its thread is
+    /// (un)resolved; only `lastEditedBy` marks a content edit.
     var lastEditedAt: Date?
     var lastEditedBy: GQLUser?
     /// Null for a deleted user.
     var author: GQLUser?
 
     var numericID: String { String(id.split(separator: "/").last ?? Substring(id)) }
+    /// When someone last edited the body; nil when nobody did.
+    var contentEditedAt: Date? { lastEditedBy == nil ? nil : lastEditedAt }
 }
 
 struct GQLPageInfo: Decodable, Sendable {
@@ -177,6 +181,7 @@ struct GQLMergeRequestNotesPage: Decodable, Sendable {
     struct Edit: Decodable, Sendable {
         /// `gid://gitlab/Note/<id>` or `gid://gitlab/DiffNote/<id>`.
         var id: String
+        /// Like `GQLNote.lastEditedAt`: only a non-nil `lastEditedBy` marks a content edit.
         var lastEditedAt: Date?
         var lastEditedBy: GQLUser?
 

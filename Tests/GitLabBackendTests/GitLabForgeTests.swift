@@ -333,6 +333,30 @@ import Testing
         #expect(w.gitlab.requests("POST", "/api/graphql").count == 2)
     }
 
+    @Test("B204: GraphQL's lastEditedAt without lastEditedBy (unedited, or a thread resolved later) is no edit; DiffNote ids match REST")
+    func liveEditShapes() async throws {
+        let w = World()
+        w.gitlab.on("GET", mrs + "/4", json: ["iid": 4, "web_url": Self.review.url.absoluteString, "created_at": Fixture.t(0)])
+        w.gitlab.on("GET", mrs + "/4/discussions", json: [
+            discussion("d1", individual: false, [
+                mrNote(11, "Rename this.", at: 1, resolved: false, position: ["head_sha": "abc", "new_path": "a.swift", "new_line": 3]),
+                mrNote(12, "Also here.", at: 2, resolved: false),
+                mrNote(13, "Changed my mind.", at: 3, resolved: false),
+            ]),
+        ])
+        w.gitlab.on("POST", "/api/graphql", bodyContains: "mergeRequest(iid", json: ["data": ["project": ["mergeRequest": ["notes": [
+            "pageInfo": ["hasNextPage": false, "endCursor": NSNull()],
+            "nodes": [
+                ["id": "gid://gitlab/DiffNote/11", "lastEditedAt": Fixture.t(1), "lastEditedBy": NSNull()],
+                ["id": "gid://gitlab/Note/12", "lastEditedAt": Fixture.t(9), "lastEditedBy": NSNull()],
+                ["id": "gid://gitlab/Note/13", "lastEditedAt": Fixture.t(9), "lastEditedBy": ["id": "gid://gitlab/User/3", "username": "nevyn"]],
+            ] as [[String: Any]],
+        ]]]]])
+        let feedback = try await w.make().forge.reviewFeedback(for: Self.review, project: World.app, vouchedAt: Fixture.date(5))
+        #expect(feedback.threads.first?.notes.map(\.body) == ["Rename this.", "Also here."])
+        #expect(feedback.withheld == ["note 13 by @mallory in thread d1: edited by @nevyn at \(Fixture.date(9).formatted(.iso8601)), after the card was vouched for at \(Fixture.date(5).formatted(.iso8601))"])
+    }
+
     @Test("B204: a note that GraphQL doesn't return is withheld, and no open merge request is nil")
     func unknownEditsAreWithheld() async throws {
         let w = World()

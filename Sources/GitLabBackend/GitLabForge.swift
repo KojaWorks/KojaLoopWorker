@@ -67,8 +67,8 @@ public struct GitLabForge: Forge {
     }
 
     /// Reads `GET .../merge_requests/:iid/discussions` for the threads and the merge request's
-    /// notes over GraphQL for who last edited each one. A note that GraphQL doesn't return is
-    /// withheld as unknown.
+    /// notes over GraphQL for who last edited each one. A null `lastEditedBy` means no content
+    /// edit, whatever `lastEditedAt` says; a note that GraphQL doesn't return is withheld as unknown.
     public func reviewFeedback(for review: ReviewRequest, project: ProjectSpec, vouchedAt: Date?) async throws -> ReviewFeedback {
         let path = try mergeRequestPath(review, project)
         let me = try await client.me()
@@ -86,8 +86,8 @@ public struct GitLabForge: Forge {
                     switch edits[n.id] {
                     case nil: edit = .unknown
                     case let e?:
-                        if let at = e.lastEditedAt {
-                            edit = .edited(by: e.lastEditedBy?.username ?? "ghost", owner: e.lastEditedBy?.numericID == me.id, at: at)
+                        if let by = e.lastEditedBy, let at = e.lastEditedAt {
+                            edit = .edited(by: by.username, owner: by.numericID == me.id, at: at)
                         } else { edit = .never }
                     }
                     return ReviewFeedback.RawNote(id: String(n.id), author: n.author.username, byOwner: n.author.id == me.id,
