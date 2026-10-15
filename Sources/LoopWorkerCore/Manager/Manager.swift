@@ -140,6 +140,8 @@ public actor Manager {
     let clock: any ManagerClock
     let notifier: Notifier
     let hostName: String
+    /// This install's holder id, `<host name>:<LOOPWORKER_HOME>`, which `claim` records on cards.
+    public nonisolated let holder: String
     /// Slots per port band, fixed at startup so a live `max_slots` change never moves a band.
     let bandSize: Int
     /// The Manager's lock, for a signal handler that must release it without awaiting the actor.
@@ -174,7 +176,9 @@ public actor Manager {
         self.clock = clock
         self.notifier = Notifier(command: config.notifyCommand, runner: dependencies.runner, log: dependencies.log,
                                  now: { clock.now() })
-        self.hostName = Self.currentHostName()
+        let host = Self.currentHostName()
+        self.hostName = host
+        self.holder = Self.holderID(stateDir: config.stateDir, home: config.home, hostName: host, log: dependencies.log)
         self.bandSize = Budget.bandSize(maxSlots: config.maxSlots)
         self.started = clock.now()
     }
@@ -193,7 +197,7 @@ public actor Manager {
         started = clock.now()
         configModified = modificationDate(configFile)
         let token = deps.environment["CLAUDE_CODE_OAUTH_TOKEN"].map { $0.isEmpty ? "empty" : "set" } ?? "not set"
-        log.info("LoopWorker \(loopworkerVersion) starting on \(hostName), pid \(getpid()), home \(config.home.path)")
+        log.info("LoopWorker \(loopworkerVersion) starting on \(hostName), pid \(getpid()), home \(config.home.path), holder id \(holder)")
         log.info("budget \(config.maxSlots) slot units, at most \(config.maxConcurrentWorkers) workers, max \(config.maxAttempts) attempts; backlog \(config.backlogKind), forge \(config.forgeKind); CLAUDE_CODE_OAUTH_TOKEN \(token)")
         if config.projects.isEmpty { log.warning("no [[project]] in \(configFile.path); idling until one is added") }
 
@@ -388,6 +392,29 @@ public actor Manager {
                 log.info("state: \(label(s.spec)) \(s.phase.rawValue) task=\(s.task?.rawValue ?? "-") card=\(s.card?.ref.display ?? "-") session=\(s.spec.session)")
             }
         }
+    }
+
+    /// The id saved in `state/holder`, or `<host name>:<home>` saved there on first start, so a
+    /// renamed host still recognizes the cards that it holds.
+    static func holderID(stateDir: URL, home: URL, hostName: String, log: any LogSink) -> String {
+        let file = stateDir.appending(path: "holder")
+        let id = "\(hostName):\(home.path)"
+        if FileManager.default.fileExists(atPath: file.path) {
+            do {
+                let saved = try String(contentsOf: file, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !saved.isEmpty { return saved }
+            } catch {
+                log.error("can't read \(file.path): \(error); using the holder id \(id), so cards claimed under the saved one count as another Manager's")
+                return id
+            }
+        }
+        do {
+            try FileManager.default.createDirectory(at: stateDir, withIntermediateDirectories: true)
+            try Data((id + "\n").utf8).write(to: file, options: .atomic)
+        } catch {
+            log.error("can't write \(file.path): \(error); the holder id \(id) changes if this host is renamed")
+        }
+        return id
     }
 
     private static func currentHostName() -> String {

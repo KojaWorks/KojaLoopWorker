@@ -942,6 +942,22 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.log.contains("stranded-card sweep: can't read working cards", level: .warning))
     }
 
+    @Test("B213: the holder id is <host>:<home>, logged at startup and kept across restarts")
+    func holderIDIsStableAcrossRestarts() async throws {
+        let h = try ManagerHarness(projects: "")
+        let id = h.manager.holder
+        #expect(id.hasSuffix(":\(h.home.path)") && !id.hasPrefix(":"))
+        try await h.boot()
+        #expect(h.log.contains("holder id \(id)", level: .info))
+
+        let file = h.home.appending(path: "state/holder")
+        try "renamed.local:\(h.home.path)\n".write(to: file, atomically: true, encoding: .utf8)
+        try h.restart()
+        #expect(h.manager.holder == "renamed.local:\(h.home.path)")
+        let other = try ManagerHarness(projects: "")
+        #expect(other.manager.holder != h.manager.holder)
+    }
+
     @Test func secondManagerOnTheSameHomeRefusesToStart() async throws {  // B109
         let h = try ManagerHarness(projects: oneColdProject)
         try await h.boot()
