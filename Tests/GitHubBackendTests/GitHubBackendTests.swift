@@ -313,3 +313,97 @@ private let pullJSON = #"{"number": 7, "html_url": "https://github.com/owner/app
         #expect(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains(URLQueryItem(name: "status", value: "completed")) == true)
     }
 }
+
+@Suite struct GitHubMergeTests {
+    let review = ReviewRequest(url: URL(string: "https://github.com/owner/app/pull/34")!, display: "owner/app#34")
+    let head = "0123456789abcdef0123456789abcdef01234567"
+
+    /// Answers the merge PUT with `put` and the pull request GET with `pull`.
+    fileprivate func stub(_ put: (Int, String), pull: String = "{}") -> StubGitHub {
+        StubGitHub { req, _ in req.httpMethod == "PUT" ? (put.0, [:], put.1) : (200, [:], pull) }
+    }
+
+    func pull(state: String = "open", merged: Bool = false, draft: Bool = false, mergeable: Bool? = true, mergeableState: String = "clean") -> String {
+        #"{"state": "\#(state)", "merged": \#(merged), "draft": \#(draft), "mergeable": \#(mergeable.map(String.init) ?? "null"), "mergeable_state": "\#(mergeableState)", "merge_commit_sha": "feed"}"#
+    }
+
+    fileprivate func merge(_ stub: StubGitHub) async throws -> MergeResult {
+        try await forge(stub).merge(review, project: project, head: head)
+    }
+
+    @Test("B215: a merge sends merge_method merge and sha, and returns the merge commit")
+    func mergesWithTheMergeCommit() async throws {
+        let s = stub((200, #"{"sha": "beef", "merged": true, "message": "Pull Request successfully merged"}"#))
+        #expect(try await merge(s) == .merged(commit: "beef"))
+        let put = try #require(s.requests.first)
+        #expect(put.url?.path == "/repos/owner/app/pulls/34/merge")
+        let body = try JSONSerialization.jsonObject(with: put.httpBody ?? Data()) as? [String: String]
+        #expect(body == ["merge_method": "merge", "sha": head])
+        #expect(s.requests.count == 1)
+    }
+
+    @Test("B215: a refused merge of an already merged pull request is merged")
+    func alreadyMerged() async throws {
+        let s = stub((405, #"{"message": "Pull Request is not mergeable"}"#), pull: pull(state: "closed", merged: true))
+        #expect(try await merge(s) == .merged(commit: "feed"))
+        #expect(s.requests.last?.url?.path == "/repos/owner/app/pulls/34")
+    }
+
+    @Test("B215: a 409 is a moved head, without re-reading")
+    func headMoved() async throws {
+        let s = stub((409, #"{"message": "Head branch was modified. Review and try the merge again."}"#))
+        #expect(try await merge(s) == .blocked(
+            "GitHub: the source branch's head moved past 0123456789ab (Head branch was modified. Review and try the merge again.)"))
+        #expect(s.requests.count == 1)
+    }
+
+    @Test("B215: closed and draft pull requests are blocked; a null mergeable is pending")
+    func closedDraftAndUncomputed() async throws {
+        let refused = (405, #"{"message": "Pull Request is not mergeable"}"#)
+        #expect(try await merge(stub(refused, pull: pull(state: "closed"))) == .blocked("GitHub: closed (the pull request isn't open)"))
+        #expect(try await merge(stub(refused, pull: pull(draft: true))) == .blocked("GitHub: draft (the pull request is a draft)"))
+        #expect(try await merge(stub(refused, pull: pull(mergeable: nil, mergeableState: "unknown")))
+            == .pending("GitHub: mergeable unknown (GitHub is still computing it)"))
+    }
+
+    @Test("B215: mergeable_state decides outdated, blocked or pending, naming the value", arguments: [
+        ("dirty", "outdated"), ("behind", "outdated"), ("blocked", "blocked"), ("unknown", "pending"),
+        ("unstable", "pending"), ("clean", "pending"), ("has_hooks", "pending"), ("some_future_state", "blocked"),
+    ])
+    func refusalClasses(_ state: String, _ kind: String) async throws {
+        let s = stub((405, #"{"message": "At least 1 approving review is required"}"#), pull: pull(mergeable: false, mergeableState: state))
+        let reason: String
+        switch try await merge(s) {
+        case .pending(let r) where kind == "pending": reason = r
+        case .outdated(let r) where kind == "outdated": reason = r
+        case .blocked(let r) where kind == "blocked": reason = r
+        case let other: Issue.record("\(state): \(other), expected \(kind)"); return
+        }
+        #expect(reason.hasPrefix("GitHub: \(state) ("))
+    }
+
+    @Test("B215: blocked carries the merge's own message")
+    func blockedNamesTheMessage() async throws {
+        let s = stub((405, #"{"message": "At least 1 approving review is required"}"#), pull: pull(mergeable: false, mergeableState: "blocked"))
+        #expect(try await merge(s) == .blocked(
+            "GitHub: blocked (required reviews, checks or branch protection; the merge answered 405 At least 1 approving review is required)"))
+    }
+
+    @Test("B215: a 5xx throws after the retries instead of returning a value")
+    func serverErrorThrows() async throws {
+        let s = stub((502, "bad gateway"))
+        await #expect(throws: GitHubError.unavailable(request: "PUT /repos/owner/app/pulls/34/merge", status: 502, message: "bad gateway")) {
+            try await merge(s)
+        }
+    }
+
+    @Test("B215: a review URL without a number is a BackendRejection naming it")
+    func urlWithoutNumber() async throws {
+        let s = stub((200, "{}"))
+        let bad = ReviewRequest(url: URL(string: "https://github.com/owner/app/pulls")!, display: "owner/app#?")
+        await #expect(throws: BackendRejection("can't merge owner/app#?: https://github.com/owner/app/pulls doesn't end in a pull request number")) {
+            try await forge(s).merge(bad, project: project, head: head)
+        }
+        #expect(s.requests.isEmpty)
+    }
+}

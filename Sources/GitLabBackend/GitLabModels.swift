@@ -53,6 +53,11 @@ struct GLMergeRequest: Decodable, Sendable {
     var iid: Int
     var webUrl: String
     var assignees: [GLUser]?
+    /// `opened`, `closed`, `locked` (a merge in progress) or `merged`.
+    var state: String?
+    var mergeCommitSha: String?
+    /// Why it can or can't merge now: `mergeable`, `not_approved`, `need_rebase`, ...
+    var detailedMergeStatus: String?
 }
 
 struct GLPipeline: Decodable, Sendable {

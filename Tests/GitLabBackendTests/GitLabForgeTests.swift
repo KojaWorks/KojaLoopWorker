@@ -270,3 +270,108 @@ import Testing
         ])
     }
 }
+
+@Suite struct GitLabMergeTests {
+    let mr = "/api/v4/projects/mygroup%2Fapp/merge_requests/34"
+    let review = ReviewRequest(url: URL(string: "https://gitlab.example.com/mygroup/app/-/merge_requests/34")!, display: "mygroup/app!34")
+    let head = "0123456789abcdef0123456789abcdef01234567"
+
+    func state(_ state: String, _ status: String = "mergeable", commit: String? = nil) -> [String: Any] {
+        ["iid": 34, "web_url": review.url.absoluteString, "state": state, "detailed_merge_status": status,
+         "merge_commit_sha": Fixture.orNull(commit)]
+    }
+
+    func merge(_ w: World) async throws -> MergeResult {
+        try await w.make().forge.merge(review, project: World.app, head: head)
+    }
+
+    @Test("B214: a merge sends only sha and returns the merge commit")
+    func mergesWithTheMergeCommit() async throws {
+        let w = World()
+        w.gitlab.on("PUT", mr + "/merge", json: state("merged", commit: "feed"))
+        #expect(try await merge(w) == .merged(commit: "feed"))
+        #expect(w.gitlab.requests("PUT", mr + "/merge").map { $0.json as? [String: String] } == [["sha": head]])
+        #expect(w.gitlab.requests("GET", mr).isEmpty)
+    }
+
+    @Test("B214: a refused merge of an already merged merge request is merged")
+    func alreadyMerged() async throws {
+        let w = World()
+        w.gitlab.on("PUT", mr + "/merge", status: 405, json: ["message": "405 Method Not Allowed"])
+        w.gitlab.on("GET", mr, json: state("merged", "not_open", commit: "feed"))
+        #expect(try await merge(w) == .merged(commit: "feed"))
+    }
+
+    @Test("B214: an unmerged 2xx re-reads the merge request")
+    func unmergedSuccessRereads() async throws {
+        let w = World()
+        w.gitlab.on("PUT", mr + "/merge", json: state("opened"))
+        w.gitlab.on("GET", mr, json: state("opened", "checking"))
+        #expect(try await merge(w) == .pending("GitLab: checking (GitLab is checking whether it can merge)"))
+    }
+
+    @Test("B214: detailed_merge_status decides pending, outdated or blocked, naming the value", arguments: [
+        ("checking", "pending"), ("unchecked", "pending"), ("preparing", "pending"), ("ci_still_running", "pending"),
+        ("approvals_syncing", "pending"), ("mergeable", "pending"), ("conflict", "outdated"), ("need_rebase", "outdated"),
+        ("not_approved", "blocked"), ("blocked_status", "blocked"), ("ci_must_pass", "blocked"), ("draft_status", "blocked"),
+        ("discussions_not_resolved", "blocked"), ("requested_changes", "blocked"), ("not_open", "blocked"),
+        ("some_future_rule", "blocked"),
+    ])
+    func refusalClasses(_ status: String, _ kind: String) async throws {
+        let w = World()
+        w.gitlab.on("PUT", mr + "/merge", status: 422, json: ["message": "Branch cannot be merged"])
+        w.gitlab.on("GET", mr, json: state("opened", status))
+        let reason: String
+        switch try await merge(w) {
+        case .pending(let r) where kind == "pending": reason = r
+        case .outdated(let r) where kind == "outdated": reason = r
+        case .blocked(let r) where kind == "blocked": reason = r
+        case let other: Issue.record("\(status): \(other), expected \(kind)"); return
+        }
+        #expect(reason.hasPrefix("GitLab: \(status)"))
+    }
+
+    @Test("B214: reasons gloss known values and pass unknown ones through raw")
+    func reasons() async throws {
+        let w = World()
+        w.gitlab.on("PUT", mr + "/merge", status: 405, json: ["message": "405 Method Not Allowed"])
+        w.gitlab.on("GET", mr, json: state("opened", "not_approved"))
+        #expect(try await merge(w) == .blocked("GitLab: not_approved (the merge request needs approvals)"))
+        w.gitlab.on("GET", mr, json: state("opened", "some_future_rule"))
+        #expect(try await merge(w) == .blocked("GitLab: some_future_rule"))
+        w.gitlab.on("GET", mr, json: state("opened", "mergeable"))
+        #expect(try await merge(w) == .pending(
+            #"GitLab: mergeable (it can merge), but the merge answered 405 {"message":"405 Method Not Allowed"}"#))
+    }
+
+    @Test("B214: a 409 is a moved head, a closed merge request is blocked, a locked one is merging")
+    func headMovedClosedAndLocked() async throws {
+        let w = World()
+        w.gitlab.on("PUT", mr + "/merge", status: 409, json: ["message": "SHA does not match HEAD of source branch"])
+        w.gitlab.on("GET", mr, json: state("opened"))
+        #expect(try await merge(w) == .blocked("GitLab: the source branch's head moved past 0123456789ab"))
+        w.gitlab.on("GET", mr, json: state("closed", "not_open"))
+        #expect(try await merge(w) == .blocked("GitLab: closed (the merge request isn't open)"))
+        w.gitlab.on("GET", mr, json: state("locked", "mergeable"))
+        #expect(try await merge(w) == .pending("GitLab: locked (the merge is in progress)"))
+    }
+
+    @Test("B214: a 5xx throws after the retries instead of returning a value")
+    func serverErrorThrows() async throws {
+        let w = World()
+        w.gitlab.on("PUT", mr + "/merge", status: 502, json: ["message": "Bad Gateway"])
+        await #expect(throws: GitLabError.self) { try await merge(w) }
+        #expect(w.gitlab.requests("GET", mr).isEmpty)
+    }
+
+    @Test("B214: a review URL without a number is a BackendRejection naming it")
+    func urlWithoutNumber() async throws {
+        let w = World()
+        let bad = ReviewRequest(url: URL(string: "https://gitlab.example.com/mygroup/app/-/merge_requests")!, display: "mygroup/app!?")
+        let error = await #expect(throws: BackendRejection.self) {
+            try await w.make().forge.merge(bad, project: World.app, head: head)
+        }
+        #expect(error?.description.contains("https://gitlab.example.com/mygroup/app/-/merge_requests ") == true)
+        #expect(w.gitlab.requests.isEmpty)
+    }
+}

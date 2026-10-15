@@ -27,6 +27,14 @@ public struct GitLabError: Error, CustomStringConvertible, Equatable {
     init(_ description: String) { self.description = description }
 }
 
+/// A 4xx that the caller listed in `refusals`, thrown instead of a `BackendRejection` so the
+/// caller can read it as an expected answer. `message` is the start of GitLab's body.
+struct GitLabRefusal: Error, CustomStringConvertible {
+    var status: Int
+    var message: String
+    var description: String { "\(status) \(message)" }
+}
+
 /// REST v4 and GraphQL client for one GitLab instance and token.
 ///
 /// Every list read follows pagination to the end or throws. 429 is retried for every request,
@@ -97,10 +105,14 @@ actor GitLabClient {
         }
     }
 
-    /// Sends a JSON body. `idempotent` allows retrying 5xx.
-    func send<T: Decodable>(_ method: String, _ path: String, body: [String: String], idempotent: Bool) async throws -> T {
+    /// Sends a JSON body. `idempotent` allows retrying 5xx. A status in `refusals` throws
+    /// `GitLabRefusal`.
+    func send<T: Decodable>(
+        _ method: String, _ path: String, body: [String: String], idempotent: Bool, refusals: Set<Int> = []
+    ) async throws -> T {
         let data = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
-        let (out, _) = try await perform(method, path, body: data, contentType: "application/json", idempotent: idempotent)
+        let (out, _) = try await perform(
+            method, path, body: data, contentType: "application/json", idempotent: idempotent, refusals: refusals)
         return try decode(out, method, path)
     }
 
@@ -139,16 +151,16 @@ actor GitLabClient {
 
     private func perform(
         _ method: String, _ path: String, query: [(String, String)] = [], body: Data? = nil,
-        contentType: String? = nil, idempotent: Bool? = nil, allowNotFound: Bool = false
+        contentType: String? = nil, idempotent: Bool? = nil, allowNotFound: Bool = false, refusals: Set<Int> = []
     ) async throws -> (Data, HTTPURLResponse) {
         try await perform(
             method, url: try apiURL(path, query: query), label: path, body: body, contentType: contentType,
-            idempotent: idempotent, allowNotFound: allowNotFound)
+            idempotent: idempotent, allowNotFound: allowNotFound, refusals: refusals)
     }
 
     private func perform(
         _ method: String, url: URL, label: String, body: Data? = nil, contentType: String? = nil,
-        idempotent: Bool? = nil, allowNotFound: Bool = false, bearer: Bool = false
+        idempotent: Bool? = nil, allowNotFound: Bool = false, bearer: Bool = false, refusals: Set<Int> = []
     ) async throws -> (Data, HTTPURLResponse) {
         let retriesServerErrors = idempotent ?? (method == "GET" || method == "PUT")
         var request = URLRequest(url: url, timeoutInterval: Self.requestTimeout)
@@ -171,6 +183,8 @@ actor GitLabClient {
                 return (data, response)
             case 404 where allowNotFound:
                 return (data, response)
+            case _ where refusals.contains(status):
+                throw GitLabRefusal(status: status, message: excerpt)
             case 401, 403:
                 throw GitLabError("\(where_): \(status) \(excerpt). The token in \(connection.tokenEnv) is invalid, expired or lacks the api scope.")
             case 429, 500...599:
