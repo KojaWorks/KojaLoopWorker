@@ -154,7 +154,7 @@ import Testing
         ])
     }
 
-    @Test("B217: claim posts a note naming the holder, after the label change")
+    @Test("B217: claim posts a note naming the holder, before the label change")
     func claimPostsTheHolderNote() async throws {
         let w = World()
         w.gitlab.on("PUT", Fixture.issuePath, json: Fixture.issue(labels: ["loopworker::working"]))
@@ -163,7 +163,19 @@ import Testing
         #expect(try await backlog.claim(try #require(try await backlog.workable(in: [World.app]).first), holder: testHolder))
         let note = try #require(w.gitlab.requests("POST", Fixture.issuePath + "/notes").first)
         #expect(note.json["body"] as? String == "<!-- loopworker -->\n<!-- loopworker:holder=\(testHolder) -->\n\nLoopWorker on buildmac.local is working on this card.")
-        #expect(w.gitlab.requests.firstIndex { $0.method == "PUT" }! < w.gitlab.requests.firstIndex { $0.method == "POST" }!)
+        #expect(w.gitlab.requests.firstIndex { $0.method == "POST" }! < w.gitlab.requests.firstIndex { $0.method == "PUT" }!)
+    }
+
+    @Test("B217: a claim retried after its label change failed doesn't post the holder note again")
+    func retriedClaimKeepsOneHolderNote() async throws {
+        let w = World()
+        let body = "<!-- loopworker -->\n<!-- loopworker:holder=\(testHolder) -->\n\nLoopWorker on buildmac.local is working on this card."
+        w.notes([Fixture.assigned(), Fixture.note(300, body, at: 5)])
+        w.gitlab.on("PUT", Fixture.issuePath, json: Fixture.issue(labels: ["loopworker::working"]))
+        let backlog = try w.backlog()
+        #expect(try await backlog.claim(try #require(try await backlog.workable(in: [World.app]).first), holder: testHolder))
+        #expect(w.gitlab.requests("POST", Fixture.issuePath + "/notes").isEmpty)
+        #expect(w.gitlab.requests("PUT", Fixture.issuePath).count == 1)
     }
 
     static func claimNote(_ id: Int, _ holder: String, by author: [String: Any] = Fixture.me, at minutes: Int) -> [String: Any] {

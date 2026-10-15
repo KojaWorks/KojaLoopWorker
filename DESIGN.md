@@ -397,7 +397,7 @@ Manager saves in `state/holder` on its first start so a renamed host keeps it. A
 
 | Backlog | Where the holder lives |
 | --- | --- |
-| GitLab | The claim note: a Manager note whose header carries `<!-- loopworker:holder=<id> -->`, and "LoopWorker on <host> is working on this card." Only the token's user's notes count, and only marker lines in their header. A release note (the one with the cutoff marker) clears it. |
+| GitLab | The claim note, posted before the labels move: a Manager note whose header carries `<!-- loopworker:holder=<id> -->`, and "LoopWorker on <host> is working on this card." Only the token's user's notes count, and only marker lines in their header. A release note (the one with the cutoff marker) clears it. |
 | Patch | A `claim` block appended to the card's page body after the claim's PATCH lands, with `content.holder`. Only the PAT owner's blocks count; a later `release` or `failed-attempt` block clears it. |
 | Notion | The claim comment's header, `LoopWorker claimed this card (holder <id>, <nonce>).` The holder is the winner that `claim` picks: the oldest of the consecutive claim comments within 120 s of the newest one, since a losing claim stays until its Manager deletes it. A later release comment clears it. |
 
@@ -408,7 +408,8 @@ without holder ids, or after a release):
 - The CI sweep resumes watching only `verifying` cards that it holds.
 - A worker whose card another Manager's newer claim took over is abandoned.
 - GitLab's claim is not compare-and-set, so two claims can both succeed. After claiming, the
-  Manager re-reads the holder and doesn't start a worker when a rival's claim is newer. If the
+  Manager re-reads the card and doesn't start a worker when it is no longer `working` or a
+  rival's claim is newer. If the
   rival's claim lands only after that re-read, the rival's re-read sees itself, and the first
   Manager's worker is abandoned on its next reconcile.
 

@@ -216,16 +216,18 @@ public actor GitLabBacklog: Backlog {
 
     // MARK: - Writes
 
-    /// Moves the labels first, so a rival's claim sees `working` as early as possible, then
-    /// posts the claim note that names `holder`.
+    /// Posts the claim note that names `holder` before it moves the labels, so the card is
+    /// never `working` without its holder. The holder only counts for a `working` or
+    /// `verifying` card, so a note left by a move that failed is inert, and the retry's
+    /// `postNote` doesn't repeat it.
     public func claim(_ card: Card, holder: String) async throws -> Bool {
         guard let read = try await read(card.ref), read.card.state == .ready else {
             log.info("claim lost for \(card.ref.display): it is no longer ready")
             return false
         }
-        try await move(read, to: .working)
         let host = holder.split(separator: ":", maxSplits: 1).first.map(String.init) ?? holder
         try await postNote(read, "LoopWorker on \(host) is working on this card.", markers: "\(Trust.holderMarkerPrefix)\(holder) -->\n")
+        try await move(read, to: .working)
         return true
     }
 

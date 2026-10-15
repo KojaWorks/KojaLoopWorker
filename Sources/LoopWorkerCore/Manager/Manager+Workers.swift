@@ -214,7 +214,14 @@ extension Manager {
         }
         // Not every backlog's claim is compare-and-set: a rival's newer claim holds the card.
         do {
-            if let other = try await deps.backlog.card(card.ref).flatMap(heldElsewhere) {
+            let fresh = try await deps.backlog.card(card.ref)
+            guard let fresh, fresh.state == .working else {
+                log.warning("\(label(spec)): \(card.ref) is \(fresh?.state.rawValue ?? "gone") right after this Manager claimed it; not starting a worker")
+                try? fm.removeItem(at: cardRecordFile(spec))
+                free(ref)
+                return
+            }
+            if let other = heldElsewhere(fresh) {
                 log.warning("\(label(spec)): \(card.ref) was claimed by \(other) too, after this Manager; leaving it to that Manager")
                 try? fm.removeItem(at: cardRecordFile(spec))
                 free(ref)

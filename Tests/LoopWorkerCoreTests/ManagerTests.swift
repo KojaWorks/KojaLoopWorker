@@ -112,6 +112,18 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(try h.status().projects[0].slots[0].state == "idle")
     }
 
+    @Test("B214: a card that is no longer working right after its claim (a rival's sweep released it) spawns nothing")
+    func claimReleasedRightAwaySpawnsNothing() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        h.addCard(1)
+        h.backlog.state { $0.claimOverride = true }  // reports a win but leaves the card ready
+        try await h.boot()
+        await h.cycle()
+        #expect(h.tmux.spawned.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: h.stateDir().appending(path: "card.json").path))
+        #expect(h.log.contains("g/app#1 is ready right after this Manager claimed it", level: .warning))
+    }
+
     @Test("B214: a claim whose holder can't be re-read spawns nothing")
     func claimWithoutAHolderReReadSpawnsNothing() async throws {
         let h = try ManagerHarness(projects: oneColdProject)
