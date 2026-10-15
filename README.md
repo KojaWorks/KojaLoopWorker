@@ -296,7 +296,9 @@ loopworker service uninstall
 `--daemon` needs root, so it writes the plist to `$LOOPWORKER_HOME/state` and prints the `sudo`
 commands to install it. The service runs the binary at the path you installed it from, with
 `LOOPWORKER_HOME` and a `PATH` of `~/.local/bin`, Homebrew's bin and the system dirs; doctor
-warns about tools outside that `PATH`. The service writes its output to
+warns about tools outside that `PATH`. It runs at interactive priority with a soft limit of 16384
+open files, so builds run at full speed; doctor warns when an installed plist is older than
+that, and running `service install` again rewrites it. The service writes its output to
 `$LOOPWORKER_HOME/state/manager.out`; the redacted log is `state/manager.log`. Use either this
 or `brew services`, not both.
 

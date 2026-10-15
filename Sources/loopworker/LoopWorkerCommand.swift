@@ -166,7 +166,8 @@ struct Doctor: AsyncParsableCommand {
                 try checkWorkerEnv(config: config, secretNames: try secretVariables(config: config, environment: environment))
                 return try makeBackends(config: config, log: StderrLog(), environment: environment)
             })
-        let checks = await doctor.run()
+        var checks = await doctor.run()
+        if let service = Service.current().installedPlistCheck() { checks.append(service) }
         if json {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]

@@ -8,6 +8,8 @@ import LoopWorkerCore
 /// this type writes the plist to the state dir and prints the `sudo` commands for a human.
 struct LaunchdService {
     static let label = "dev.nevyn.loopworker"
+    /// The soft open-file limit for the Manager and its children; below every Mac's per-process cap.
+    static let openFiles = 16384
 
     /// Absolute path of the `loopworker` binary that the job runs.
     var binary: String
@@ -48,7 +50,10 @@ struct LaunchdService {
             "ExitTimeOut": 180,
             "StandardOutPath": out,
             "StandardErrorPath": out,
-            "ProcessType": "Background",
+            // Background would throttle the Manager and every build it runs to background CPU and I/O.
+            "ProcessType": "Interactive",
+            // launchd's default of 256 open files makes large Swift compiles fail without output.
+            "SoftResourceLimits": ["NumberOfFiles": Self.openFiles],
         ]
         if daemon {
             job["UserName"] = userName
@@ -56,6 +61,22 @@ struct LaunchdService {
         }
         job["EnvironmentVariables"] = environment
         return job
+    }
+
+    /// Doctor's check of an installed plist (the LaunchAgent, else `daemonPlist` at `daemonPath`):
+    /// it warns when the plist predates the current priority or open-file limit, because only a
+    /// reinstall rewrites it. Nil when no service is installed.
+    func installedPlistCheck(daemonPath: String = Self.daemonPlist) -> DoctorCheck? {
+        let daemon = !FileManager.default.fileExists(atPath: agentPlist.path)
+        let path = daemon ? daemonPath : agentPlist.path
+        guard let data = FileManager.default.contents(atPath: path) else { return nil }
+        let job = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any] ?? [:]
+        let limits = job["SoftResourceLimits"] as? [String: Int]
+        guard job["ProcessType"] as? String != "Interactive" || limits?["NumberOfFiles"] != Self.openFiles else {
+            return DoctorCheck("service", .ok, path)
+        }
+        return DoctorCheck("service", .warn, "\(path) predates this loopworker: it runs the Manager at \(job["ProcessType"] as? String ?? "default") priority with \(limits?["NumberOfFiles"].map(String.init) ?? "256") open files",
+                           remedy: "run `loopworker service install\(daemon ? " --daemon" : "")` again to rewrite it")
     }
 
     func plistData(daemon: Bool) throws -> Data {
