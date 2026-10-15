@@ -80,12 +80,14 @@ import Testing
         #expect(!text.contains("OTHER"))
     }
 
-    @Test("B200: a secrets.env line without NAME= is named by its number, never shown")
-    func bareTokenLine() throws {
-        try write("secrets.env", "LW_GITLAB=x\nntn_fabricatedBareTokenValue\n", mode: 0o600)
+    @Test("B200: every secrets.env line that load rejects is named by its number and reason, never shown")
+    func rejectedSecretsLines() throws {
+        try write("secrets.env", "LW_GITLAB=x\nntn_fabricatedBareTokenValue\nexport LW_GITHUB=fabricatedExportedValue\n", mode: 0o600)
         let text = render()
-        #expect(text.contains("line 2 has no `NAME=`"))
+        #expect(text.contains("line 2: no NAME=, so the Manager refuses to start"))
+        #expect(text.contains("line 3: not a variable name, so the Manager refuses to start"))
         #expect(!text.contains("ntn_fabricatedBareTokenValue"))
+        #expect(!text.contains("fabricatedExportedValue"))
     }
 
     @Test("B201: the secrets commands name the resolved secrets.env path")
@@ -107,10 +109,12 @@ import Testing
         #expect(render(managerPid: 0).contains("pid unknown"))
     }
 
-    @Test func aThrowingCredentialLookupStillRenders() throws {
+    @Test("B200: a backend section that doesn't decode makes the config invalid")
+    func aThrowingCredentialLookupIsAnInvalidConfig() throws {
         try write("config.toml", gitlabAndGitHub)
-        let text = render(credentialVariables: { _ in throw ConfigError("unknown [backlog] kind") })
-        #expect(text.contains("can't tell which variables the config needs: unknown [backlog] kind"))
+        let text = render(credentialVariables: { _ in throw ConfigError("[backlog.notion] trusted_users is required") })
+        #expect(text.contains("config.toml: invalid (\(home.path)/config.toml): [backlog.notion] trusted_users is required"))
+        #expect(!text.contains("config.toml: valid"))
         #expect(text.contains("CLAUDE_CODE_OAUTH_TOKEN: not in secrets.env"))
         #expect(text.contains("Manager: none runs"))
     }
@@ -118,6 +122,8 @@ import Testing
 
 /// B201: the built-in setup instructions.
 @Suite struct PromptInstructionsTests {
+    let home = URL(filePath: "/tmp/lw-home")
+
     @Test func everySectionIsPrinted() {
         let text = Prompt.instructions(version: "1.2.3", home: URL(filePath: "/tmp/lw-home"))
         let headings = ["What LoopWorker is", "Rules for you", "Ask the user", "Write config.toml", "Secrets",
@@ -126,6 +132,30 @@ import Testing
             #expect(text.contains("\n## \(n + 1). \(heading)\n"))
         }
         #expect(text.contains("Run `loopworker doctor`"))
+    }
+
+    @Test("B201: code fences pair up, so no section is swallowed by an open block")
+    func fencesPairUp() {
+        let fences = Prompt.instructions(version: "1.2.3", home: home).split(separator: "\n").filter { $0.hasPrefix("```") }
+        #expect(fences.count % 2 == 0)
+    }
+
+    @Test("B201: the secrets path is one shell word even when it contains a quote")
+    func secretsPathIsShellQuoted() {
+        #expect(Prompt.shellQuoted("/tmp/it's here") == #"'/tmp/it'\''s here'"#)
+        let text = Prompt.instructions(version: "1.2.3", home: URL(filePath: "/tmp/it's"))
+        #expect(text.contains(#"chmod 600 '/tmp/it'\''s/secrets.env'"#))
+    }
+
+    @Test("B201: the agent asks for the setup, looks up ids, never handles a token, asks before shared changes")
+    func requiredRules() {
+        let text = Prompt.instructions(version: "1.2.3", home: home)
+        for phrase in ["Which backlog holds the cards", "Which forge hosts the code", "Which projects should LoopWorker serve",
+                       "Who may vouch for cards", "Look up their Notion user ids",
+                       "Never read, print or write the value of a token",
+                       "Ask the user before you change a backlog that other people use"] {
+            #expect(text.contains(phrase), "missing: \(phrase)")
+        }
     }
 
     @Test func docLinksPinTheReleaseTag() {
