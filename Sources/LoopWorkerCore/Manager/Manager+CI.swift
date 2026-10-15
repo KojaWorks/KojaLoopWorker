@@ -157,6 +157,7 @@ extension Manager {
             if w.exitRetryAt == nil, let last = w.lastPoll, now.timeIntervalSince(last) < Self.ciPollInterval { continue }
             ciWatches[id]!.polling = true
             ciWatches[id]!.lastPoll = now
+            ciWatches[id]!.exitRetryAt = nil  // this poll is the retry; later ones keep the normal interval
             track { await self.pollTask(id) }
         }
     }
@@ -243,6 +244,7 @@ extension Manager {
 
         switch decision {
         case .wait, .retry:
+            ciWatches[id]?.exitFailures = 0
             return
         case .passed:
             await ciPassed(id, fresh, r, pipeline!)
@@ -460,10 +462,17 @@ extension Manager {
             await ciStuck(id, card, r, "The forge refused to merge \(r.review.display): \(Self.inlineMarkdown("\(rejection)"))")
             return
         } catch {
+            // Bounded like a pending merge, so a forge that keeps failing ends in stuck, not in endless backoff.
+            if let since = ciWatches[id]?.pendingSince, clock.now().timeIntervalSince(since) >= ci.timeoutMinutes * 60 {
+                await ciStuck(id, card, r, "Couldn't merge \(r.review.display) for \(Int(ci.timeoutMinutes)) min: \(Self.inlineMarkdown("\(error)")). Merge it by hand, then move the card on.")
+                return
+            }
+            if ciWatches[id]?.pendingSince == nil { ciWatches[id]?.pendingSince = clock.now() }
             ciExitFailed(id, "merging \(r.review.display) failed: \(error)")
             return
         }
         guard let w = ciWatches[id] else { return }
+        ciWatches[id]?.exitFailures = 0
         let pendingFor = w.pendingSince.map { clock.now().timeIntervalSince($0) }
         switch Reconciler.decideMerge(result, pendingFor: pendingFor, rebases: r.rebases ?? 0, timeout: ci.timeoutMinutes * 60) {
         case .merged(let commit):

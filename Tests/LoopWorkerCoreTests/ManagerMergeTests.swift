@@ -173,6 +173,41 @@ import Testing
         #expect(blocker(h)?.hasPrefix(#"The forge refused to merge g/app!1: PUT /merge: 404 \[gone\]"#) == true)
     }
 
+    @Test("B218: after a failed merge call, a pending answer goes back to polling every 120 s")
+    func errorThenPendingKeepsTheInterval() async throws {
+        let h = try await finished("merge")
+        h.forge.state { $0.failMerge = FakeError("503 Service Unavailable") }
+        await h.cycle()
+        h.forge.state {
+            $0.failMerge = nil
+            $0.mergeResults = [.pending("checking"), .pending("checking")]
+        }
+        h.clock.advance(31)
+        await h.cycle()
+        #expect(h.forge.state.get.mergeCalls.count == 2)
+        for _ in 0..<4 {
+            h.clock.advance(15)
+            await h.cycle()
+        }
+        #expect(h.forge.state.get.mergeCalls.count == 2)
+        h.clock.advance(60)
+        await h.cycle()
+        #expect(h.forge.state.get.mergeCalls.count == 3)
+    }
+
+    @Test("B218: merge calls that keep failing mark the card stuck after ci_timeout_minutes")
+    func failingMergeTimesOut() async throws {
+        let h = try await finished("merge", manifest: ciManifest)
+        h.forge.state { $0.failMerge = FakeError("503 Service Unavailable") }
+        await h.cycle()
+        h.clock.advance(59 * 60)
+        await h.cycle()
+        #expect(blocker(h) == nil)
+        h.clock.advance(11 * 60)
+        await h.cycle()
+        #expect(blocker(h)?.hasPrefix("Couldn't merge g/app!1 for 60 min: 503 Service Unavailable.") == true)
+    }
+
     @Test("B220: blocked marks the card stuck, naming the escaped reason and linking the review request")
     func blocked() async throws {
         let h = try await finished("merge")
