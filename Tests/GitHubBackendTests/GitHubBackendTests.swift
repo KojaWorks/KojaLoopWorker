@@ -313,3 +313,81 @@ private let pullJSON = #"{"number": 7, "html_url": "https://github.com/owner/app
         #expect(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains(URLQueryItem(name: "status", value: "completed")) == true)
     }
 }
+
+private func json(_ value: Any) -> String {
+    String(decoding: try! JSONSerialization.data(withJSONObject: value), as: UTF8.self)
+}
+
+private func graphQLBody(_ req: URLRequest) -> [String: Any] {
+    (try? JSONSerialization.jsonObject(with: req.httpBody ?? Data())) as? [String: Any] ?? [:]
+}
+
+@Suite struct GitHubReviewTests {
+    static let review = ReviewRequest(url: URL(string: "https://github.com/owner/app/pull/7")!, display: "owner/app#7")
+
+    /// `2026-10-01T10:<minutes>:00Z`.
+    static func t(_ minutes: Int) -> String { String(format: "2026-10-01T10:%02d:00Z", minutes) }
+
+    func comment(_ id: String, _ body: String, by login: String? = "alice", at minutes: Int, editedBy: String? = nil, editedAt: Int? = nil) -> [String: Any] {
+        [
+            "id": id, "author": login.map { ["login": $0] } ?? NSNull(), "body": body, "createdAt": Self.t(minutes),
+            "lastEditedAt": editedAt.map { Self.t($0) } ?? NSNull(), "editor": editedBy.map { ["login": $0] } ?? NSNull(),
+            "commit": ["oid": "head1"], "originalCommit": ["oid": "orig1"],
+        ]
+    }
+
+    func page(_ key: String, _ nodes: [[String: Any]], next: String? = nil) -> String {
+        json(["data": ["repository": ["pullRequest": [
+            "createdAt": Self.t(0),
+            key: ["pageInfo": ["hasNextPage": next != nil, "endCursor": next.map { $0 as Any } ?? NSNull()], "nodes": nodes],
+        ]]]])
+    }
+
+    @Test("B205: review threads and conversation comments over GraphQL, trust-checked against the vouch")
+    func reviewFeedback() async throws {
+        let summary = "<!-- loopworker -->\n<!-- loopworker:round=abc -->\n\nLoopWorker pushed abc"
+        let stub = StubGitHub { [self] req, _ in
+            if req.url?.path == "/user" { return (200, [:], #"{"login": "Me"}"#) }
+            #expect(req.url?.absoluteString == "https://api.github.com/graphql")
+            let body = graphQLBody(req)
+            let query = body["query"] as? String ?? ""
+            let after = (body["variables"] as? [String: Any])?["after"] as? String
+            if query.contains("reviewThreads") {
+                if after == nil {
+                    return (200, [:], page("reviewThreads", [
+                        ["id": "PRRT_1", "isResolved": false, "path": "a.swift", "line": 10, "originalLine": 9, "diffSide": "RIGHT",
+                         "comments": ["totalCount": 102, "nodes": [comment("C1", "Rename this.", at: 1), comment("C2", "Ok", by: "me", at: 2)]]],
+                    ], next: "t1"))
+                }
+                return (200, [:], page("reviewThreads", [
+                    ["id": "PRRT_2", "isResolved": true, "path": "b.swift", "line": NSNull(), "originalLine": 3, "diffSide": "LEFT",
+                     "comments": ["totalCount": 1, "nodes": [comment("C3", "Done.", at: 1)]]],
+                    ["id": "PRRT_3", "isResolved": false, "path": "c.swift", "line": NSNull(), "originalLine": 4, "diffSide": "LEFT",
+                     "comments": ["totalCount": 1, "nodes": [comment("C4", "Hm.", at: 1, editedBy: "mallory", editedAt: 9)]]],
+                ]))
+            }
+            return (200, [:], page("comments", [
+                comment("IC_1", "Before the summary.", at: 1),
+                comment("IC_2", summary, by: "me", at: 3),
+                comment("IC_3", "Also the docs.", by: nil, at: 4),
+                comment("IC_4", "Please also add tests.", by: "bob", at: 4),
+            ]))
+        }
+        let f = try forge(stub)
+        let feedback = try await f.reviewFeedback(for: Self.review, project: project, vouchedAt: try Date(Self.t(5), strategy: .iso8601))
+        #expect(feedback.threads.map(\.id) == ["PRRT_1", "IC_3", "IC_4"])
+        #expect(feedback.threads[0].position == ReviewFeedback.Position(path: "a.swift", line: 10, side: .new, commit: "head1"))
+        #expect(feedback.threads[0].notes.map(\.author) == ["alice", "me"])
+        #expect(feedback.threads[1].notes[0].author == "ghost")
+        #expect(feedback.withheld.count == 1 && feedback.withheld[0].hasPrefix("note C4 by @alice in thread PRRT_3: edited by @mallory"))
+        #expect(feedback.cut == ["the 100 oldest comments of thread PRRT_1 were left out"])
+        let variables = graphQLBody(stub.requests[1])["variables"] as? [String: Any]
+        #expect(variables?["number"] as? Int == 7 && variables?["owner"] as? String == "owner" && variables?["name"] as? String == "app")
+    }
+
+    @Test("B205: Enterprise GraphQL lives at /api/graphql")
+    func enterpriseGraphQL() throws {
+        let f = try forge(StubGitHub { _, _ in (500, [:], "") }, "[forge.github]\napi_base = \"https://ghe.example.com/api/v3\"")
+        #expect(f.graphQLURL.absoluteString == "https://ghe.example.com/api/graphql")
+    }
+}

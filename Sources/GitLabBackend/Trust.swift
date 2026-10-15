@@ -3,7 +3,7 @@ import LoopWorkerCore
 
 /// The trust rules of DESIGN.md "Trust", as pure functions over what GitLab returned.
 enum Trust {
-    static let managerMarker = "<!-- loopworker -->"
+    static let managerMarker = ReviewMarker.manager
     static let failedAttemptMarker = "<!-- loopworker:failed-attempt -->"
     static let cutoffMarkerPrefix = "<!-- loopworker:cutoff="
     /// A `next` label added this soon after a release note by me is that release's re-add.
@@ -155,7 +155,7 @@ enum Trust {
             comments.append("**\(name(note.author))** (\(time(note.createdAt))):\n\n\(note.body.trimmingCharacters(in: .whitespacesAndNewlines))\n")
         }
         if !comments.isEmpty { md += "\n## Comments\n\n" + comments.joined(separator: "\n") }
-        return CardSnapshot(markdown: md, excluded: excluded)
+        return CardSnapshot(markdown: md, excluded: excluded, vouchedAt: cutoff)
     }
 
     /// Escapes the `/` of every line whose first non-space character is `/`, so GitLab shows a

@@ -9,6 +9,8 @@ private final class DiagnosableForge: Forge, Diagnosable, @unchecked Sendable {
     func gitEnvironment() -> [String: String] { [:] }
     func defaultBranch(for project: ProjectSpec) async throws -> String { "main" }
     func openReviewRequest(_ draft: ReviewRequestDraft) async throws -> ReviewRequest { fatalError("unused") }
+    func openReviewRequest(for project: ProjectSpec, sourceBranch: String) async throws -> ReviewRequest? { nil }
+    func reviewFeedback(for review: ReviewRequest, project: ProjectSpec, vouchedAt: Date?) async throws -> ReviewFeedback { ReviewFeedback() }
     func attach(_ file: URL, to project: ProjectSpec) async throws -> URL? { nil }
     func pipeline(for project: ProjectSpec, commit: String) async throws -> PipelineStatus? { nil }
     func baselineJobs(for project: ProjectSpec, ref: String, names: [String]) async throws -> [String: CIJobBaseline] { [:] }

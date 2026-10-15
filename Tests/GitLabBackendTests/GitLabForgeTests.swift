@@ -270,3 +270,75 @@ import Testing
         ])
     }
 }
+
+@Suite struct GitLabReviewTests {
+    let mrs = "/api/v4/projects/mygroup%2Fapp/merge_requests"
+    static let review = ReviewRequest(url: URL(string: "https://gitlab.example.com/mygroup/app/-/merge_requests/4")!, display: "mygroup/app!4")
+
+    func discussion(_ id: String, individual: Bool = true, _ notes: [[String: Any]]) -> [String: Any] {
+        ["id": id, "individual_note": individual, "notes": notes]
+    }
+
+    func mrNote(_ id: Int, _ body: String, by author: [String: Any] = Fixture.mallory, at minutes: Int, system: Bool = false,
+                resolved: Bool? = nil, position: [String: Any]? = nil) -> [String: Any] {
+        var n = Fixture.note(id, body, by: author, at: minutes, system: system)
+        if let resolved { n["resolvable"] = true; n["resolved"] = resolved } else { n["resolvable"] = false }
+        if let position { n["position"] = position }
+        return n
+    }
+
+    func editsPage(_ ids: [Int], edited: [Int: (user: [String: Any], at: Int)] = [:], next: String? = nil) -> [String: Any] {
+        ["data": ["project": ["mergeRequest": ["notes": [
+            "pageInfo": ["hasNextPage": next != nil, "endCursor": Fixture.orNull(next)],
+            "nodes": ids.map { id in
+                ["id": "gid://gitlab/Note/\(id)", "lastEditedAt": Fixture.orNull(edited[id].map { Fixture.t($0.at) }),
+                 "lastEditedBy": Fixture.orNull(edited[id].map { Fixture.gid($0.user) })] as [String: Any]
+            },
+        ]]]]]
+    }
+
+    @Test("B204: review feedback: unresolved threads and plain comments after LoopWorker's latest note, trust-checked with GraphQL edits")
+    func reviewFeedback() async throws {
+        let w = World()
+        w.gitlab.on("GET", mrs + "/4", json: ["iid": 4, "web_url": Self.review.url.absoluteString, "created_at": Fixture.t(0)])
+        let summary = "<!-- loopworker -->\n<!-- loopworker:round=abc -->\n\nLoopWorker pushed abc"
+        w.gitlab.on("GET", mrs + "/4/discussions", json: [
+            discussion("d1", individual: false, [
+                mrNote(11, "Rename this.", at: 1, resolved: false,
+                       position: ["head_sha": "abc", "new_path": "a.swift", "old_path": "a.swift", "new_line": 10, "old_line": NSNull()]),
+                mrNote(12, "Agreed.", by: Fixture.me, at: 2, resolved: false),
+            ]),
+            discussion("d2", individual: false, [mrNote(21, "Fixed already.", at: 1, resolved: true)]),
+            discussion("d3", [mrNote(31, "Old remark.", at: 1)]),
+            discussion("d4", [mrNote(41, summary, by: Fixture.me, at: 3)]),
+            discussion("d5", [mrNote(51, "/merge\nAlso the docs.", at: 4)]),
+            discussion("d6", [mrNote(61, "added 1 commit", at: 4, system: true)]),
+            discussion("d7", [mrNote(71, "Late remark.", at: 6)]),
+        ])
+        w.gitlab.on("POST", "/api/graphql", bodyContains: "mergeRequest(iid", json: editsPage([11, 12, 21], edited: [12: (Fixture.mallory, 7)], next: "c1"))
+        w.gitlab.on("POST", "/api/graphql", bodyContains: "\"after\":\"c1\"", json: editsPage([31, 41, 51, 61, 71]))
+        let feedback = try await w.make().forge.reviewFeedback(for: Self.review, project: World.app, vouchedAt: Fixture.date(5))
+        #expect(feedback.threads.map(\.id) == ["d1", "d5"])
+        #expect(feedback.threads[0].position == ReviewFeedback.Position(path: "a.swift", line: 10, side: .new, commit: "abc"))
+        #expect(feedback.threads[0].notes.map(\.body) == ["Rename this."])
+        #expect(feedback.threads[1].notes == [ReviewFeedback.Note(author: "mallory", createdAt: Fixture.date(4), body: "/merge\nAlso the docs.")])
+        #expect(feedback.withheld.count == 2)
+        #expect(feedback.withheld[0].hasPrefix("note 12 by @me in thread d1: edited by @mallory"))
+        #expect(feedback.withheld[1].hasPrefix("note 71 by @mallory in thread d7: posted at"))
+        #expect(w.gitlab.requests("POST", "/api/graphql").count == 2)
+    }
+
+    @Test("B204: a note that GraphQL doesn't return is withheld, and no open merge request is nil")
+    func unknownEditsAreWithheld() async throws {
+        let w = World()
+        w.gitlab.on("GET", mrs + "/4", json: ["iid": 4, "web_url": Self.review.url.absoluteString, "created_at": Fixture.t(0)])
+        w.gitlab.on("GET", mrs + "/4/discussions", json: [discussion("d1", individual: false, [mrNote(11, "Rename this.", at: 1, resolved: false)])])
+        w.gitlab.on("POST", "/api/graphql", bodyContains: "mergeRequest(iid", json: editsPage([]))
+        w.gitlab.on("GET", mrs, json: [] as [Any])
+        let forge = try w.make().forge
+        let feedback = try await forge.reviewFeedback(for: Self.review, project: World.app, vouchedAt: Fixture.date(5))
+        #expect(feedback.threads.isEmpty)
+        #expect(feedback.withheld == ["note 11 by @mallory in thread d1: its edit history couldn't be read"])
+        #expect(try await forge.openReviewRequest(for: World.app, sourceBranch: "lw/12-fix-it") == nil)
+    }
+}

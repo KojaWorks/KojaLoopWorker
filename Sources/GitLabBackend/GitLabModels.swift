@@ -53,6 +53,32 @@ struct GLMergeRequest: Decodable, Sendable {
     var iid: Int
     var webUrl: String
     var assignees: [GLUser]?
+    var createdAt: Date?
+    var description: String?
+}
+
+/// A merge request discussion: a thread, or a single note (`individualNote`).
+struct GLDiscussion: Decodable, Sendable {
+    struct Note: Decodable, Sendable {
+        var id: Int
+        var body: String
+        var author: GLUser
+        var createdAt: Date
+        var system: Bool
+        var resolvable: Bool?
+        var resolved: Bool?
+        var position: Position?
+    }
+    struct Position: Decodable, Sendable {
+        var headSha: String?
+        var oldPath: String?
+        var newPath: String?
+        var oldLine: Int?
+        var newLine: Int?
+    }
+    var id: String
+    var individualNote: Bool
+    var notes: [Note]
 }
 
 struct GLPipeline: Decodable, Sendable {
@@ -137,6 +163,25 @@ struct GQLSnapshotPage: Decodable, Sendable {
         var nodes: [GQLNote]
     }
     var namespace: Namespace?
+    var project: Project?
+}
+
+/// One page of a merge request's notes with their edit metadata, which REST doesn't have.
+struct GQLMergeRequestNotesPage: Decodable, Sendable {
+    struct Project: Decodable, Sendable { var mergeRequest: MergeRequest? }
+    struct MergeRequest: Decodable, Sendable { var notes: Notes }
+    struct Notes: Decodable, Sendable {
+        var pageInfo: GQLPageInfo
+        var nodes: [Edit]
+    }
+    struct Edit: Decodable, Sendable {
+        /// `gid://gitlab/Note/<id>` or `gid://gitlab/DiffNote/<id>`.
+        var id: String
+        var lastEditedAt: Date?
+        var lastEditedBy: GQLUser?
+
+        var numericID: Int? { Int(id.split(separator: "/").last ?? "") }
+    }
     var project: Project?
 }
 

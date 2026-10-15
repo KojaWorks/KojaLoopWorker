@@ -20,6 +20,16 @@ public protocol Forge: Sendable {
     /// leaves the review request unassigned; it never fails the call.
     func openReviewRequest(_ draft: ReviewRequestDraft) async throws -> ReviewRequest
 
+    /// The open review request whose source branch is `sourceBranch`, or nil when none is open.
+    func openReviewRequest(for project: ProjectSpec, sourceBranch: String) async throws -> ReviewRequest?
+
+    /// What reviewers said on `review`, selected and trust-checked by `ReviewFeedback.build`:
+    /// the unresolved threads and the plain comments newer than the Manager's latest note, with
+    /// notes trusted against `vouchedAt` (`CardSnapshot.vouchedAt`) and the forge token's user
+    /// as the owner. Not capped or redacted; the Manager does that.
+    /// - Throws: when any part can't be read; never returns partial feedback.
+    func reviewFeedback(for review: ReviewRequest, project: ProjectSpec, vouchedAt: Date?) async throws -> ReviewFeedback
+
     /// The latest CI pipeline for `commit` in `project`, whatever triggered it (a push of the
     /// branch or the review request), or nil when none exists yet. A re-run or a newer
     /// pipeline for the same commit replaces an older one. Fetches failed jobs and their log

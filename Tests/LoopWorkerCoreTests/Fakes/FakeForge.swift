@@ -28,6 +28,11 @@ final class FakeForge: Forge, @unchecked Sendable {
         var retries: [[String]] = []
         var retrySupported = true
         var failRetry = false
+        /// What `reviewFeedback` returns per review request URL; none: empty.
+        var feedback: [URL: ReviewFeedback] = [:]
+        /// The `vouchedAt` of each `reviewFeedback` call.
+        var feedbackCalls: [Date?] = []
+        var failFeedback: (any Error)?
     }
 
     let state = Guarded(State())
@@ -48,6 +53,18 @@ final class FakeForge: Forge, @unchecked Sendable {
             $0.opened.append(draft)
             $0.byBranch[draft.sourceBranch] = rr
             return rr
+        }
+    }
+
+    func openReviewRequest(for project: ProjectSpec, sourceBranch: String) async throws -> ReviewRequest? {
+        state.get.byBranch[sourceBranch]
+    }
+
+    func reviewFeedback(for review: ReviewRequest, project: ProjectSpec, vouchedAt: Date?) async throws -> ReviewFeedback {
+        try state {
+            $0.feedbackCalls.append(vouchedAt)
+            if let e = $0.failFeedback { throw e }
+            return $0.feedback[review.url] ?? ReviewFeedback()
         }
     }
 

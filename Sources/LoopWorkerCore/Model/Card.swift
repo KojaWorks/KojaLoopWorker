@@ -88,9 +88,14 @@ public struct CardSnapshot: Sendable, Equatable {
     /// e.g. "comment 4411 by @someone, posted after the loopworker:next label". Logged by the
     /// Manager and appended to the snapshot so the worker knows something was withheld.
     public var excluded: [String]
+    /// When the card's owner last vouched for it, for the trust check on review feedback:
+    /// reviewers' notes from before it are trusted. Nil when the backlog has no such moment;
+    /// then only the owner's own notes are.
+    public var vouchedAt: Date?
 
-    public init(markdown: String, excluded: [String] = []) {
+    public init(markdown: String, excluded: [String] = [], vouchedAt: Date? = nil) {
         self.markdown = markdown
         self.excluded = excluded
+        self.vouchedAt = vouchedAt
     }
 }

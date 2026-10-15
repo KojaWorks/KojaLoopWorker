@@ -277,6 +277,7 @@ import Testing
             "comment 305 by @mallory at \(Fixture.t(10))",
             "comment 310 by @me at \(Fixture.t(20)): posted by LoopWorker",
         ])
+        #expect(snapshot.vouchedAt == Fixture.date(2))  // B203: the release keeps the human's cutoff
     }
 
     @Test func snapshotFollowsNotePagesAndSendsTheIssueCoordinates() async throws {

@@ -140,13 +140,21 @@ public struct GitHubForge: Forge {
         return try await request("GET", "repos/\(project.path)", as: Repo.self).default_branch
     }
 
+    public func openReviewRequest(for project: ProjectSpec, sourceBranch: String) async throws -> ReviewRequest? {
+        try await openPulls(project.path, sourceBranch).first?.reviewRequest(project.path)
+    }
+
+    private func openPulls(_ path: String, _ sourceBranch: String) async throws -> [Pull] {
+        let owner = path.split(separator: "/").first.map(String.init) ?? path
+        return try await request("GET", "repos/\(path)/pulls", query: [
+            URLQueryItem(name: "state", value: "open"),
+            URLQueryItem(name: "head", value: "\(owner):\(sourceBranch)"),
+        ], as: [Pull].self)
+    }
+
     public func openReviewRequest(_ draft: ReviewRequestDraft) async throws -> ReviewRequest {
         let path = draft.project.path
-        let owner = path.split(separator: "/").first.map(String.init) ?? path
-        let open = try await request("GET", "repos/\(path)/pulls", query: [
-            URLQueryItem(name: "state", value: "open"),
-            URLQueryItem(name: "head", value: "\(owner):\(draft.sourceBranch)"),
-        ], as: [Pull].self)
+        let open = try await openPulls(path, draft.sourceBranch)
         if let existing = open.first {
             let review = existing.reviewRequest(path)
             if draft.assignToOwner, existing.assignees?.isEmpty ?? true { await assignOwner(path, existing.number, review) }
@@ -177,6 +185,144 @@ public struct GitHubForge: Forge {
         } catch {
             log.warning("can't assign \(review.display) (\(review.url.absoluteString)) to the token's user: \(error); leaving it unassigned")
         }
+    }
+
+    /// Reads the pull request's review threads and its conversation comments over GraphQL. A
+    /// thread keeps its 100 newest comments; `cut` says when older ones were left out.
+    public func reviewFeedback(for review: ReviewRequest, project: ProjectSpec, vouchedAt: Date?) async throws -> ReviewFeedback {
+        let number = try pullNumber(review)
+        let me = try await request("GET", "user", as: User.self).login
+        let parts = project.path.split(separator: "/", maxSplits: 1).map(String.init)
+        guard parts.count == 2 else { throw GitHubError.malformed("\(project.path) is not <owner>/<repo>") }
+        func note(_ c: GQLComment) -> ReviewFeedback.RawNote {
+            let edit: ReviewFeedback.Edit = c.lastEditedAt.map {
+                .edited(by: c.editor?.login ?? "ghost", owner: c.editor?.login.lowercased() == me.lowercased(), at: $0)
+            } ?? .never
+            return .init(id: c.id, author: c.author?.login ?? "ghost", byOwner: c.author?.login.lowercased() == me.lowercased(),
+                         createdAt: c.createdAt, body: c.body, edit: edit)
+        }
+        var threads: [ReviewFeedback.RawThread] = [], cut: [String] = [], opened: Date?
+        for query in [Self.reviewThreadsQuery, Self.commentsQuery] {
+            var after: String?
+            repeat {
+                let data: GQLPullPage = try await graphQL("review feedback on \(review.display)", query, [
+                    "owner": parts[0], "name": parts[1], "number": number, "after": after ?? NSNull(),
+                ])
+                guard let pull = data.repository?.pullRequest else {
+                    throw GitHubError.malformed("GraphQL returned no pull request for \(review.display)")
+                }
+                opened = pull.createdAt
+                let info = pull.reviewThreads?.pageInfo ?? pull.comments?.pageInfo
+                if let t = pull.reviewThreads {
+                    for thread in t.nodes {
+                        let first = thread.comments.nodes.first
+                        let current = thread.line != nil
+                        let position = thread.path.map {
+                            ReviewFeedback.Position(path: $0, line: thread.line ?? thread.originalLine, side: thread.diffSide == "LEFT" ? .old : .new,
+                                                    commit: current ? first?.commit?.oid : first?.originalCommit?.oid)
+                        }
+                        if thread.comments.totalCount > thread.comments.nodes.count {
+                            cut.append("the \(thread.comments.totalCount - thread.comments.nodes.count) oldest comments of thread \(thread.id) were left out")
+                        }
+                        threads.append(.init(id: thread.id, position: position, resolvable: true, resolved: thread.isResolved,
+                                             notes: thread.comments.nodes.map(note)))
+                    }
+                }
+                for c in pull.comments?.nodes ?? [] {
+                    threads.append(.init(id: c.id, position: nil, resolvable: false, resolved: false, notes: [note(c)]))
+                }
+                after = info?.hasNextPage == true ? info?.endCursor : nil
+            } while after != nil
+        }
+        guard let opened else { throw GitHubError.malformed("GraphQL returned no createdAt for \(review.display)") }
+        var feedback = ReviewFeedback.build(threads, owner: me, openedAt: opened, vouchedAt: vouchedAt)
+        feedback.cut += cut
+        return feedback
+    }
+
+    static let reviewThreadsQuery = """
+        query($owner: String!, $name: String!, $number: Int!, $after: String) {
+          repository(owner: $owner, name: $name) {
+            pullRequest(number: $number) {
+              createdAt
+              reviewThreads(first: 50, after: $after) {
+                pageInfo { hasNextPage endCursor }
+                nodes {
+                  id isResolved path line originalLine diffSide
+                  comments(last: 100) {
+                    totalCount
+                    nodes { id author { login } body createdAt lastEditedAt editor { login } commit { oid } originalCommit { oid } }
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+
+    static let commentsQuery = """
+        query($owner: String!, $name: String!, $number: Int!, $after: String) {
+          repository(owner: $owner, name: $name) {
+            pullRequest(number: $number) {
+              createdAt
+              comments(first: 100, after: $after) {
+                pageInfo { hasNextPage endCursor }
+                nodes { id author { login } body createdAt lastEditedAt editor { login } }
+              }
+            }
+          }
+        }
+        """
+
+    struct GQLLogin: Decodable { var login: String }
+    struct GQLCommit: Decodable { var oid: String }
+    struct GQLComment: Decodable {
+        var id: String
+        var author: GQLLogin?
+        var body: String
+        var createdAt: Date
+        var lastEditedAt: Date?
+        var editor: GQLLogin?
+        var commit: GQLCommit?
+        var originalCommit: GQLCommit?
+    }
+    struct GQLThread: Decodable {
+        struct Comments: Decodable {
+            var totalCount: Int
+            var nodes: [GQLComment]
+        }
+        var id: String
+        var isResolved: Bool
+        var path: String?
+        var line: Int?
+        var originalLine: Int?
+        var diffSide: String?
+        var comments: Comments
+    }
+    struct GQLPullPage: Decodable {
+        struct PageInfo: Decodable {
+            var hasNextPage: Bool
+            var endCursor: String?
+        }
+        struct Connection<Node: Decodable>: Decodable {
+            var pageInfo: PageInfo
+            var nodes: [Node]
+        }
+        struct Pull: Decodable {
+            var createdAt: Date
+            var reviewThreads: Connection<GQLThread>?
+            var comments: Connection<GQLComment>?
+        }
+        struct Repository: Decodable { var pullRequest: Pull? }
+        var repository: Repository?
+    }
+
+    /// The number in a display that `Pull.reviewRequest` made, `<path>#<number>`.
+    private func pullNumber(_ review: ReviewRequest) throws -> Int {
+        guard let n = review.display.split(separator: "#").last.flatMap({ Int($0) }) else {
+            throw GitHubError.malformed("\(review.display) (\(review.url.absoluteString)) doesn't name a pull request as <path>#<number>")
+        }
+        return n
     }
 
     /// The commit's latest check runs (GitHub Actions and other apps), read as one pipeline:
@@ -295,10 +441,30 @@ public struct GitHubForge: Forge {
     private func request<B: Encodable, T: Decodable>(
         _ method: String, _ path: String, query: [URLQueryItem] = [], body: B?, as: T.Type
     ) async throws -> T {
-        let label = "\(method) /\(path)"
         var comps = URLComponents(url: apiBase.appending(path: path), resolvingAgainstBaseURL: false)!
         comps.queryItems = query.isEmpty ? nil : query
-        var req = URLRequest(url: comps.url!, timeoutInterval: 30)
+        return try await send(method, comps.url!, label: "\(method) /\(path)", body: try body.map { try JSONEncoder().encode($0) }, as: T.self)
+    }
+
+    /// The GraphQL endpoint: `/graphql` on api.github.com, `/api/graphql` on Enterprise.
+    var graphQLURL: URL {
+        apiBase.path.hasSuffix("/v3") ? apiBase.deletingLastPathComponent().appending(path: "graphql") : apiBase.appending(path: "graphql")
+    }
+
+    /// Runs a GraphQL operation and returns its `data`; any `errors` throw.
+    private func graphQL<T: Decodable>(_ operation: String, _ query: String, _ variables: [String: Any]) async throws -> T {
+        try await graphQLEnvelope(operation, query, variables, as: T.self).get()
+    }
+
+    private func graphQLEnvelope<T: Decodable>(_ operation: String, _ query: String, _ variables: [String: Any], as: T.Type) async throws -> GraphQLResult<T> {
+        let label = "POST graphql \(operation)"
+        let body = try JSONSerialization.data(withJSONObject: ["query": query, "variables": variables], options: [.sortedKeys])
+        let envelope = try await send("POST", graphQLURL, label: label, body: body, as: GraphQLEnvelope<T>.self)
+        return GraphQLResult(label: label, data: envelope.data, errors: envelope.errors ?? [])
+    }
+
+    private func send<T: Decodable>(_ method: String, _ url: URL, label: String, body: Data?, as: T.Type) async throws -> T {
+        var req = URLRequest(url: url, timeoutInterval: 30)
         req.httpMethod = method
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
@@ -306,7 +472,7 @@ public struct GitHubForge: Forge {
         req.setValue("loopworker", forHTTPHeaderField: "User-Agent")
         if let body {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            req.httpBody = try JSONEncoder().encode(body)
+            req.httpBody = body
         }
 
         var attempt = 0
@@ -317,7 +483,7 @@ public struct GitHubForge: Forge {
             let status = resp.statusCode
             if (200..<300).contains(status) {
                 if data.isEmpty, let none = NoBody() as? T { return none }
-                do { return try JSONDecoder().decode(T.self, from: data) }
+                do { return try Self.decoder.decode(T.self, from: data) }
                 catch { throw GitHubError.malformed("\(label): \(error)") }
             }
             let message = Self.message(data)
@@ -336,6 +502,35 @@ public struct GitHubForge: Forge {
                 throw GitHubError.unauthorized(tokenEnv: tokenEnv, request: label, status: status, message: message)
             }
             throw BackendRejection("\(label): \(status) \(message)")
+        }
+    }
+
+    static var decoder: JSONDecoder {
+        let d = JSONDecoder()
+        d.dateDecodingStrategy = .iso8601
+        return d
+    }
+
+    struct GraphQLError: Decodable {
+        var message: String
+        /// `NOT_FOUND` for an id that names nothing.
+        var type: String?
+    }
+
+    private struct GraphQLEnvelope<T: Decodable>: Decodable {
+        var data: T?
+        var errors: [GraphQLError]?
+    }
+
+    struct GraphQLResult<T> {
+        var label: String
+        var data: T?
+        var errors: [GraphQLError]
+
+        func get() throws -> T {
+            if !errors.isEmpty { throw GitHubError.malformed("\(label): \(errors.map(\.message).joined(separator: "; "))") }
+            guard let data else { throw GitHubError.malformed("\(label): response has no data") }
+            return data
         }
     }
 

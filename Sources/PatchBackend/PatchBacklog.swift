@@ -70,6 +70,8 @@ public actor PatchBacklog: Backlog {
         return try await cards([row], trusted: trustedAuthors()).first
     }
 
+    /// `vouchedAt` stays nil: Patch trusts by author, and records no time when a card was
+    /// vouched for, so a review round trusts only the forge owner's notes.
     public func snapshot(_ card: Card) async throws -> CardSnapshot {
         guard let row = try await row(card.ref.id) else {
             throw PatchError.malformed("\(card.ref) no longer exists in \(config.roadmapTable)")
