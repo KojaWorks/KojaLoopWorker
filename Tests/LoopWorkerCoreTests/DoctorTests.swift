@@ -14,6 +14,7 @@ private final class DiagnosableForge: Forge, Diagnosable, @unchecked Sendable {
     func postReviewNote(_ text: String, marker: String, on review: ReviewRequest, project: ProjectSpec) async throws -> Bool { false }
     func replyToThread(_ thread: String, text: String, marker: String, on review: ReviewRequest, project: ProjectSpec) async throws -> ThreadReply { .noSuchThread }
     func attach(_ file: URL, to project: ProjectSpec) async throws -> URL? { nil }
+    func merge(_ review: ReviewRequest, project: ProjectSpec, head: String) async throws -> MergeResult { .merged(commit: nil) }
     func pipeline(for project: ProjectSpec, commit: String) async throws -> PipelineStatus? { nil }
     func baselineJobs(for project: ProjectSpec, ref: String, names: [String]) async throws -> [String: CIJobBaseline] { [:] }
     func retryJobs(project: ProjectSpec, jobs: [CIJob]) async throws -> Bool { false }
@@ -100,6 +101,15 @@ private final class DiagnosableForge: Forge, Diagnosable, @unchecked Sendable {
         try config("[backlog]\nkind = \"gitlab\"\n")
         let checks = await doctor().run()
         #expect(check(checks, "config")?.level == .warn)
+        #expect(Doctor.passed(checks))
+    }
+
+    @Test("B213: a deprecated config key is a warning")
+    func deprecatedKeyWarns() async throws {
+        try config("[backlog]\nkind = \"gitlab\"\n[[project]]\npath = \"g/app\"\ndraft = false\n")
+        let checks = await doctor().run()
+        let warnings = checks.filter { $0.name == "config" && $0.level == .warn }
+        #expect(warnings.map(\.detail) == ["config.toml: g/app: draft is deprecated; replace it with finish = \"ready\""])
         #expect(Doctor.passed(checks))
     }
 

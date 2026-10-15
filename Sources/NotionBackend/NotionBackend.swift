@@ -8,7 +8,7 @@ public enum NotionBackend {
     /// [backlog.notion]
     /// token_env         = "LOOPWORKER_NOTION_TOKEN"  # an internal integration's secret
     /// trusted_users     = ["<notion user id>"]       # required: people whose edits vouch for cards
-    /// state_property    = "LoopWorker"               # select with next/working/ci/review/stuck
+    /// state_property    = "LoopWorker"               # select with next/working/ci/review/stuck, plus merged when a project merges
     /// priority_property = "Priority"                 # optional: number, select or multi_select
     /// model_property    = "Model"                    # optional: select or rich_text
     ///
@@ -134,7 +134,7 @@ extension NotionBacklog: Diagnosable {
         var problems: [String] = []
         var remedies: [String] = []
         let state = config.stateProperty
-        let options = ["next", "working", "ci", "review", "stuck"]
+        let options = ["next", "working", "ci", "review", "stuck"] + (config.mergingDatabases.contains(db) ? ["merged"] : [])
         if let p = properties[state] {
             if p["type"]?.string != "select" {
                 problems.append("\(state) is a \(p["type"]?.string ?? "?") property, not a select")
@@ -168,6 +168,6 @@ extension NotionBacklog: Diagnosable {
         guard problems.isEmpty else {
             return DoctorCheck(name, .fail, "database \(db): " + problems.joined(separator: "; "), remedy: remedies.joined(separator: "; "))
         }
-        return DoctorCheck(name, .ok, "database \(db) (data source \(source)): \(state) has all five options")
+        return DoctorCheck(name, .ok, "database \(db) (data source \(source)): \(state) has the options \(options.joined(separator: ", "))")
     }
 }

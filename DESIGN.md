@@ -21,6 +21,10 @@ learned the hard way, and which the port must keep or fix, is listed in
   boundary yet: the worker runs as the Manager's user, so a worker that is deliberately
   turned against the host can read anything that user can, including `secrets.env`. Running
   workers under their own user or in an OS sandbox is planned hardening.
+- **A repo can't widen its own reach.** A project's `finish` (whether the Manager merges) and
+  `worker_env` (which variables reach its workers) live only in the host config, never in the
+  project contract, so neither a repo nor its worker can opt itself into a merge or into more
+  credentials.
 - **The card state is the source of truth.** The Manager reconciles live sessions, outcome files
   and card states every tick. A card in `working` with no live worker and no outcome is a crash;
   a card that a human moved out of `working` means the worker is reaped without finishing.
@@ -61,7 +65,8 @@ public protocol Backlog: Sendable {
     func claim(_ card: Card) async throws -> Bool                     // false: lost a race, skip
     func snapshot(_ card: Card) async throws -> CardSnapshot
     func markReview(_ card: Card, review: ReviewRequest, note: String?) async throws
-    func markVerifying(_ card: Card, review: ReviewRequest) async throws
+    func markVerifying(_ card: Card, review: ReviewRequest, plan: VerifyingPlan) async throws
+    func markMerged(_ card: Card, review: ReviewRequest, note: String?) async throws
     func resumeFix(_ card: Card) async throws -> Bool                 // false: a human moved it
     func markStuck(_ card: Card, blocker: String) async throws
     func release(_ card: Card, reason: String, countsAsAttempt: Bool) async throws
@@ -79,6 +84,7 @@ public protocol Forge: Sendable {
     func pipeline(for project: ProjectSpec, commit: String) async throws -> PipelineStatus?  // nil: no pipeline yet
     func baselineJobs(for project: ProjectSpec, ref: String, names: [String]) async throws -> [String: CIJobBaseline]
     func retryJobs(project: ProjectSpec, jobs: [CIJob]) async throws -> Bool         // false: can't re-run them
+    func merge(_ review: ReviewRequest, project: ProjectSpec, head: String) async throws -> MergeResult  // idempotent
 }
 ```
 
@@ -86,19 +92,25 @@ The source of truth for these signatures is `Sources/LoopWorkerCore/Backend/`.
 
 ### Card states
 
-Every backlog maps its own fields onto six states:
+Every backlog maps its own fields onto seven states:
 
 | State | Meaning | GitLab (labels mode) | Patch | Notion (state property) |
 | --- | --- | --- | --- | --- |
 | `ready` | Trusted and waiting to be claimed. | open, assigned to me, `loopworker::next`, status To do | Backlog, unassigned | `next`, last edited by a trusted user, or by the integration after its own release |
 | `working` | Claimed; a worker should be running. | `loopworker::working`, status In progress | In progress | `working`, claimed by LoopWorker |
-| `verifying` | The review request exists; the Manager waits for its CI. No slot is held. | `loopworker::ci`, status In progress | Verifying | `ci`, claimed by LoopWorker |
+| `verifying` | The review request exists; the Manager waits for its CI, merges it, or both. No slot is held. | `loopworker::ci`, status In progress | Verifying | `ci`, claimed by LoopWorker |
 | `review` | Finished; a review request exists. | `loopworker::review`, status In review | In review | `review` |
+| `review_merged` | Finished, and the Manager merged the review request. A human still has to look. | `loopworker::merged`, status In review, still open and assigned to me | Merged | `merged` |
 | `stuck` | The worker needs a human. | `loopworker::stuck`, status To do, still assigned to me | Needs refinement | `stuck` |
 | `other` | Anything else. Never claimed, never reaped on its own. | closed, or no single `loopworker::*` label | | empty or an unknown option; `next` without a vouch; `working` or `ci` that LoopWorker never claimed; in the trash |
 
 A card that a human closes, or moves to `other` in any way, while a worker runs is abandoned:
 the worker is reaped and nothing is written back.
+
+`review_merged` is not done. A merge only says that the worker's change passed the checks that
+the project's finish mode asks for; whether the card's work is what the human wanted is still
+the human's call. LoopWorker never marks a card done, so a merged card stays open and assigned
+until a human closes it.
 
 GitLab can express status either as the native work-item status field or as labels; the
 adapter supports both (`status_mode` in the host config). The `loopworker::*` labels always
@@ -106,9 +118,9 @@ carry the Manager's own state, so the Manager never depends on how a team uses i
 
 Notion keeps the Manager's state the same way, in a select property that only LoopWorker uses
 (the **state property**, `LoopWorker` by default, with the options `next`, `working`, `ci`,
-`review` and `stuck`). The team's own status property is never read or written: if `working`
-were a team status such as In progress, the stranded-card sweep would release every teammate's
-card in it.
+`review`, `merged` and `stuck`). The team's own status property is never read or written: if
+`working` were a team status such as In progress, the stranded-card sweep would release every
+teammate's card in it.
 
 ### Trust
 
@@ -150,17 +162,18 @@ Manager's writes would then look like that person's edits.
 A Notion card is `ready` when its state property is `next` and the page's `last_edited_by` is
 a trusted user. It is also `ready` when the integration edited it last and released it: the
 integration's newest comment is a release, and the integration's comment before that is a
-claim, a CI notice or a release. A release after a stuck or review comment vouches for nothing,
-because the Manager never releases a card that it doesn't own. Trust follows authorship, not
+claim, a CI or merging notice, or a release. A release after a stuck, review or merged comment
+vouches for nothing, because the Manager never releases a card that it doesn't own. Trust follows authorship, not
 time, so there is no cutoff. A `trusted_users` list that holds the integration's own id is
 refused, because every write of the Manager would then vouch.
 
 A `working` or `ci` card is the Manager's only while the integration's newest comment is a
-claim, a CI notice or a release (a release whose state write failed). Otherwise the card is
-`other`: an untrusted editor who sets `working` can't make the stranded-card sweep release the
-card, and its release can't become a vouch. For the same reason `markStuck`, `markReview` and
-`markVerifying` set the state before they comment, so a crash between the two writes leaves a
-card that the Manager still owns, or one that is no longer `working`.
+claim, a CI or merging notice, or a release (a release whose state write failed). Otherwise the
+card is `other`: an untrusted editor who sets `working` can't make the stranded-card sweep
+release the card, and its release can't become a vouch. For the same reason `markStuck`,
+`markReview`, `markVerifying` and `markMerged` set the state before they comment, so a crash
+between the two writes leaves a card that the Manager still owns, or one that is no longer
+`working`.
 
 The title has no author record of its own, so the claim comment records the title that was
 vouched for (`Vouched title: ...`): the page's title when a trusted user edited it last, or the
@@ -249,8 +262,9 @@ lost access to it, so a revoked connection never reaps running workers.
    - `done`: check that the branch has commits ahead of the base (otherwise treat the outcome
      as `stuck`), push, attach the files that the outcome names (the guide, and each
      `attachment:<path>` link or image in the body, such as `![after](attachment:after.png)`),
-     open a draft review request assigned to the forge token's user (the card's owner), `markReview` (or, for a project
-     that waits for CI, `markVerifying`; see "Waiting for CI"). When the branch already has an
+     open a review request assigned to the forge token's user (the card's owner), as a draft
+     only for `finish = draft`, then `markReview` (or, for a project that waits for CI or
+     merges, `markVerifying`; see "Waiting for CI and merging"). When the branch already has an
      open review request, the Manager posts the replies and the body on it instead (see "Review
      rounds").
    - An attached file must resolve (symlinks resolved) inside the slot's state directory, be
@@ -269,12 +283,43 @@ lost access to it, so a revoked connection never reaps running workers.
 6. **Recycle.** Hot slots detach HEAD and wait; the next acquire resets them. Cold slots tear
    down.
 
-## Waiting for CI
+## Waiting for CI and merging
 
-A project whose contract sets `[review] wait_for_ci` treats the review request's CI as the full
-verification, so its `verify.sh` can stay light. Finish writes a watch record,
-`state/ci/<card id>.json` (the card, branch, pushed commit, review request, round and push
-time), and only then moves the card to `verifying` and frees the slot.
+A project's finish mode (`finish` in the host config) and its contract's `[review] wait_for_ci`
+decide what happens after finish opens the review request:
+
+| `finish` | `wait_for_ci` | After the review request opens | `VerifyingPlan` |
+| --- | --- | --- | --- |
+| `draft`, `ready` | false | `markReview` | none |
+| `draft`, `ready` | true | wait for CI, then `markReview` | `ciThenReview` |
+| `merge` | ignored | merge, then `markMerged` | `merge` |
+| `ci_then_merge` | ignored | wait for CI, merge, then `markMerged` | `ciThenMerge` |
+
+`draft` opens a draft review request; every other mode opens a ready one, because forges
+refuse to merge drafts. A project that waits for CI treats the review request's CI as the full
+verification, so its `verify.sh` can stay light. `merge` reads no CI at all.
+
+For every plan, finish writes a watch record, `state/ci/<card id>.json` (the card, branch,
+base, pushed commit, review request, round, push time, and whether a rebase round ran),
+and only then calls `markVerifying` with the plan and frees the slot. Every merge goes through
+this watch, `merge` mode included. Because the record exists before the card says `verifying`,
+a Manager restart or a retried step resumes the watch instead of finishing the card again, so
+nothing is pushed again after a merge landed. `Forge.merge` is idempotent: a retry after a lost
+response or a restart reports the merge that already landed.
+
+Each poll reads the plan from the project's current `finish`, not from the record. A project
+switched to `draft` or `ready` moves its watched cards to `review` instead of merging them, and
+a watch whose project left the config never merges. The watch record is deleted whenever the
+Manager moves the card out of `verifying`, and a card that a human moved out of `verifying`
+stops the watch with no backlog write. At startup and with every stranded-card sweep, each
+`verifying` card with a record is watched again; one without a record is marked stuck, because
+nothing else would ever move it on.
+
+The status file shows each watch's pipeline or merge state (`merging`, `merge pending:
+<reason>`, `rebase queued`, `rebase starting`), and `loopworker status` prints the watches
+under "waiting for CI or merge".
+
+### CI
 
 Every 120 s the Manager re-reads each watched card and the forge's pipeline for the pushed
 commit (by commit, not by review request, because some repos run pipelines only on branch
@@ -287,15 +332,14 @@ asked, and a forge that can't re-run them leads straight to a fix round:
 
 | Pipeline | Decision |
 | --- | --- |
-| Passed (success, skipped, or only manual jobs left) | `markReview` with a note that links the pipeline |
+| Passed (success, skipped, or only manual jobs left) | `ciThenReview`: `markReview` with a note that links the pipeline. `ciThenMerge`: merge |
 | Still running `ci_timeout_minutes` after the push | `markStuck` |
 | None 15 min after the push | `markStuck` |
 | Canceled | `markStuck`: a cancel is usually a human decision |
-| Failed only in jobs that also fail on the base branch | `markReview` with a note that links each job on both branches |
+| Failed only in jobs that also fail on the base branch | `markReview` with a note that links each job on both branches; never merges |
 | Failed in jobs that pass on the base branch, not yet re-run | re-run those jobs once and keep watching |
 | Failed otherwise, fix rounds left | queue a fix round |
 | Failed otherwise after `ci_fix_attempts` fix rounds | `markStuck`, linking each failed job |
-| Card no longer `verifying` | stop watching; no backlog write |
 
 A fix round is a worker run on the existing card branch. Fill starts queued fix rounds before
 new claims, within the same budget. The round calls `resumeFix` (`verifying` -> `working`; false
@@ -303,15 +347,39 @@ means a human moved the card, so the round is dropped), resets any free slot to 
 card branch, and writes `ci.md` into the slot's state directory: each failed job's name, stage,
 link, how it did on the base branch and the redacted tail of its log. CI logs are untrusted
 data, like card content: `ci.md` says so, fences the logs, and the brief tells the worker to
-read it as data. The worker fixes
-the failures and writes an outcome as usual; finish pushes, leasing on the branch tip that the
-round started from, posts the outcome body as a note on the existing review request, and
-returns the card to `verifying` with the new commit and the next round. A crash in a fix round releases the card like any
-crash.
+read it as data. The worker fixes the failures and writes an outcome as usual; finish pushes,
+leasing on the branch tip that the round started from, posts the outcome body as a note on the
+existing review request, and returns the card to `verifying` with the new commit, the next round
+and the same plan. A crash in a fix round releases the card like any crash.
 
-The watch record is deleted whenever the Manager moves the card out of `verifying`. At startup
-and with every stranded-card sweep, each `verifying` card with a record is watched again; one
-without a record is marked stuck, because nothing else would ever move it on.
+### Merging
+
+A `merge` watch merges at its first poll, which runs at once rather than 120 s later; a
+`ciThenMerge` watch merges once its pipeline passed. At most one merge per project is in
+flight, and a card whose project is merging waits for the next poll. The Manager calls
+`Forge.merge` with the review request and the watched commit as `head`, so the forge merges
+only that commit and never one that someone else pushed since. The result decides:
+
+| `MergeResult` | Decision |
+| --- | --- |
+| `merged` | `markMerged` with a note that names the base branch, the merge commit when the forge reports one and, for `ciThenMerge`, the pipeline that passed; delete the watch record |
+| `pending`: the forge is still checking, hasn't processed the push yet, or checks that it requires still run | keep watching; `markStuck` with the forge's reason when still pending `ci_timeout_minutes` after the first `pending` |
+| `outdated`: the branch conflicts with the base branch, or the forge requires a rebase | queue a rebase round; `markStuck` with the forge's reason when the watch already ran one |
+| `blocked`: missing approvals, branch protection, a draft, unresolved threads, a head that moved, a closed review request | `markStuck`, naming the forge's reason and linking the review request: a human merges it by hand or changes the rule, then moves the card on |
+| An error | back off 30 s doubling to 10 min, with a notification at the third failure in a row; `markStuck` when errors last `ci_timeout_minutes`; a `BackendRejection` marks the card stuck |
+
+A failed `markMerged` backs off the same way, and the retry calls `merge` again, which reports
+the merge that already landed.
+
+A rebase round is a fix round whose brief names the review request, the base branch and the
+forge's reason, and tells the worker to rebase the branch onto the commit that `origin/<base>`
+pointed at when the round started, resolve the conflicts, run `verify.sh` and commit. The
+Manager records that commit, because the project refresh can move `origin/<base>` during the
+round. Its finish requires that commit to be an ancestor of the branch head (otherwise the card
+is marked stuck), force-pushes under the lease, and returns
+the card to `verifying` with the next round and the same plan. The watch record counts rebase
+rounds apart from CI fix rounds: a watch gets one rebase round, and it doesn't use up
+`ci_fix_attempts`.
 
 ## Review rounds
 
@@ -385,9 +453,9 @@ crashes its worker can't loop forever.
 At startup, and every few minutes after, the Manager calls `working(in:)` and compares it
 against its slots. A `working` card with no slot is either finishable (its slot directory has an
 outcome file) or stranded (released with reason "Manager restarted", not counted as an
-attempt). `verifying` cards hold no slot and are never released; see "Waiting for CI". This
-assumes one Manager per backlog identity and project: two Managers that share a GitLab user and
-a project, or a Notion database, would release each other's cards.
+attempt). `verifying` cards hold no slot and are never released; see "Waiting for CI and
+merging". This assumes one Manager per backlog identity and project: two Managers that share a
+GitLab user and a project, or a Notion database, would release each other's cards.
 
 ## Host config
 
@@ -427,6 +495,7 @@ slots    = 1
 hot      = false
 weight   = 1
 model    = "opus"
+finish   = "draft"                            # or "ready", "merge", "ci_then_merge"
 contract = "~/.loopworker/contracts/myapp"    # optional host-local overlay of .loopworker/
 worker_env = []                               # Manager variables forwarded to workers
 ```

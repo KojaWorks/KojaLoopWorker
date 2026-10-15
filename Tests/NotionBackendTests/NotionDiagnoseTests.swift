@@ -63,4 +63,22 @@ import Testing
         #expect(check.level == .fail)
         #expect(check.remedy?.contains("Connections") == true)
     }
+
+    @Test("B223: doctor requires the merged option only for a project that finishes by merging")
+    func mergedOptionOnlyForMergingProjects() async throws {
+        let fake = FakeNotion()
+        fake.addDatabase()
+        let draft = try await make(fake).diagnose()[2]
+        #expect(draft.level == .ok)
+        #expect(draft.detail.hasSuffix("LoopWorker has the options next, working, ci, review, stuck"))
+
+        let merging = try await make(fake, config: hostConfig(extraProjects: "finish = \"merge\"")).diagnose()[2]
+        #expect(merging.level == .fail)
+        #expect(merging.detail.contains("LoopWorker lacks the options merged"))
+        #expect(merging.remedy == "add the options merged to the select property LoopWorker")
+
+        fake.addDatabase(properties: FakeNotion.schema(state: ["next", "working", "ci", "review", "stuck", "merged"]))
+        let ok = try await make(fake, config: hostConfig(extraProjects: "finish = \"ci_then_merge\"")).diagnose()[2]
+        #expect(ok.level == .ok)
+    }
 }

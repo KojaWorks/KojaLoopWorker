@@ -123,10 +123,23 @@ public actor PatchBacklog: Backlog {
                        kind: "note", fields: fields)
     }
 
-    public func markVerifying(_ card: Card, review: ReviewRequest) async throws {
+    public func markVerifying(_ card: Card, review: ReviewRequest, plan: VerifyingPlan) async throws {
         var fields: [String: JSON] = ["status": .string(config.status.verifying)]
         if let field = config.reviewLinkField { fields[field] = .string(review.url.absoluteString) }
-        try await move(card, note: "Review request: [\(review.display)](\(review.url.absoluteString))\n\nWaiting for CI before review.",
+        let waits = switch plan {
+        case .ciThenReview: "Waiting for CI before review."
+        case .ciThenMerge: "Waiting for CI before merging."
+        case .merge: "Merging into the base branch."
+        }
+        try await move(card, note: "Review request: [\(review.display)](\(review.url.absoluteString))\n\n\(waits)",
+                       kind: "note", fields: fields)
+    }
+
+    public func markMerged(_ card: Card, review: ReviewRequest, note: String?) async throws {
+        var fields: [String: JSON] = ["status": .string(config.status.merged)]
+        if let field = config.reviewLinkField { fields[field] = .string(review.url.absoluteString) }
+        try await move(card, from: [config.status.verifying],
+                       note: "Merged: [\(review.display)](\(review.url.absoluteString))" + (note.map { "\n\n\($0)" } ?? ""),
                        kind: "note", fields: fields)
     }
 
@@ -221,6 +234,7 @@ public actor PatchBacklog: Backlog {
         case config.status.working: .working
         case config.status.verifying: .verifying
         case config.status.review: .review
+        case config.status.merged: .reviewMerged
         case config.status.stuck: .stuck
         default: .other
         }

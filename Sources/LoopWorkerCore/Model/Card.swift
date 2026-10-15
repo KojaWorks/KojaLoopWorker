@@ -35,6 +35,9 @@ public enum CardState: String, Sendable, Codable, CaseIterable {
     case verifying
     /// Finished; a review request exists.
     case review
+    /// Finished and merged into the base branch (projects that finish by merging). A human
+    /// still has to look at the result; LoopWorker never marks a card done.
+    case reviewMerged = "review_merged"
     /// A worker gave up and needs a human.
     case stuck
     /// Anything the loop doesn't own. Never claimed, never reaped on its own account.

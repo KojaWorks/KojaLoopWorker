@@ -65,6 +65,19 @@ public protocol Forge: Sendable {
     /// - Throws: when the forge refuses or can't be reached.
     func retryJobs(project: ProjectSpec, jobs: [CIJob]) async throws -> Bool
 
+    /// Merges an open review request into its target branch, but only while the head of its
+    /// source branch is `head`, so commits that someone else pushed are never merged unseen.
+    /// GitLab merges with the project's merge method and deletes the source branch when the
+    /// merge request asks for that; GitHub merges with a merge commit and keeps the branch.
+    /// A merge that waits only on running checks is `.pending`. Idempotent: a review request that is
+    /// already merged returns `.merged`, so a merge retried after a lost response or a Manager
+    /// restart succeeds. The forge finds the review request by the number at the end of
+    /// `review.url`.
+    /// - Returns: what the forge did or why it refused, as a value for every expected refusal.
+    /// - Throws: `BackendRejection` for a refusal that `MergeResult` doesn't cover; any other
+    ///   error when the forge can't be reached or fails (5xx, timeout), which a later try may fix.
+    func merge(_ review: ReviewRequest, project: ProjectSpec, head: String) async throws -> MergeResult
+
     /// Uploads a file and returns a URL that the review request body can link to, or nil
     /// when the forge has no attachments. The Manager then leaves the link out.
     func attach(_ file: URL, to project: ProjectSpec) async throws -> URL?

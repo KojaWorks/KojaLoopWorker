@@ -75,7 +75,8 @@ ready   = "To do"
 working = "In progress"
 review  = "In review"
 stuck   = "To do"
-# verifying = "In progress"                   # waiting for CI; defaults to the working name
+# verifying = "In progress"                   # waiting for CI or a merge; defaults to the working name
+# merged    = "In review"                     # merged by the Manager; defaults to the review name
 
 [forge]
 kind = "gitlab"                               # [forge.gitlab] may override base_url and token_env
@@ -87,7 +88,7 @@ hot         = false                           # hot slots stay provisioned betwe
 weight      = 1                               # slot cost against max_slots
 model       = "opus"                          # claude --model for this project's workers
 base_branch = "main"                          # default: the forge's default branch
-draft       = true                            # open review requests as drafts
+finish      = "draft"                         # draft, ready, merge or ci_then_merge
 contract    = "~/.loopworker/contracts/myapp" # optional host-local overlay of the repo's .loopworker/
 worker_env  = ["MYAPP_LICENSE_SERVER"]        # Manager variables forwarded to this project's workers
 ```
@@ -95,6 +96,18 @@ worker_env  = ["MYAPP_LICENSE_SERVER"]        # Manager variables forwarded to t
 `status_mode = "none"` (the default) changes only the `loopworker::*` labels. `labels` also
 adds the status names as labels. `work_item_status` sets GitLab's native status field
 (Premium and up).
+
+`finish` decides how a finished card ends. `draft` (the default) and `ready` open a draft or a
+ready review request and move the card to review. `merge` merges the review request right after
+opening it, without waiting for CI, so the worker's own `verify.sh` run is the only check.
+`ci_then_merge` waits for the pushed commit's pipeline, fix rounds included, and merges once it
+passes. The merging modes open the review request ready, because a forge refuses to merge a
+draft, and move the card to `review_merged` (`loopworker::merged` on GitLab): the Manager merged
+it, and a human still has to look at the result. Only the host config can set `finish`, so a
+repo can't opt itself into a merge. The Manager reads `finish` again before each merge: a
+project switched to `draft` or `ready` moves its waiting cards to review instead. `draft = true`
+and `draft = false` still work as deprecated aliases for `finish = "draft"` and `"ready"`; the
+Manager logs a warning and doctor shows it.
 
 `worker_env` refuses the backlog and forge token variables: workers never get those.
 
@@ -139,15 +152,16 @@ Later edits or comments by anyone else are withheld from the worker and named in
 colleague assigned you, re-assign yourself before adding the label.
 
 Create the labels `loopworker::next`, `loopworker::working`, `loopworker::review` and
-`loopworker::stuck` once in the group, and `loopworker::ci` if a project waits for CI. The Manager
-moves a card between them:
+`loopworker::stuck` once in the group, `loopworker::ci` if a project waits for CI or merges, and
+`loopworker::merged` if a project merges. The Manager moves a card between them:
 
 | Label | Meaning | What happened on the issue |
 | --- | --- | --- |
 | `loopworker::next` | Ready to claim. | You added it, or the Manager released the card with a note saying why (a crash, a hang, an auth failure). |
 | `loopworker::working` | A worker is on it. | The Manager claimed it. |
-| `loopworker::ci` | Waiting for CI. Only for projects whose contract sets `[review] wait_for_ci`. | The Manager pushed the branch, opened a merge request, linked it in a note and is watching its pipeline. No worker runs. If CI fails only in jobs that also fail on the base branch, the card goes to review with a note that says so. Failed jobs that pass on the base branch are re-run once, since they may be flaky. Any other failure is fixed by a worker on the same branch (the card shows `loopworker::working` meanwhile); if CI keeps failing, times out or is canceled, the card becomes stuck. `loopworker status` lists these cards under "waiting for CI". |
-| `loopworker::review` | Done. | The Manager pushed the branch, opened a merge request assigned to you and linked it in a note (and, after CI, the pipeline that passed). |
+| `loopworker::ci` | Waiting for CI or a merge. Only for projects whose contract sets `[review] wait_for_ci`, or whose `finish` merges. | The Manager pushed the branch, opened a merge request, linked it in a note and is watching its pipeline, merging it, or both. No worker runs. If CI fails only in jobs that also fail on the base branch, the card goes to review with a note that says so, and isn't merged. Failed jobs that pass on the base branch are re-run once, since they may be flaky. Any other failure is fixed by a worker on the same branch (the card shows `loopworker::working` meanwhile); if CI keeps failing, times out or is canceled, the card becomes stuck. `loopworker status` lists these cards under "waiting for CI or merge". |
+| `loopworker::review` | Ready for your review. | The Manager pushed the branch, opened a merge request assigned to you and linked it in a note (and, after CI, the pipeline that passed). |
+| `loopworker::merged` | Merged; a human still has to look. | The Manager merged the merge request into the base branch and linked it in a note with the merge commit (and, for `ci_then_merge`, the pipeline that passed). The issue stays open and assigned to you; look at the result, then close it. |
 | `loopworker::stuck` | The worker needs a human. | A note says what blocks it. You stay assigned, so it stays in your queue; answer it on the issue, then add `loopworker::next` (it replaces `loopworker::stuck`); the next worker continues from the pushed branch. A card with two `loopworker::*` labels is ignored. |
 
 The labels are GitLab scoped labels (`scope::value`, Premium and up): an issue carries one
@@ -160,6 +174,17 @@ labels are `loopworker:next`, `loopworker:priority:<n>` and so on.
 
 A card that crashes `max_attempts` times becomes stuck. Closing an issue or removing its
 `loopworker::*` label while a worker runs stops that worker; nothing is written back.
+
+The Manager merges one merge request per project at a time, and keeps the card in
+`loopworker::ci` until the merge lands. When GitLab can't merge yet (it is still checking, or a
+required pipeline still runs), the Manager tries again at each poll, and marks the card stuck
+when the merge is still pending `ci_timeout_minutes` later. When the base branch moved, so the
+merge request conflicts or needs a rebase, a worker rebases the branch onto the base branch once
+and the Manager force-pushes it and tries again; the card shows `loopworker::working` meanwhile.
+If GitLab still refuses for that reason, the card becomes stuck. A rule that a rebase can't
+change (missing approvals, branch protection, a draft, unresolved threads) marks the card stuck
+with a note that names the rule: merge the merge request by hand or change the rule, then move
+the card on.
 
 To have a worker address review comments, add `loopworker::next` to a card in
 `loopworker::review` while its merge request is open. That runs a review round: the next worker
@@ -183,7 +208,7 @@ kind = "notion"
 [backlog.notion]
 token_env         = "LOOPWORKER_NOTION_TOKEN"   # the variable in secrets.env that holds the secret
 trusted_users     = ["<notion user id>"]        # required: people whose edits vouch for cards
-state_property    = "LoopWorker"                # select with next, working, ci, review and stuck
+state_property    = "LoopWorker"                # select with next, working, ci, review, merged and stuck
 priority_property = "Priority"                  # optional: number, select or multi-select
 model_property    = "Model"                     # optional: select or text (a claude model alias)
 
@@ -203,10 +228,11 @@ look like that person's edits. Connect the integration to each database: open th
 choose ••• -> Connections and add the integration.
 
 Give each database a select property that only LoopWorker uses, `LoopWorker` by default, with
-the options `next`, `working`, `ci`, `review` and `stuck`. The Manager never reads or writes the
-team's own status property. `loopworker doctor` checks every database and names any property,
-option or connection that is missing; it never changes a database. When a `trusted_users` id is
-wrong, doctor lists the workspace's people with their ids.
+the options `next`, `working`, `ci`, `review` and `stuck`, and `merged` when the project's
+`finish` merges. The Manager never reads or writes the team's own status property.
+`loopworker doctor` checks every database and names any property, option or connection that is
+missing (`merged` only for a project that merges); it never changes a database. When a
+`trusted_users` id is wrong, doctor lists the workspace's people with their ids.
 
 A trusted user vouches for a card by setting its `LoopWorker` property to `next`. The Manager
 claims a `next` card only when a trusted user edited the page last, and its claim comment
@@ -215,8 +241,9 @@ trusted user edited last, and the comments that a trusted user wrote on the page
 else is withheld and named in the log. Comments on a block inside the page (inline comments)
 aren't read at all, so trusted users comment on the page itself. The Manager moves the card
 through the same states as on GitLab and posts a comment for most moves: when it claims the
-card, when it releases it (and why), when the worker is stuck (and on what), and when it opens
-a review request or waits for its CI. Starting a round that fixes failed CI posts no comment.
+card, when it releases it (and why), when the worker is stuck (and on what), when it opens
+a review request, waits for its CI or starts merging it, and when it merged it. Starting a fix
+round posts no comment.
 A teammate sees those comments and the `LoopWorker` property change; the integration is their
 author.
 
@@ -285,7 +312,7 @@ accepts it.
 `loopworker doctor` prints `ok`, `warn` or `FAIL` per check, with a remedy for each problem,
 and exits 1 when anything fails. `--json` prints the same as JSON. It checks:
 
-- `config.toml` parses, and lists the projects;
+- `config.toml` parses, and lists the projects; a deprecated key such as `draft` warns;
 - `secrets.env` is mode 600, and each token is set there (a token only in your shell warns);
 - `tmux`, `git`, `claude` and `bash` are on `PATH`; `git-lfs` and `storygrafter` warn when absent,
   and a missing `git-lfs` fails once a cloned project uses Git LFS;

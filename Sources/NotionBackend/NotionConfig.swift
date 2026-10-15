@@ -12,6 +12,9 @@ struct NotionConfig: Sendable, Equatable {
     var modelProperty: String?
     /// Normalized database id -> `ProjectSpec.path`.
     var projectPaths: [String: String]
+    /// Normalized ids of the databases whose project's `finish` merges; only their state
+    /// property needs the `merged` option.
+    var mergingDatabases: Set<String> = []
 
     func databaseID(for project: ProjectSpec) -> String? {
         projectPaths.first { ProjectSpec(path: $0.value).key == project.key }?.key
@@ -63,7 +66,10 @@ struct NotionConfig: Sendable, Equatable {
             tokenEnv: raw.token_env ?? "LOOPWORKER_NOTION_TOKEN", trustedUsers: trustedIDs, stateProperty: state,
             priorityProperty: raw.priority_property.flatMap { $0.isEmpty ? nil : $0 },
             modelProperty: raw.model_property.flatMap { $0.isEmpty ? nil : $0 },
-            projectPaths: projectPaths)
+            projectPaths: projectPaths,
+            mergingDatabases: Set(projectPaths.filter { db in
+                host.projects.contains { $0.key == ProjectSpec(path: db.value).key && $0.finish.merges }
+            }.keys))
     }
 
     // Field names mirror the TOML keys.

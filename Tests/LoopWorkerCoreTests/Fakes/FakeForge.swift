@@ -28,6 +28,11 @@ final class FakeForge: Forge, @unchecked Sendable {
         var retries: [[String]] = []
         var retrySupported = true
         var failRetry = false
+        /// Results that `merge` returns in order; once empty it returns `.merged`.
+        var mergeResults: [MergeResult] = []
+        /// `<review request url> @ <head>` per `merge` call.
+        var mergeCalls: [String] = []
+        var failMerge: (any Error)?
         /// What `reviewFeedback` returns per review request URL; none: empty.
         var feedback: [URL: ReviewFeedback] = [:]
         /// The `vouchedAt` of each `reviewFeedback` call.
@@ -129,6 +134,14 @@ final class FakeForge: Forge, @unchecked Sendable {
             $0.retries.append(jobs.map { $0.id ?? "nil" })
             if $0.failRetry { throw FakeError("retry failed") }
             return $0.retrySupported
+        }
+    }
+
+    func merge(_ review: ReviewRequest, project: ProjectSpec, head: String) async throws -> MergeResult {
+        try state {
+            $0.mergeCalls.append("\(review.url.absoluteString) @ \(head)")
+            if let e = $0.failMerge { throw e }
+            return $0.mergeResults.isEmpty ? .merged(commit: "merge-\($0.mergeCalls.count)") : $0.mergeResults.removeFirst()
         }
     }
 

@@ -1,7 +1,7 @@
 import Foundation
 import LoopWorkerCore
 
-/// GitLab issues as a backlog. Card state lives in `<prefix>next|working|ci|review|stuck` labels;
+/// GitLab issues as a backlog. Card state lives in `<prefix>next|working|ci|review|merged|stuck` labels;
 /// only issues that the token's user vouched for are ever `ready` (DESIGN.md "Trust").
 ///
 /// `CardRef.id` is `<project id>/<issue iid>`, `display` is `<project path>#<iid>`.
@@ -225,10 +225,21 @@ public actor GitLabBacklog: Backlog {
         try await move(read, to: .review)
     }
 
-    public func markVerifying(_ card: Card, review: ReviewRequest) async throws {
+    public func markVerifying(_ card: Card, review: ReviewRequest, plan: VerifyingPlan) async throws {
         let read = try await require(card, in: [.working], for: "markVerifying")
-        try await postNote(read, "Review request: \(review.url.absoluteString)\n\nWaiting for CI before review.")
+        let waits = switch plan {
+        case .ciThenReview: "Waiting for CI before review."
+        case .ciThenMerge: "Waiting for CI before merging."
+        case .merge: "Merging into the base branch."
+        }
+        try await postNote(read, "Review request: \(review.url.absoluteString)\n\n\(waits)")
         try await move(read, to: .verifying)
+    }
+
+    public func markMerged(_ card: Card, review: ReviewRequest, note: String?) async throws {
+        let read = try await require(card, in: [.verifying], for: "markMerged")
+        try await postNote(read, "Merged: \(review.url.absoluteString)" + (note.map { "\n\n\($0)" } ?? ""))
+        try await move(read, to: .reviewMerged)
     }
 
     public func resumeFix(_ card: Card) async throws -> Bool {
@@ -302,7 +313,7 @@ public actor GitLabBacklog: Backlog {
         }
     }
 
-    static let labelledStates: [CardState] = [.ready, .working, .verifying, .review, .stuck]
+    static let labelledStates: [CardState] = [.ready, .working, .verifying, .review, .reviewMerged, .stuck]
 
     /// The labels to add and remove to move any card to `target`.
     func labelChange(to target: CardState) -> (add: [String], remove: [String]) {

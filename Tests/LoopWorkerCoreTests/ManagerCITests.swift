@@ -59,7 +59,7 @@ let reviewURL = URL(string: "https://forge.example/g/app/-/merge_requests/1")!
         #expect(ci == [ManagerStatus.CI(card: "g/app#12", cardURL: URL(string: "https://forge.example/g/app/-/issues/12"),
                                         round: 0, commit: "commit-1", state: "no pipeline yet", since: r.pushedAt, url: reviewURL)])
         let text = StatusReport.render(try h.status(), lockHolder: 1, now: h.clock.now()).text
-        #expect(text.contains("waiting for CI:\n  g/app#12 round 0 at commit-1: no pipeline yet"))
+        #expect(text.contains("waiting for CI or merge:\n  g/app#12 round 0 at commit-1: no pipeline yet"))
     }
 
     @Test("B166, B167: CI is polled by commit every 120 s; a passed pipeline moves the card to review with a link")

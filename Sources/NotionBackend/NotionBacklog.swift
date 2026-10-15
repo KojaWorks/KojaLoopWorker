@@ -4,7 +4,8 @@ import LoopWorkerCore
 /// Notion databases as a `Backlog`, one database per project, through an internal integration.
 ///
 /// The Manager's card state lives in the state property, a select with the options `next`,
-/// `working`, `ci`, `review` and `stuck`; the team's own status property is never touched.
+/// `working`, `ci`, `review`, `stuck` and, for projects that finish by merging, `merged`; the
+/// team's own status property is never touched.
 /// A `next` card is `ready` only when a trusted user edited the page last, or the integration
 /// did after releasing a card that it owned; a `working` or `ci` card is the Manager's only
 /// while the integration's newest comment says so (DESIGN.md "Trust in Notion"). The Manager's
@@ -13,7 +14,9 @@ import LoopWorkerCore
 /// `CardRef.id` is the page id; `display` is the unique-id property (`CARD-12`) when the
 /// database has one, else `notion:` and the page id's first 8 hex digits.
 public actor NotionBacklog: Backlog {
-    static let states: [String: CardState] = ["next": .ready, "working": .working, "ci": .verifying, "review": .review, "stuck": .stuck]
+    static let states: [String: CardState] = [
+        "next": .ready, "working": .working, "ci": .verifying, "review": .review, "merged": .reviewMerged, "stuck": .stuck,
+    ]
     static let schemaLifetime: TimeInterval = 600
 
     let config: NotionConfig
@@ -121,7 +124,8 @@ public actor NotionBacklog: Backlog {
                                        trusted: trusted, me: me, names: names)
     }
 
-    /// The integration's release, stuck, review and CI comments, header stripped, oldest first.
+    /// The integration's release, stuck, review, CI, merging and merged comments, header
+    /// stripped, oldest first.
     public func managerNotes(_ card: Card) async throws -> [String] {
         let me = try await meID()
         return try await comments(card.ref.id).compactMap { c in
@@ -162,10 +166,23 @@ public actor NotionBacklog: Backlog {
         try await post(card.ref.id, .review, segments)
     }
 
-    public func markVerifying(_ card: Card, review: ReviewRequest) async throws {
+    public func markVerifying(_ card: Card, review: ReviewRequest, plan: VerifyingPlan) async throws {
         try await require(card, ["working"], for: "markVerifying")
+        let link: [(text: String, link: URL?)] = [("\(review.display): ", nil), (review.url.absoluteString, review.url)]
         try await setState(card.ref.id, "ci")
-        try await post(card.ref.id, .ci, [("\(review.display): ", nil), (review.url.absoluteString, review.url)])
+        switch plan {
+        case .ciThenReview: try await post(card.ref.id, .ci, link + [("\n\nWaiting for CI before review.", nil)])
+        case .ciThenMerge: try await post(card.ref.id, .ci, link + [("\n\nWaiting for CI before merging.", nil)])
+        case .merge: try await post(card.ref.id, .merging, link)
+        }
+    }
+
+    public func markMerged(_ card: Card, review: ReviewRequest, note: String?) async throws {
+        try await require(card, ["ci"], for: "markMerged")
+        var segments: [(text: String, link: URL?)] = [("\(review.display): ", nil), (review.url.absoluteString, review.url)]
+        if let note { segments.append(("\n\n\(note)", nil)) }
+        try await setState(card.ref.id, "merged")
+        try await post(card.ref.id, .merged, segments)
     }
 
     public func resumeFix(_ card: Card) async throws -> Bool {
@@ -277,8 +294,8 @@ public actor NotionBacklog: Backlog {
 
     /// Maps a page to a card (B190). A `next` card is `ready` when a trusted user edited it
     /// last, or the integration did and its newest comment is a release that follows a claim,
-    /// a CI notice or a release. A `working` or `ci` card is the Manager's only while the
-    /// integration's newest comment is a claim, a CI notice or a release. Anything else is
+    /// a CI or merging notice or a release. A `working` or `ci` card is the Manager's only while
+    /// the integration's newest comment is a claim, a CI or merging notice or a release. Anything else is
     /// `other`, logged once. Reads the comments unless the state property alone makes it `other`.
     private func evaluate(_ page: Page, project: String) async throws -> Evaluation {
         let me = try await meID()
