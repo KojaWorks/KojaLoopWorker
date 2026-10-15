@@ -58,8 +58,14 @@ struct GLMergeRequest: Decodable, Sendable {
     var mergeCommitSha: String?
     /// Why it can or can't merge now: `mergeable`, `not_approved`, `need_rebase`, ...
     var detailedMergeStatus: String?
+    var targetBranch: String?
     var createdAt: Date?
     var description: String?
+}
+
+struct GLProtectedBranch: Decodable, Sendable {
+    struct AccessLevel: Decodable, Sendable { var accessLevelDescription: String? }
+    var mergeAccessLevels: [AccessLevel]?
 }
 
 /// A merge request discussion: a thread, or a single note (`individualNote`).

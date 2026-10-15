@@ -74,14 +74,14 @@ actor GitLabClient {
         return p
     }
 
-    func get<T: Decodable>(_ path: String, query: [(String, String)] = []) async throws -> T {
-        let (data, _) = try await perform("GET", path, query: query)
+    func get<T: Decodable>(_ path: String, query: [(String, String)] = [], refusals: Set<Int> = []) async throws -> T {
+        let (data, _) = try await perform("GET", path, query: query, refusals: refusals)
         return try decode(data, "GET", path)
     }
 
     /// Like `get`, but a 404 is nil.
-    func getIfFound<T: Decodable>(_ path: String, query: [(String, String)] = []) async throws -> T? {
-        let (data, response) = try await perform("GET", path, query: query, allowNotFound: true)
+    func getIfFound<T: Decodable>(_ path: String, query: [(String, String)] = [], refusals: Set<Int> = []) async throws -> T? {
+        let (data, response) = try await perform("GET", path, query: query, allowNotFound: true, refusals: refusals)
         if response.statusCode == 404 { return nil }
         return try decode(data, "GET", path)
     }
@@ -186,7 +186,7 @@ actor GitLabClient {
             case _ where refusals.contains(status):
                 throw GitLabRefusal(status: status, message: excerpt)
             case 401, 403:
-                throw GitLabError("\(where_): \(status) \(excerpt). The token in \(connection.tokenEnv) is invalid, expired or lacks the api scope.")
+                throw tokenRejected(where_, GitLabRefusal(status: status, message: excerpt))
             case 429, 500...599:
                 let retryable = status == 429 || retriesServerErrors
                 guard retryable, attempt < Self.maxRetries else {
@@ -202,6 +202,10 @@ actor GitLabClient {
                 throw GitLabError("\(where_): unexpected \(status) \(excerpt)")
             }
         }
+    }
+
+    func tokenRejected(_ where_: String, _ refusal: GitLabRefusal) -> GitLabError {
+        GitLabError("\(where_): \(refusal). The token in \(connection.tokenEnv) is invalid, expired or lacks the api scope.")
     }
 
     /// `Retry-After` in seconds (capped at 60), else 2, 4, 8 s.

@@ -361,6 +361,37 @@ import Testing
         #expect(try await merge(w) == .pending("GitLab: locked (the merge is in progress)"))
     }
 
+    @Test("B227: a 401 with a working token is blocked, naming who may merge when the rule is readable")
+    func mergePermissionMissing() async throws {
+        let w = World()
+        w.gitlab.on("PUT", mr + "/merge", status: 401, json: ["message": "401 Unauthorized"])
+        w.gitlab.on("GET", mr, json: state("opened").merging(["target_branch": "release/1"]) { _, b in b })
+        let rule = "/api/v4/projects/mygroup%2Fapp/protected_branches/release%2F1"
+        w.gitlab.on("GET", rule, json: ["name": "release/1", "merge_access_levels": [["access_level": 40, "access_level_description": "Maintainers"]]])
+        #expect(try await merge(w) == .blocked(
+            #"GitLab: @me may not merge into release/1; its protected branch rule allows Maintainers (the merge answered 401 {"message":"401 Unauthorized"})"#))
+        w.gitlab.on("GET", rule, status: 403, json: ["message": "403 Forbidden"])
+        #expect(try await merge(w) == .blocked(
+            #"GitLab: @me may not merge into release/1; its protected branch rule or @me's role in mygroup/app decides who may (the merge answered 401 {"message":"401 Unauthorized"})"#))
+        #expect(w.log.lines.isEmpty)
+    }
+
+    @Test("B227: a 401 or an insufficient_scope 403 with a rejected token throws the token error")
+    func mergeWithBadToken() async throws {
+        let w = World()
+        w.gitlab.on("PUT", mr + "/merge", status: 401, json: ["message": "401 Unauthorized"])
+        w.gitlab.on("GET", "/api/v4/user", status: 401, json: ["message": "401 Unauthorized"])
+        let error = await #expect(throws: GitLabError.self) { try await merge(w) }
+        #expect(error?.description == #"PUT /projects/mygroup%2Fapp/merge_requests/34/merge: 401 {"message":"401 Unauthorized"}. The token in LOOPWORKER_GITLAB_TOKEN is invalid, expired or lacks the api scope."#)
+
+        let scoped = World()
+        scoped.gitlab.on("PUT", mr + "/merge", status: 403, json: ["error": "insufficient_scope"])
+        let scopeError = await #expect(throws: GitLabError.self) { try await merge(scoped) }
+        #expect(scopeError?.description.contains("lacks the api scope") == true)
+        #expect(scoped.gitlab.requests("GET", "/api/v4/user").isEmpty)
+        #expect(w.gitlab.requests("GET", mr).isEmpty && scoped.gitlab.requests("GET", mr).isEmpty)
+    }
+
     @Test("B225: a 5xx throws after the retries instead of returning a value")
     func serverErrorThrows() async throws {
         let w = World()

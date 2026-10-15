@@ -70,7 +70,9 @@ public struct GitLabForge: Forge {
     /// branch or wait for a pipeline. A refusal (405, 406, 409, 422) or an answer that isn't
     /// merged re-reads the merge request: `merged` is merged, `locked` (merging) pending, any
     /// other state but `opened` blocked; a 409 is a moved head; otherwise
-    /// `detailed_merge_status` decides.
+    /// `detailed_merge_status` decides. GitLab answers 401 both for a bad token and for a user
+    /// that may not merge, so a 401 or 403 re-reads `/user`: a token that GitLab accepts makes
+    /// it a missing merge permission, `blocked`; a rejected one throws the token error.
     public func merge(_ review: ReviewRequest, project: ProjectSpec, head: String) async throws -> MergeResult {
         guard let iid = Int(review.url.lastPathComponent), iid > 0 else {
             throw BackendRejection("can't merge \(review.display): \(review.url.absoluteString) doesn't end in a merge request number")
@@ -79,9 +81,13 @@ public struct GitLabForge: Forge {
         var refusal: GitLabRefusal?
         do {
             let mr: GLMergeRequest = try await client.send(
-                "PUT", path + "/merge", body: ["sha": head], idempotent: true, refusals: [405, 406, 409, 422])
+                "PUT", path + "/merge", body: ["sha": head], idempotent: true, refusals: [401, 403, 405, 406, 409, 422])
             if mr.state == "merged" { return .merged(commit: mr.mergeCommitSha) }
         } catch let r as GitLabRefusal { refusal = r }
+        var forbiddenTo: GLUser?
+        if let r = refusal, r.status == 401 || r.status == 403 {
+            forbiddenTo = try await tokenUser(rejecting: r, where_: "PUT \(path)/merge")
+        }
         let mr: GLMergeRequest = try await client.get(path)
         switch mr.state {
         case "merged": return .merged(commit: mr.mergeCommitSha)
@@ -90,6 +96,9 @@ public struct GitLabForge: Forge {
         default: return .blocked("GitLab: \(mr.state ?? "no state") (the merge request isn't open)")
         }
         if refusal?.status == 409 { return .blocked("GitLab: the source branch's head moved past \(head.prefix(12))") }
+        if let user = forbiddenTo, let refusal {
+            return .blocked(await mergeForbidden(user, refusal, into: mr.targetBranch, project))
+        }
         let status = mr.detailedMergeStatus ?? "no detailed_merge_status"
         let reason = "GitLab: \(status)" + (Self.mergeStatusGloss[status].map { " (\($0))" } ?? "")
         switch status {
@@ -98,6 +107,31 @@ public struct GitLabForge: Forge {
         case "conflict", "need_rebase": return .outdated(reason)
         default: return .blocked(reason)
         }
+    }
+
+    /// The token's user, read afresh; throws the token error for `where_` when GitLab rejects the token.
+    private func tokenUser(rejecting refusal: GitLabRefusal, where_: String) async throws -> GLUser {
+        if refusal.message.contains("insufficient_scope") { throw await client.tokenRejected(where_, refusal) }
+        do { return try await client.get("/user", refusals: [401, 403]) }
+        catch is GitLabRefusal { throw await client.tokenRejected(where_, refusal) }
+    }
+
+    /// Names who may merge into `branch` when its protected branch rule is readable (it needs
+    /// the Maintainer role), else the rule or the user's role as the cause.
+    private func mergeForbidden(_ user: GLUser, _ refusal: GitLabRefusal, into branch: String?, _ project: ProjectSpec) async -> String {
+        let who = "GitLab: @\(user.username) may not merge into \(branch ?? "the target branch")"
+        let tail = " (the merge answered \(refusal))"
+        guard let branch else { return who + tail }
+        let rulePath = projectPath(project) + "/protected_branches/" + GitLabPath.encode(branch)
+        var rule: GLProtectedBranch?
+        do { rule = try await client.getIfFound(rulePath, refusals: [401, 403]) }
+        catch is GitLabRefusal {}  // below Maintainer: the reason names the role instead
+        catch { log.warning("can't read who may merge into \(branch) of \(project.path): \(error)") }
+        let allowed = (rule?.mergeAccessLevels ?? []).compactMap(\.accessLevelDescription)
+        guard !allowed.isEmpty else {
+            return who + "; its protected branch rule or @\(user.username)'s role in \(project.path) decides who may" + tail
+        }
+        return who + "; its protected branch rule allows \(allowed.joined(separator: ", "))" + tail
     }
 
     static let mergeStatusGloss = [
