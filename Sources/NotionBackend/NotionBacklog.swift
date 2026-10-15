@@ -9,6 +9,8 @@ import LoopWorkerCore
 /// did after releasing a card that it owned; a `working` or `ci` card is the Manager's only
 /// while the integration's newest comment says so (DESIGN.md "Trust in Notion"). The Manager's
 /// notes are page comments that the integration wrote, each under a header line (`ManagerComment`).
+/// A claim comment names the claiming Manager's holder id; a `working` or `ci` card's `holder` is
+/// the one in the integration's newest claim comment, unless a release comment is newer.
 ///
 /// `CardRef.id` is the page id; `display` is the unique-id property (`CARD-12`) when the
 /// database has one, else `notion:` and the page id's first 8 hex digits.
@@ -20,7 +22,6 @@ public actor NotionBacklog: Backlog {
     let client: NotionClient
     private let log: LogSink
     private let now: @Sendable () -> Date
-    private let host: String
     private var loggedOnce: Set<String> = []
     /// The database that each page was last read from, so a page's 404 can be told from a lost connection.
     private var pageDatabases: [String: String] = [:]
@@ -28,12 +29,11 @@ public actor NotionBacklog: Backlog {
     private var schemas: [String: (read: Date, properties: [String: JSON])] = [:]
     private var userNames: [String: String] = [:]
 
-    init(config: NotionConfig, client: NotionClient, log: LogSink, now: @escaping @Sendable () -> Date, host: String) {
+    init(config: NotionConfig, client: NotionClient, log: LogSink, now: @escaping @Sendable () -> Date) {
         self.config = config
         self.client = client
         self.log = log
         self.now = now
-        self.host = host
     }
 
     // MARK: Reads
@@ -132,7 +132,7 @@ public actor NotionBacklog: Backlog {
 
     // MARK: Writes
 
-    public func claim(_ card: Card) async throws -> Bool {
+    public func claim(_ card: Card, holder: String) async throws -> Bool {
         let me = try await meID()
         // Listed before the page is re-read: a rival's claim posted after this list follows its
         // `working` write, so the re-read below sees `working` and this claim stops there.
@@ -143,7 +143,7 @@ public actor NotionBacklog: Backlog {
         }
         try await setState(card.ref.id, "working")
         let nonce = UUID().uuidString.prefix(8).lowercased()
-        let mine = try await post(card.ref.id, .claim(host: host, nonce: nonce), [(ManagerComment.vouchedTitlePrefix + title, nil)])
+        let mine = try await post(card.ref.id, .claim(holder: holder, nonce: nonce), [(ManagerComment.vouchedTitlePrefix + title, nil)])
         let ours = try await comments(card.ref.id).filter { $0.author == me && !stale.contains($0.id) }
         // The claims after the integration's newest other comment are this round's.
         let round = ours.reversed().prefix { ManagerComment.kind($0.text)?.isClaim == true }.reversed()
@@ -317,11 +317,13 @@ public actor NotionBacklog: Backlog {
             default: break
             }
         }
+        let holding = comments.last { $0.author == me && ManagerComment.kind($0.text).map { $0.isClaim || $0.isRelease } == true }
         let card = Card(
             ref: CardRef(id: page.id, display: display), project: project, number: unique.map { "\($0.number)" },
             title: page.title, state: state, priority: try await priority(page, project: project), model: model(page),
             attempts: comments.filter { $0.author == me && ManagerComment.kind($0.text) == .failedRelease }.count,
-            url: page.url)
+            url: page.url,
+            holder: state == .working || state == .verifying ? holding.flatMap { ManagerComment.holder($0.text) } : nil)
         return Evaluation(card: card, vouchedTitle: state == .ready ? vouched : nil)
     }
 

@@ -171,3 +171,6 @@ enum Fixture {
         ] as [String: Any]]
     }
 }
+
+/// The holder id that tests claim as.
+let testHolder = "buildmac.local:/Users/x/.loopworker"

@@ -86,6 +86,43 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(!FileManager.default.fileExists(atPath: h.stateDir().appending(path: "card.json").path))
     }
 
+    @Test("B214: a claim records this Manager as the holder")
+    func claimRecordsTheHolder() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        h.addCard(1)
+        try await h.boot()
+        await h.cycle()
+        #expect(h.backlog.card(id: "id-1")?.holder == h.manager.holder)
+        #expect(h.tmux.spawned.count == 1)
+    }
+
+    @Test("B214: a claim that a rival's newer claim overtook spawns nothing and leaves the card to the rival")
+    func claimOvertakenByARivalSpawnsNothing() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        h.addCard(1)
+        h.backlog.state { $0.rivalHolder = "rival.local:/srv/lw" }
+        try await h.boot()
+        await h.cycle()
+        #expect(h.tmux.spawned.isEmpty)
+        #expect(h.lifecycle.calls.filter { $0.hasPrefix("acquire") }.isEmpty)
+        #expect(h.backlog.card(id: "id-1")?.state == .working)
+        #expect(!h.backlog.writes.contains { if case .release = $0 { true } else { false } })
+        #expect(!FileManager.default.fileExists(atPath: h.stateDir().appending(path: "card.json").path))
+        #expect(h.log.contains("g/app#1 was claimed by rival.local:/srv/lw too", level: .warning))
+        #expect(try h.status().projects[0].slots[0].state == "idle")
+    }
+
+    @Test("B214: a claim whose holder can't be re-read spawns nothing")
+    func claimWithoutAHolderReReadSpawnsNothing() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        h.addCard(1)
+        h.backlog.state { $0.failCard = ["id-1"] }
+        try await h.boot()
+        await h.cycle()
+        #expect(h.tmux.spawned.isEmpty)
+        #expect(h.log.contains("can't re-read g/app#1 after claiming it", level: .error))
+    }
+
     @Test func aClaimWhoseResponseWasLostButLandedIsKept() async throws {
         let h = try ManagerHarness(projects: oneColdProject)
         h.addCard(1)

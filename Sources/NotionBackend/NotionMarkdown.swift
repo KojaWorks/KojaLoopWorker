@@ -39,7 +39,7 @@ enum NotionTime {
 
 /// The comments that the Manager posts, each under its own header line (B195).
 enum ManagerComment: Equatable {
-    case claim(host: String, nonce: String)
+    case claim(holder: String, nonce: String)
     case release
     case failedRelease
     case stuck
@@ -51,7 +51,7 @@ enum ManagerComment: Equatable {
 
     var header: String {
         switch self {
-        case .claim(let host, let nonce): "\(Self.claimPrefix)host \(host), \(nonce))."
+        case .claim(let holder, let nonce): "\(Self.claimPrefix)holder \(holder), \(nonce))."
         case .release: "LoopWorker released this card:"
         case .failedRelease: "LoopWorker released this card after a failed attempt:"
         case .stuck: "LoopWorker needs a human to unblock this card:"
@@ -64,7 +64,7 @@ enum ManagerComment: Equatable {
     /// Only call it for comments that the integration wrote.
     static func kind(_ text: String) -> ManagerComment? {
         let first = text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
-        if first.hasPrefix(claimPrefix) { return .claim(host: "", nonce: "") }
+        if first.hasPrefix(claimPrefix) { return .claim(holder: "", nonce: "") }
         return [.release, .failedRelease, .stuck, .review, .ci].first { $0.header == first }
     }
 
@@ -72,6 +72,16 @@ enum ManagerComment: Equatable {
     var isRelease: Bool { self == .release || self == .failedRelease }
     /// A comment of this kind as the integration's newest one leaves a `working` or `ci` card the Manager's.
     var keepsOwnership: Bool { isClaim || isRelease || self == .ci }
+
+    /// The holder id that a claim comment names; nil for any other text and for a claim
+    /// posted by a LoopWorker without holder ids (`host <name>, <nonce>`).
+    static func holder(_ text: String) -> String? {
+        let first = text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first ?? ""
+        let start = claimPrefix + "holder "
+        guard first.hasPrefix(start), first.hasSuffix(")."), let comma = first.range(of: ", ", options: .backwards) else { return nil }
+        let id = first[first.index(first.startIndex, offsetBy: start.count)..<comma.lowerBound]
+        return id.isEmpty ? nil : String(id)
+    }
 
     /// The title that a claim comment records as vouched; nil for any other text.
     static func vouchedTitle(_ text: String) -> String? {

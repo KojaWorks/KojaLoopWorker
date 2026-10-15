@@ -32,6 +32,8 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
         var claimOverride: Bool?
         /// `claim` throws after (true) or instead of (false) moving the card, like a lost response.
         var claimThrows: Bool?
+        /// A rival Manager's newer claim: `claim` succeeds but records this holder instead.
+        var rivalHolder: String?
         var workableCalls: [[String]] = []
         var cardCalls: [String] = []
         /// When set, `card(_:)` waits on it after recording the call.
@@ -115,16 +117,20 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
         }
     }
 
-    func claim(_ card: Card) async throws -> Bool {
+    func claim(_ card: Card, holder: String) async throws -> Bool {
         try state {
             $0.writes.append(.claim(card.ref.id))
             if let landed = $0.claimThrows {
-                if landed { $0.cards[card.ref.id]?.state = .working }
+                if landed {
+                    $0.cards[card.ref.id]?.state = .working
+                    $0.cards[card.ref.id]?.holder = holder
+                }
                 throw FakeError("no response from the backlog")
             }
             if let o = $0.claimOverride { return o }
             guard $0.cards[card.ref.id]?.state == .ready else { return false }
             $0.cards[card.ref.id]?.state = .working
+            $0.cards[card.ref.id]?.holder = $0.rivalHolder ?? holder
             return true
         }
     }
@@ -163,6 +169,7 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
             $0.writes.append(.release(card.ref.id, reason: reason, countsAsAttempt: countsAsAttempt))
             $0.notes[card.ref.id, default: []].append(reason)
             $0.cards[card.ref.id]?.state = .ready
+            $0.cards[card.ref.id]?.holder = nil
             if countsAsAttempt { $0.cards[card.ref.id]?.attempts += 1 }
         }
     }

@@ -16,22 +16,25 @@ public protocol Backlog: Sendable {
     /// projects this Manager serves.
     func card(_ ref: CardRef) async throws -> Card?
 
-    /// Every card in state `working` in the given projects. The Manager compares this with
-    /// its slots to find cards stranded by a Manager or host crash.
+    /// Every card in state `working` in the given projects, with its `holder`. The Manager
+    /// compares this with its slots to find cards stranded by a Manager or host crash.
     func working(in projects: [ProjectSpec]) async throws -> [Card]
 
-    /// Every card in state `verifying` in the given projects. The Manager resumes watching
-    /// their CI at startup and in the stranded-card sweep.
+    /// Every card in state `verifying` in the given projects, with its `holder`. The Manager
+    /// resumes watching the CI of those it holds at startup and in the stranded-card sweep.
     func verifying(in projects: [ProjectSpec]) async throws -> [Card]
 
     /// The Manager's own earlier notes on the card (stuck blockers, release reasons, review
-    /// links), without the backend's header, oldest first; `[]` when there are none. The
+    /// links; not claims), without the backend's header, oldest first; `[]` when there are none. The
     /// Manager hands them to the card's next worker as background, never as card content.
     func managerNotes(_ card: Card) async throws -> [String]
 
-    /// Moves a `ready` card to `working`. Returns false when the card is no longer `ready`
-    /// (someone else moved it); the Manager then skips it.
-    func claim(_ card: Card) async throws -> Bool
+    /// Moves a `ready` card to `working` and records `holder` (`Manager.holder`) on it, so
+    /// later reads report it as `Card.holder`. Returns false when the card is no longer `ready`
+    /// (someone else moved it); the Manager then skips it. A claim that isn't compare-and-set
+    /// may return true while a rival claims too; the newest claim holds the card, so the
+    /// Manager re-reads the holder before it spawns.
+    func claim(_ card: Card, holder: String) async throws -> Bool
 
     /// The card's trusted content for the worker. See `CardSnapshot`.
     func snapshot(_ card: Card) async throws -> CardSnapshot

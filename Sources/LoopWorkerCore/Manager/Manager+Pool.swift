@@ -365,6 +365,12 @@ extension Manager {
 
     // MARK: Stranded cards
 
+    /// The holder id of the other Manager that holds `card`; nil when this one does, or no
+    /// holder is recorded (a claim by a LoopWorker without holder ids counts as this one's).
+    func heldElsewhere(_ card: Card) -> String? {
+        card.holder.flatMap { $0 == holder ? nil : $0 }
+    }
+
     func holds(_ ref: CardRef) -> Bool {
         projects.values.contains { $0.slots.contains { $0.card?.ref == ref } }
     }

@@ -193,7 +193,7 @@ extension Manager {
         }
 
         var claimed: Bool
-        do { claimed = try await deps.backlog.claim(card) }
+        do { claimed = try await deps.backlog.claim(card, holder: holder) }
         catch {
             // A lost response may hide a claim that landed; the card then reads as working.
             if let current = try? await deps.backlog.card(card.ref), current.state == .working {
@@ -208,6 +208,20 @@ extension Manager {
         }
         guard claimed else {
             log.info("\(label(spec)): \(card.ref) was no longer ready; skipping it")
+            try? fm.removeItem(at: cardRecordFile(spec))
+            free(ref)
+            return
+        }
+        // Not every backlog's claim is compare-and-set: a rival's newer claim holds the card.
+        do {
+            if let other = try await deps.backlog.card(card.ref).flatMap(heldElsewhere) {
+                log.warning("\(label(spec)): \(card.ref) was claimed by \(other) too, after this Manager; leaving it to that Manager")
+                try? fm.removeItem(at: cardRecordFile(spec))
+                free(ref)
+                return
+            }
+        } catch {
+            log.error("\(label(spec)): can't re-read \(card.ref) after claiming it: \(error); not starting a worker, and the stranded-card sweep releases the card unless another Manager holds it")
             try? fm.removeItem(at: cardRecordFile(spec))
             free(ref)
             return

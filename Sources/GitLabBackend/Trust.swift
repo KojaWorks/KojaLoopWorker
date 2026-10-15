@@ -6,6 +6,7 @@ enum Trust {
     static let managerMarker = ReviewMarker.manager
     static let failedAttemptMarker = "<!-- loopworker:failed-attempt -->"
     static let cutoffMarkerPrefix = "<!-- loopworker:cutoff="
+    static let holderMarkerPrefix = "<!-- loopworker:holder="
     /// A `next` label added this soon after a release note by me is that release's re-add.
     static let releaseWindow: TimeInterval = 120
 
@@ -80,6 +81,27 @@ enum Trust {
         let lines = body.split(separator: "\n", omittingEmptySubsequences: false)
         guard lines.first == Substring(managerMarker) else { return [] }
         return Array(lines.prefix { !$0.isEmpty })
+    }
+
+    /// The holder that my newest claim note names; nil when my newest claim or release note
+    /// is a release, or I wrote neither. Only marker lines in my own notes' headers count.
+    static func holder(notes: [GLNote], me: GLUser) -> String? {
+        notes
+            .filter { $0.author.id == me.id && !$0.system }
+            .compactMap { note -> (note: GLNote, holder: String?)? in
+                let header = managerHeader(note.body)
+                if let id = claimHolder(header) { return (note, id) }
+                return header.contains { $0.hasPrefix(cutoffMarkerPrefix) } ? (note, nil) : nil
+            }
+            .max { ($0.note.createdAt, $0.note.id) < ($1.note.createdAt, $1.note.id) }?
+            .holder
+    }
+
+    /// The holder id in a claim note's header, or nil for any other note.
+    static func claimHolder(_ header: [Substring]) -> String? {
+        guard let line = header.first(where: { $0.hasPrefix(holderMarkerPrefix) && $0.hasSuffix(" -->") }) else { return nil }
+        let id = line.dropFirst(holderMarkerPrefix.count).dropLast(4)
+        return id.isEmpty ? nil : String(id)
     }
 
     static func countsAsAttempt(_ note: GLNote, me: GLUser) -> Bool {
