@@ -247,6 +247,30 @@ struct GitFixture {
         }
     }
 
+    @Test("B241: branchContains finds a pushed commit in the branch's history, and not after the branch was recreated")
+    func branchContains() async throws {
+        let f = try await GitFixture()
+        defer { f.cleanUp() }
+        let slot = try await f.slotOnBranch("loopworker-1-card")
+        try await f.commit(in: slot, file: "feature", "x\n")
+        let pushed = try await f.git.push(slot, to: f.origin.path, branch: "loopworker-1-card", expected: nil, environment: [:])
+        try await f.commit(in: slot, file: "feature", "y\n")
+        _ = try await f.git.push(slot, to: f.origin.path, branch: "loopworker-1-card", expected: pushed, environment: [:])
+        let other = f.root.appending(path: "other")
+        try await f.run(["clone", f.origin.path, other.path])
+        try await f.git.cloneOrFetch(url: f.origin.path, into: other, environment: [:])
+        #expect(try await f.git.branchContains(other, branch: "loopworker-1-card", commit: pushed))
+
+        try await f.run(["-C", f.seed.path, "push", "--force", "origin", "main:loopworker-1-card"])  // recreated from main
+        let fresh = f.root.appending(path: "fresh")
+        try await f.run(["clone", f.origin.path, fresh.path])
+        #expect(try await !f.git.branchContains(fresh, branch: "loopworker-1-card", commit: pushed))  // the commit is gone
+        try await f.git.cloneOrFetch(url: f.origin.path, into: other, environment: [:])
+        #expect(try await !f.git.branchContains(other, branch: "loopworker-1-card", commit: pushed))  // known, not in history
+        #expect(try await !f.git.branchContains(other, branch: "loopworker-1-card", commit: "--output=x"))
+        await #expect(throws: GitError.self) { try await f.git.branchContains(other, branch: "no-such-branch", commit: pushed) }
+    }
+
     @Test("detach frees the card branch for another worktree")
     func detachFreesBranch() async throws {
         let f = try await GitFixture()

@@ -871,6 +871,37 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(blocker.hasPrefix("Branch `loopworker-12-fix-it` already exists on the forge and wasn't created by LoopWorker for this card"))
     }
 
+    @Test("B241: a branch whose history lacks LoopWorker's last push is someone else's, and the blocker says why")
+    func aRewrittenBranchIsRefusedWithAnAccurateBlocker() async throws {
+        let h = try await spawned()
+        try await requeuedAfterStuck(h)
+        h.git.state { $0.remoteTips["loopworker-12-fix-it"] = "someone-1"; $0.rewritten["loopworker-12-fix-it"] = ["commit-1"] }
+        await h.cycle()
+        #expect(h.lifecycle.state.get.acquiredBases == ["main", "main"])
+        #expect(h.git.calls.contains("branchContains loopworker-12-fix-it commit-1"))
+        #expect(h.log.contains("origin/loopworker-12-fix-it doesn't contain commit-1, LoopWorker's last push for g/app#12: someone recreated or rewrote it", level: .warning))
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.git.state.get.pushes.count == 1)
+        #expect(h.backlog.writes.last == .markStuck("id-12", blocker: "Branch `loopworker-12-fix-it` is on the forge, but its history doesn't contain `commit-1`, LoopWorker's last push for this card: someone recreated or rewrote it. LoopWorker didn't overwrite it and didn't push the worker's commits. Rename or delete that branch, or push `commit-1` back to it, then move the card back to ready."))
+    }
+
+    @Test("B241: a failed history check treats the branch as someone else's and logs the error")
+    func aFailedHistoryCheckIsAForeignBranch() async throws {
+        let h = try await spawned()
+        try await requeuedAfterStuck(h)
+        h.git.state { $0.failBranchContains = true }
+        await h.cycle()
+        #expect(h.lifecycle.state.get.acquiredBases == ["main", "main"])
+        #expect(h.log.contains("can't check that origin/loopworker-12-fix-it contains commit-1, LoopWorker's last push for g/app#12: git merge-base --is-ancestor commit-1 origin/loopworker-12-fix-it failed; treating the branch as someone else's", level: .error))
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        let host = await h.manager.hostName
+        #expect(h.backlog.writes.last == .markStuck("id-12", blocker: "Branch `loopworker-12-fix-it` is on the forge, but LoopWorker couldn't check that its history contains `commit-1`, LoopWorker's last push for this card (the Manager's log on \(host) has the error), so LoopWorker didn't overwrite it and didn't push the worker's commits. If someone recreated or rewrote the branch, rename or delete it, or push `commit-1` back to it. Then move the card back to ready, which checks again."))
+    }
+
     @Test("B202: a Manager restart mid-run keeps the lease tip that the resumed card started from")
     func aRestartKeepsTheLeaseTip() async throws {
         let h = try await spawned()

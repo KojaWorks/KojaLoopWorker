@@ -26,6 +26,7 @@ private actor SlotFakeGit: GitDriving {
     func commitsAhead(_ worktree: URL, base: String) async throws -> Int { 0 }
     func commitsSince(_ worktree: URL, commit: String) async throws -> Int { 0 }
     func isAncestor(_ worktree: URL, ancestor: String) async throws -> Bool { true }
+    func branchContains(_ repo: URL, branch: String, commit: String) async throws -> Bool { true }
     func resolve(_ repo: URL, ref: String) async throws -> String { "base" }
     func push(_ worktree: URL, to url: String, branch: String, expected: String?, environment: [String: String]) async throws -> String {
         calls.append("push")

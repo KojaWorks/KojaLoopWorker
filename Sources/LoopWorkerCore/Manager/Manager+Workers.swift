@@ -34,6 +34,17 @@ struct CardRecord: Codable, Equatable {
         var tip: String?
     }
 
+    /// Set when the card records a push of its branch, but the forge's branch doesn't contain
+    /// it, so the card started from the base and its push will be refused.
+    var unrelatedBranch: UnrelatedBranch? = nil
+
+    struct UnrelatedBranch: Codable, Equatable {
+        /// LoopWorker's last push of the branch, which its history lacks.
+        var lastPush: String
+        /// Set when the check itself failed, so the history wasn't read.
+        var checkFailed: Bool?
+    }
+
     static func read(_ file: URL) -> CardRecord? {
         guard let data = try? Data(contentsOf: file) else { return nil }
         let d = JSONDecoder()
@@ -292,6 +303,24 @@ extension Manager {
         let source = legacy == nil ? "" : " (as \(legacyPushLedger.path) records)"
         guard exists else {
             log.warning("\(label(spec)): origin/\(branch), which an earlier attempt of \(card.ref) pushed\(source), is gone from the forge; starting over from origin/\(base)")
+            return nil
+        }
+        var contains = false, checkFailed = false
+        do { contains = try await deps.git.branchContains(spec.clone, branch: branch, commit: pushed.commit) }
+        catch {
+            checkFailed = true
+            log.error("\(label(spec)): can't check that origin/\(branch) contains \(pushed.commit.prefix(12)), LoopWorker's last push for \(card.ref)\(source): \(error); treating the branch as someone else's")
+        }
+        guard contains else {
+            if !checkFailed {
+                log.warning("\(label(spec)): origin/\(branch) doesn't contain \(pushed.commit.prefix(12)), LoopWorker's last push for \(card.ref)\(source): someone recreated or rewrote it; starting from origin/\(base), and the push won't overwrite the branch")
+            }
+            let file = cardRecordFile(spec)
+            do {
+                guard var record = CardRecord.read(file) else { throw ConfigError("\(file.path) is missing or unreadable") }
+                record.unrelatedBranch = CardRecord.UnrelatedBranch(lastPush: pushed.commit, checkFailed: checkFailed ? true : nil)
+                try record.write(file)
+            } catch { throw StepError(step: "recording that origin/\(branch) lacks LoopWorker's last push", error: error) }
             return nil
         }
         log.info("\(label(spec)): resuming \(card.ref) from origin/\(branch), which an earlier attempt pushed at \(pushed.commit.prefix(12))\(source)")
@@ -751,6 +780,11 @@ extension Manager {
                 }
             } catch is PushRejected where (try? leaseTip(spec, card: card, branch: branch)) != nil {
                 try await stuck(spec, card: card, blocker: "Someone pushed to `\(branch)` while the worker ran, so LoopWorker didn't overwrite those commits and didn't push the worker's. Move the card back to ready to redo this round on top of them.")
+            } catch is PushRejected where record?.unrelatedBranch != nil {
+                let unrelated = record!.unrelatedBranch!, sha = Self.inlineCode(String(unrelated.lastPush.prefix(12)))
+                try await stuck(spec, card: card, blocker: unrelated.checkFailed == true
+                    ? "Branch `\(branch)` is on the forge, but LoopWorker couldn't check that its history contains \(sha), LoopWorker's last push for this card (the Manager's log on \(hostName) has the error), so LoopWorker didn't overwrite it and didn't push the worker's commits. If someone recreated or rewrote the branch, rename or delete it, or push \(sha) back to it. Then move the card back to ready, which checks again."
+                    : "Branch `\(branch)` is on the forge, but its history doesn't contain \(sha), LoopWorker's last push for this card: someone recreated or rewrote it. LoopWorker didn't overwrite it and didn't push the worker's commits. Rename or delete that branch, or push \(sha) back to it, then move the card back to ready.")
             } catch is PushRejected {
                 try await stuck(spec, card: card, blocker: "Branch `\(branch)` already exists on the forge and wasn't created by LoopWorker for this card, so LoopWorker didn't overwrite it. Rename or delete that branch (or change the project's branch template), then move the card back to ready.")
             }

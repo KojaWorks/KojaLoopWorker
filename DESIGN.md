@@ -233,10 +233,10 @@ lost access to it, so a revoked connection never reaps running workers.
    names sets its own), and runs `reset.sh` (hot) or `provision.sh` (cold). When the card's push
    record says that an earlier attempt pushed that branch (it went stuck, and a human sent it
    back to ready, maybe to another host's Manager), the Manager fetches, and if the forge still
-   has the branch, resets to it instead, and the brief tells the worker to continue from that
-   work. The commit that the slot was reset to becomes the lease tip, so the finish leases on it
-   even when the card's owner pushed to the branch since. If the branch is gone, the card starts
-   over from the base. See "Push records and the lease".
+   has the branch and its history contains that push, resets to it instead, and the brief tells
+   the worker to continue from that work. The commit that the slot was reset to becomes the
+   lease tip, so the finish leases on it even when the card's owner pushed to the branch since.
+   If the branch is gone, the card starts over from the base. See "Push records and the lease".
 3. **Spawn.** The Manager writes the snapshot, the brief and a launch script into the slot's
    state directory (never into the worktree) and starts `claude` in a tmux session. The worker
    gets `LOOPWORKER_OUTCOME`, the path where its outcome goes, and an MCP config that contains
@@ -315,6 +315,10 @@ it, before the retried finish lands. A Manager that crashes between the push and
 leaves the push unrecorded. After a restart it adopts the slot and leases on `card.json` as
 usual, but if the card moves to another Manager first, that Manager refuses the branch as
 someone else's.
+
+A card resumes only when the fetched branch still contains the recorded commit. A branch that
+someone recreated or rewrote doesn't, so the Manager treats it as someone else's, and the
+blocker names the missing commit; a failed check counts as missing.
 
 A push that the forge refuses with a lease tip means that someone pushed during the run; without
 one, that the branch is someone else's. Each ends the card `stuck` with a blocker that says so.
