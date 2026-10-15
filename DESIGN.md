@@ -399,7 +399,7 @@ Manager saves in `state/holder` on its first start so a renamed host keeps it. A
 | --- | --- |
 | GitLab | The claim note: a Manager note whose header carries `<!-- loopworker:holder=<id> -->`, and "LoopWorker on <host> is working on this card." Only the token's user's notes count, and only marker lines in their header. A release note (the one with the cutoff marker) clears it. |
 | Patch | A `claim` block appended to the card's page body after the claim's PATCH lands, with `content.holder`. Only the PAT owner's blocks count; a later `release` or `failed-attempt` block clears it. |
-| Notion | The claim comment's header, `LoopWorker claimed this card (holder <id>, <nonce>).` A later release comment clears it. |
+| Notion | The claim comment's header, `LoopWorker claimed this card (holder <id>, <nonce>).` The holder is the winner that `claim` picks: the oldest of the consecutive claim comments within 120 s of the newest one, since a losing claim stays until its Manager deletes it. A later release comment clears it. |
 
 A Manager touches only the cards that it holds, or that nobody holds (claimed by a LoopWorker
 without holder ids, or after a release):

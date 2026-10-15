@@ -376,7 +376,11 @@ private let releaseText = "LoopWorker released this card:\n\nrestart"
         let cases: [(String, (FakeNotion, String) -> Void, String?)] = [
             ("working", { f, p in f.addClaim(p, holder: "a:/h") }, "a:/h"),
             ("ci", { f, p in f.addClaim(p, holder: "a:/h"); f.addComment(p, by: botID, "LoopWorker is waiting for CI on its review request:\n\ng/app!3") }, "a:/h"),
-            ("working", { f, p in f.addClaim(p, holder: "a:/h"); f.addClaim(p, holder: "b:/h") }, "b:/h"),
+            // A rival's claim of the same round that it hasn't deleted yet: the older claim wins, as in `claim`.
+            ("working", { f, p in f.addClaim(p, holder: "a:/h"); f.addClaim(p, holder: "b:/h") }, "a:/h"),
+            // A claim left by a crashed Manager before a human set next again is an earlier round.
+            ("working", { f, p in f.addClaim(p, holder: "dead:/h"); f.clock += 600; f.addClaim(p, holder: "b:/h") }, "b:/h"),
+            ("working", { f, p in f.addClaim(p, holder: "a:/h"); f.addComment(p, by: botID, releaseText); f.addClaim(p, holder: "b:/h") }, "b:/h"),
             ("working", { f, p in f.addClaim(p, holder: "a:/h"); f.addComment(p, by: botID, releaseText) }, nil),
             ("working", { f, p in f.addClaim(p, holder: "a:/h"); f.addClaim(p, holder: "x:/h", by: alice) }, "a:/h"),
             ("working", { f, p in f.addClaim(p, host: "old") }, nil),
@@ -415,6 +419,21 @@ private let releaseText = "LoopWorker released this card:\n\nrestart"
             rival["created_time"] = ours["created_time"]
             fake.comments[page]! += [.object(rival), ours]
         }
+    }
+
+    @Test("B219: while the losing claim of a simultaneous round is not deleted yet, the winner's re-read names the winner")
+    func simultaneousClaimsAgreeOnTheWinner() async throws {
+        let fake = FakeNotion()
+        fake.addDatabase()
+        let page = fake.addPage(1)
+        fake.afterComment = {
+            guard fake.comments[page]?.count == 1 else { return }
+            fake.addClaim(page, holder: "rival:/h")  // the rival's claim, newer, not yet deleted
+        }
+        let backlog = try make(fake)
+        #expect(try await backlog.claim(card(page, .ready), holder: testHolder) == true)
+        #expect(fake.commentTexts(page).count == 2)
+        #expect(try await backlog.card(CardRef(id: page, display: "x"))?.holder == testHolder)
     }
 
     @Test func B196_aClaimThatLostToAnOlderClaimDeletesItsComment() async throws {

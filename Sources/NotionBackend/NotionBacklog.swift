@@ -9,14 +9,17 @@ import LoopWorkerCore
 /// did after releasing a card that it owned; a `working` or `ci` card is the Manager's only
 /// while the integration's newest comment says so (DESIGN.md "Trust in Notion"). The Manager's
 /// notes are page comments that the integration wrote, each under a header line (`ManagerComment`).
-/// A claim comment names the claiming Manager's holder id; a `working` or `ci` card's `holder` is
-/// the one in the integration's newest claim comment, unless a release comment is newer.
+/// A claim comment names the claiming Manager's holder id; a `working` or `ci` card's `holder`
+/// is the winner of its newest claim round, unless a release comment is newer (`holder(of:)`).
 ///
 /// `CardRef.id` is the page id; `display` is the unique-id property (`CARD-12`) when the
 /// database has one, else `notion:` and the page id's first 8 hex digits.
 public actor NotionBacklog: Backlog {
     static let states: [String: CardState] = ["next": .ready, "working": .working, "ci": .verifying, "review": .review, "stuck": .stuck]
     static let schemaLifetime: TimeInterval = 600
+    /// Rival claims of one round land within seconds; a claim further back belongs to an earlier
+    /// round, such as a Manager that crashed after claiming before a human set `next` again.
+    static let claimRoundWindow: TimeInterval = 120
 
     let config: NotionConfig
     let client: NotionClient
@@ -317,14 +320,28 @@ public actor NotionBacklog: Backlog {
             default: break
             }
         }
-        let holding = comments.last { $0.author == me && ManagerComment.kind($0.text).map { $0.isClaim || $0.isRelease } == true }
         let card = Card(
             ref: CardRef(id: page.id, display: display), project: project, number: unique.map { "\($0.number)" },
             title: page.title, state: state, priority: try await priority(page, project: project), model: model(page),
             attempts: comments.filter { $0.author == me && ManagerComment.kind($0.text) == .failedRelease }.count,
             url: page.url,
-            holder: state == .working || state == .verifying ? holding.flatMap { ManagerComment.holder($0.text) } : nil)
+            holder: state == .working || state == .verifying ? Self.holder(of: comments.filter { $0.author == me }) : nil)
         return Evaluation(card: card, vouchedTitle: state == .ready ? vouched : nil)
+    }
+
+    /// B219: the holder that `claim` lets win. The integration's newest claim or release comment
+    /// decides: a release means nil; a claim means the oldest claim of the consecutive claims
+    /// that end in it and lie within `claimRoundWindow` of it, the same winner that `claim` picks.
+    /// `ours` are the integration's comments, oldest first.
+    static func holder(of ours: [Comment]) -> String? {
+        func isClaim(_ c: Comment) -> Bool { ManagerComment.kind(c.text)?.isClaim == true }
+        guard let last = ours.lastIndex(where: { ManagerComment.kind($0.text).map { $0.isClaim || $0.isRelease } == true }),
+              isClaim(ours[last]) else { return nil }
+        var first = last
+        while first > 0, isClaim(ours[first - 1]), ours[last].created.timeIntervalSince(ours[first - 1].created) <= claimRoundWindow {
+            first -= 1
+        }
+        return ManagerComment.holder(ours[first].text)
     }
 
     /// B194: a number as is; a select or multi-select option ranks by its place in the
