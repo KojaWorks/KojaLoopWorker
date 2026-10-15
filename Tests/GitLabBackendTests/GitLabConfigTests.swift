@@ -18,7 +18,7 @@ import Testing
         #expect(s.allowed == ["mygroup/"])
         #expect(s.labelPrefix == "loopworker::")
         #expect(s.statusMode == StatusMode.none)
-        #expect(s.statusNames == [.ready: "To do", .working: "In progress", .verifying: "In progress", .review: "In review", .stuck: "To do"])
+        #expect(s.statusNames == [.ready: "To do", .working: "In progress", .verifying: "In progress", .review: "In review", .reviewMerged: "In review", .stuck: "To do"])
         #expect(s.isAllowed("mygroup/App"))
         #expect(!s.isAllowed("other/app"))
     }
@@ -52,6 +52,14 @@ import Testing
         #expect(s.statusNames[.working] == "Doing")
         #expect(s.statusNames[.verifying] == "Doing")
         #expect(s.statusNames[.ready] == "To do")
+    }
+
+    @Test("B211: the merged status name defaults to the review name, can be overridden, and must not be empty")
+    func mergedStatusName() throws {
+        #expect(try backlog("allowed = [\"a/\"]\n[backlog.gitlab.status]\nreview = \"Review\"").statusNames[.reviewMerged] == "Review")
+        #expect(try backlog("allowed = [\"a/\"]\n[backlog.gitlab.status]\nmerged = \"Merged\"").statusNames[.reviewMerged] == "Merged")
+        let error = #expect(throws: ConfigError.self) { try backlog("allowed = [\"a/\"]\n[backlog.gitlab.status]\nmerged = \"\"") }
+        #expect(error?.description == "config.toml: [backlog.gitlab].status merged must not be empty")
     }
 
     @Test func theForgeFallsBackToTheBacklogSection() throws {
