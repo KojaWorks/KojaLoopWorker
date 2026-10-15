@@ -147,3 +147,37 @@ extension Reconciler {
         }
     }
 }
+
+enum MergeStuckReason: Sendable, Equatable {
+    /// Still pending at the timeout; the forge's reason.
+    case pendingTooLong(String)
+    /// Outdated again after a rebase round; the forge's reason.
+    case outdatedAfterRebase(String)
+    /// A rule refuses the merge; the forge's reason.
+    case blocked(String)
+}
+
+enum MergeDecision: Sendable, Equatable {
+    /// Move the card to `review_merged`.
+    case merged(commit: String?)
+    /// Keep the watch and try again at the next poll; the forge's reason.
+    case wait(String)
+    /// Queue a rebase round; the forge's reason.
+    case rebase(String)
+    case stuck(MergeStuckReason)
+}
+
+extension Reconciler {
+    /// - Parameters:
+    ///   - pendingFor: seconds since the watch's first `pending` result, nil before the first.
+    ///   - rebases: rebase rounds that the watch already ran.
+    ///   - timeout: how long the forge may stay `pending`.
+    static func decideMerge(_ result: MergeResult, pendingFor: TimeInterval?, rebases: Int, timeout: TimeInterval) -> MergeDecision {
+        switch result {
+        case .merged(let commit): .merged(commit: commit)
+        case .pending(let why): (pendingFor ?? 0) >= timeout ? .stuck(.pendingTooLong(why)) : .wait(why)
+        case .outdated(let why): rebases == 0 ? .rebase(why) : .stuck(.outdatedAfterRebase(why))
+        case .blocked(let why): .stuck(.blocked(why))
+        }
+    }
+}

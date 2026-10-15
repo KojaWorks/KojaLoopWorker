@@ -150,11 +150,11 @@ import Testing
         #expect(puts.count == 1)
         #expect(puts[0].json as? [String: String] == [
             "add_labels": "loopworker::working",
-            "remove_labels": "loopworker::next,loopworker::ci,loopworker::review,loopworker::stuck",
+            "remove_labels": "loopworker::next,loopworker::ci,loopworker::review,loopworker::merged,loopworker::stuck",
         ])
     }
 
-    @Test("B217: claim posts a note naming the holder, before the label change")
+    @Test("B232: claim posts a note naming the holder, before the label change")
     func claimPostsTheHolderNote() async throws {
         let w = World()
         w.gitlab.on("PUT", Fixture.issuePath, json: Fixture.issue(labels: ["loopworker::working"]))
@@ -166,7 +166,7 @@ import Testing
         #expect(w.gitlab.requests.firstIndex { $0.method == "POST" }! < w.gitlab.requests.firstIndex { $0.method == "PUT" }!)
     }
 
-    @Test("B217: a claim retried after its label change failed doesn't post the holder note again")
+    @Test("B232: a claim retried after its label change failed doesn't post the holder note again")
     func retriedClaimKeepsOneHolderNote() async throws {
         let w = World()
         let body = "<!-- loopworker -->\n<!-- loopworker:holder=\(testHolder) -->\n\nLoopWorker on buildmac.local is working on this card."
@@ -182,7 +182,7 @@ import Testing
         Fixture.note(id, "<!-- loopworker -->\n<!-- loopworker:holder=\(holder) -->\n\nLoopWorker on x is working on this card.", by: author, at: minutes)
     }
 
-    @Test("B217: the holder is the one in my newest claim note; a newer release clears it; spoofed markers don't count")
+    @Test("B232: the holder is the one in my newest claim note; a newer release clears it; spoofed markers don't count")
     func holderComesFromMyNewestClaimNote() async throws {
         let w = World()
         w.issue(Fixture.issue(labels: ["loopworker::working"]), listedAs: "loopworker::working")
@@ -205,7 +205,7 @@ import Testing
         }
     }
 
-    @Test("B217: a ready card has no holder, and managerNotes leaves claim notes out")
+    @Test("B232: a ready card has no holder, and managerNotes leaves claim notes out")
     func readyCardsHaveNoHolderAndClaimNotesAreNotManagerNotes() async throws {
         let w = World()
         w.notes([Fixture.assigned(), Self.claimNote(301, "a:/h", at: 1)])
@@ -260,7 +260,7 @@ import Testing
         #expect(note.json["body"] as? String == "<!-- loopworker -->\n\nReview request: https://gitlab.example.com/mygroup/app/-/merge_requests/4")
         let put = try #require(w.gitlab.requests("PUT", Fixture.issuePath).first)
         #expect(put.json["add_labels"] as? String == "loopworker::review")
-        #expect(put.json["remove_labels"] as? String == "loopworker::next,loopworker::working,loopworker::ci,loopworker::stuck")
+        #expect(put.json["remove_labels"] as? String == "loopworker::next,loopworker::working,loopworker::ci,loopworker::merged,loopworker::stuck")
         #expect(w.gitlab.requests.firstIndex { $0.method == "POST" }! < w.gitlab.requests.firstIndex { $0.method == "PUT" }!)
     }
 
@@ -395,20 +395,20 @@ import Testing
         let backlog = try w.backlog()
         #expect(await backlog.labelChange(to: .working) == (
             ["loopworker::working", "Doing"],
-            ["loopworker::next", "loopworker::ci", "loopworker::review", "loopworker::stuck", "In review", "To Do"]))
+            ["loopworker::next", "loopworker::ci", "loopworker::review", "loopworker::merged", "loopworker::stuck", "In review", "To Do"]))
         #expect(await backlog.labelChange(to: .stuck) == (
             ["loopworker::stuck", "To Do"],
-            ["loopworker::next", "loopworker::working", "loopworker::ci", "loopworker::review", "Doing", "In review"]))
+            ["loopworker::next", "loopworker::working", "loopworker::ci", "loopworker::review", "loopworker::merged", "Doing", "In review"]))
         try await backlog.markReview(workingCard, review: ReviewRequest(url: URL(string: "https://gitlab.example.com/x")!, display: "mygroup/app!4"))
         let put = try #require(w.gitlab.requests("PUT", Fixture.issuePath).first)
         #expect(put.json["add_labels"] as? String == "loopworker::review,In review")
-        #expect(put.json["remove_labels"] as? String == "loopworker::next,loopworker::working,loopworker::ci,loopworker::stuck,Doing,To Do")
+        #expect(put.json["remove_labels"] as? String == "loopworker::next,loopworker::working,loopworker::ci,loopworker::merged,loopworker::stuck,Doing,To Do")
     }
 
     @Test func statusModeNoneTouchesOnlyLoopWorkerLabels() async throws {
         let backlog = try World().backlog()
         #expect(await backlog.labelChange(to: .ready) == (
-            ["loopworker::next"], ["loopworker::working", "loopworker::ci", "loopworker::review", "loopworker::stuck"]))
+            ["loopworker::next"], ["loopworker::working", "loopworker::ci", "loopworker::review", "loopworker::merged", "loopworker::stuck"]))
     }
 
     @Test func workItemStatusIsSetThroughGraphQL() async throws {
@@ -476,15 +476,15 @@ import Testing
     @Test("B172: markVerifying links the review request and swaps working for ci; only from working")
     func markVerifying() async throws {
         let w = world("loopworker::working")
-        try await w.backlog().markVerifying(card, review: review)
+        try await w.backlog().markVerifying(card, review: review, plan: .ciThenReview)
         let note = try #require(w.gitlab.requests("POST", Fixture.issuePath + "/notes").first)
         #expect(note.json["body"] as? String == "<!-- loopworker -->\n\nReview request: \(review.url.absoluteString)\n\nWaiting for CI before review.")
         let put = try #require(w.gitlab.requests("PUT", Fixture.issuePath).first)
         #expect(put.json["add_labels"] as? String == "loopworker::ci")
-        #expect(put.json["remove_labels"] as? String == "loopworker::next,loopworker::working,loopworker::review,loopworker::stuck")
+        #expect(put.json["remove_labels"] as? String == "loopworker::next,loopworker::working,loopworker::review,loopworker::merged,loopworker::stuck")
 
         let v = world("loopworker::ci")
-        let e = await #expect(throws: GitLabError.self) { try await v.backlog().markVerifying(card, review: review) }
+        let e = await #expect(throws: GitLabError.self) { try await v.backlog().markVerifying(card, review: review, plan: .ciThenReview) }
         #expect(e?.description == "markVerifying mygroup/app#12: expected working, found verifying")
         #expect(v.gitlab.requests.filter { $0.method != "GET" }.isEmpty)
     }
@@ -506,7 +506,7 @@ import Testing
         let backlog = try World(statusMode: "labels").backlog()
         #expect(await backlog.labelChange(to: .verifying) == (
             ["loopworker::ci", "In progress"],
-            ["loopworker::next", "loopworker::working", "loopworker::review", "loopworker::stuck", "In review", "To do"]))
+            ["loopworker::next", "loopworker::working", "loopworker::review", "loopworker::merged", "loopworker::stuck", "In review", "To do"]))
     }
 
     @Test("B172: a retried write doesn't repeat a note that landed while its label change failed")
@@ -543,5 +543,54 @@ import Testing
         ])
         #expect(w.gitlab.requests("PUT", Fixture.issuePath).compactMap { $0.json["add_labels"] as? String }
             == ["loopworker::review", "loopworker::stuck"])
+    }
+
+    @Test("B222: markVerifying says what the Manager waits for, per plan")
+    func markVerifyingPerPlan() async throws {
+        for (plan, text) in [(VerifyingPlan.ciThenReview, "Waiting for CI before review."),
+                             (.ciThenMerge, "Waiting for CI before merging."), (.merge, "Merging into the base branch.")] {
+            let w = world("loopworker::working")
+            try await w.backlog().markVerifying(card, review: review, plan: plan)
+            let note = try #require(w.gitlab.requests("POST", Fixture.issuePath + "/notes").first)
+            #expect(note.json["body"] as? String == "<!-- loopworker -->\n\nReview request: \(review.url.absoluteString)\n\n\(text)")
+        }
+    }
+
+    @Test("B222: the <prefix>merged label reads as review_merged; with another state label it is other")
+    func mergedLabelReads() async throws {
+        #expect(try await world("loopworker::merged").backlog().card(World.ref)?.state == .reviewMerged)
+        let both = World()
+        both.issue(Fixture.issue(labels: ["loopworker::review", "loopworker::merged"]))
+        #expect(try await both.backlog().card(World.ref)?.state == .other)
+    }
+
+    @Test("B222: markMerged posts the link and note, then swaps ci for merged; the issue stays open")
+    func markMerged() async throws {
+        let w = world("loopworker::ci")
+        try await w.backlog().markMerged(card, review: review, note: "Merged into main as abc123.\n/close")
+        let note = try #require(w.gitlab.requests("POST", Fixture.issuePath + "/notes").first)
+        #expect(note.json["body"] as? String == "<!-- loopworker -->\n\nMerged: \(review.url.absoluteString)\n\nMerged into main as abc123.\n\\/close")
+        let put = try #require(w.gitlab.requests("PUT", Fixture.issuePath).first)
+        #expect(put.json as? [String: String] == [
+            "add_labels": "loopworker::merged",
+            "remove_labels": "loopworker::next,loopworker::working,loopworker::ci,loopworker::review,loopworker::stuck",
+        ])
+        #expect(w.gitlab.requests.firstIndex { $0.method == "POST" }! < w.gitlab.requests.firstIndex { $0.method == "PUT" }!)
+    }
+
+    @Test("B222: markMerged needs a verifying card and writes nothing otherwise")
+    func markMergedOnlyFromVerifying() async throws {
+        let w = world("loopworker::working")
+        let e = await #expect(throws: GitLabError.self) { try await w.backlog().markMerged(card, review: review, note: nil) }
+        #expect(e?.description == "markMerged mygroup/app#12: expected verifying, found working")
+        #expect(w.gitlab.requests.filter { $0.method != "GET" }.isEmpty)
+    }
+
+    @Test("B222: in labels mode, merged carries the review status name")
+    func mergedLabelsMode() async throws {
+        let backlog = try World(statusMode: "labels").backlog()
+        #expect(await backlog.labelChange(to: .reviewMerged) == (
+            ["loopworker::merged", "In review"],
+            ["loopworker::next", "loopworker::working", "loopworker::ci", "loopworker::review", "loopworker::stuck", "In progress", "To do"]))
     }
 }

@@ -45,10 +45,18 @@ public protocol Backlog: Sendable {
     func markReview(_ card: Card, review: ReviewRequest, note: String?) async throws
 
     /// Moves a `working` card to `verifying`: the review request is open and the Manager
-    /// waits for its CI. Links the review request from the card and says that CI is pending.
-    func markVerifying(_ card: Card, review: ReviewRequest) async throws
+    /// waits for its CI, merges it, or both, as `plan` says. Links the review request from the
+    /// card and says what the Manager waits for.
+    func markVerifying(_ card: Card, review: ReviewRequest, plan: VerifyingPlan) async throws
 
-    /// Moves a `verifying` card back to `working` for a round that fixes its failed CI.
+    /// Moves a `verifying` card to `review_merged`: the Manager merged its review request.
+    /// Links the review request from the card, followed by `note` (markdown) when given, e.g.
+    /// the merge commit and the pipeline that passed. The card stays open and assigned to its
+    /// human, who still has to look at the result.
+    func markMerged(_ card: Card, review: ReviewRequest, note: String?) async throws
+
+    /// Moves a `verifying` card back to `working` for a fix round: one that fixes its failed CI,
+    /// or one that rebases its branch onto a base branch that moved.
     /// Returns false, writing nothing, when the card is no longer `verifying` (a human moved
     /// it); the Manager then drops the round.
     func resumeFix(_ card: Card) async throws -> Bool
@@ -70,4 +78,15 @@ extension Backlog {
     public func markReview(_ card: Card, review: ReviewRequest) async throws {
         try await markReview(card, review: review, note: nil)
     }
+}
+
+/// What the Manager does with a `verifying` card's review request.
+public enum VerifyingPlan: String, Sendable, Equatable {
+    /// Waits for CI, then moves the card to `review` (`wait_for_ci` with `finish = draft` or `ready`).
+    case ciThenReview
+    /// Waits for CI, then merges (`finish = ci_then_merge`).
+    case ciThenMerge
+    /// Merges without waiting for CI (`finish = merge`). The card stays `verifying` only until
+    /// the merge lands, or while the forge can't merge yet.
+    case merge
 }

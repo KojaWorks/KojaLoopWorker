@@ -96,6 +96,18 @@ private func make(_ fake: FakePatch, _ patchKeys: String = "", log: LogRecorder 
             try PatchConfig.from(hostConfig(status: "[backlog.patch.status]\nverifying = \"\""))
         }
     }
+
+    @Test("B224: merged defaults to Merged, can be overridden, and must be distinct and non-empty")
+    func mergedStatus() throws {
+        #expect(try PatchConfig.from(hostConfig()).status.merged == "Merged")
+        #expect(try PatchConfig.from(hostConfig(status: "[backlog.patch.status]\nmerged = \"Landed\"")).status.merged == "Landed")
+        #expect(throws: ConfigError("config.toml: [backlog.patch.status] merged and shipped are both \"Shipped\"; every state needs its own status")) {
+            try PatchConfig.from(hostConfig(status: "[backlog.patch.status]\nmerged = \"Shipped\""))
+        }
+        #expect(throws: ConfigError("config.toml: [backlog.patch.status] merged must not be empty")) {
+            try PatchConfig.from(hostConfig(status: "[backlog.patch.status]\nmerged = \"\""))
+        }
+    }
 }
 
 @Suite struct PatchAuthTests {
@@ -350,7 +362,7 @@ private func make(_ fake: FakePatch, _ patchKeys: String = "", log: LogRecorder 
             .contains(URLQueryItem(name: "status", value: filter)))
     }
 
-    @Test("B218: a won claim appends a claim block that names the holder; a lost one writes nothing")
+    @Test("B233: a won claim appends a claim block that names the holder; a lost one writes nothing")
     func claimRecordsTheHolder() async throws {
         let fake = FakePatch()
         fake.rows["roadmap"] = [card(1), card(2)]
@@ -368,7 +380,7 @@ private func make(_ fake: FakePatch, _ patchKeys: String = "", log: LogRecorder 
         #expect(fake.rows["patch_blocks"]!.count == 1)
     }
 
-    @Test("B218: a claim block that fails once is retried; twice, and the card goes back to its status and the claim is skipped")
+    @Test("B233: a claim block that fails once is retried; twice, and the card goes back to its status and the claim is skipped")
     func claimBlockFailures() async throws {
         let fake = FakePatch()
         fake.rows["roadmap"] = [card(1), card(2)]
@@ -388,7 +400,7 @@ private func make(_ fake: FakePatch, _ patchKeys: String = "", log: LogRecorder 
         #expect(log.lines.contains { $0.hasPrefix("~2: can't record the claim's holder:") && $0.hasSuffix("returned the card to status Backlog and skipped it") })
     }
 
-    @Test("B218: the holder is the owner's last claim block unless a release follows it")
+    @Test("B233: the holder is the owner's last claim block unless a release follows it")
     func holderFollowsClaimAndReleaseBlocks() async throws {
         let fake = FakePatch()
         fake.rows["roadmap"] = [card(1, status: "In progress")]
@@ -521,7 +533,7 @@ private func make(_ fake: FakePatch, _ patchKeys: String = "", log: LogRecorder 
         let backlog = try make(fake, "review_link_field = \"solved_in_pr\"")
         let c = try #require(try await backlog.card(CardRef(id: "u1", display: "~1")))
         let pr = ReviewRequest(url: URL(string: "https://github.com/owner/app/pull/7")!, display: "owner/app#7")
-        try await backlog.markVerifying(c, review: pr)
+        try await backlog.markVerifying(c, review: pr, plan: .ciThenReview)
         #expect(fake.rows["roadmap"]![0]["status"] == .string("Verifying"))
         #expect(fake.rows["roadmap"]![0]["solved_in_pr"] == .string("https://github.com/owner/app/pull/7"))
         #expect(fake.rows["patch_blocks"]!.first?["content"]?["text"]
@@ -553,6 +565,52 @@ private func make(_ fake: FakePatch, _ patchKeys: String = "", log: LogRecorder 
         fake.rows["roadmap"]![0]["status"] = .string("Shipped")
         #expect(try await backlog.resumeFix(c) == false)
         #expect(fake.rows["roadmap"]![0]["status"] == .string("Shipped"))
+    }
+
+    @Test("B224: markVerifying says what the Manager waits for, per plan")
+    func markVerifyingPerPlan() async throws {
+        let pr = ReviewRequest(url: URL(string: "https://github.com/owner/app/pull/7")!, display: "owner/app#7")
+        for (plan, text) in [(VerifyingPlan.ciThenReview, "Waiting for CI before review."),
+                             (.ciThenMerge, "Waiting for CI before merging."), (.merge, "Merging into the base branch.")] {
+            let fake = FakePatch()
+            fake.rows["roadmap"] = [card(1, status: "In progress")]
+            let backlog = try make(fake)
+            try await backlog.markVerifying(try #require(try await backlog.card(CardRef(id: "u1", display: "~1"))), review: pr, plan: plan)
+            #expect(fake.rows["patch_blocks"]!.first?["content"]?["text"]
+                == .string("Review request: [owner/app#7](https://github.com/owner/app/pull/7)\n\n\(text)"))
+        }
+    }
+
+    @Test("B224: markMerged moves verifying to Merged, links the review request and writes the note")
+    func markMerged() async throws {
+        let fake = FakePatch()
+        fake.rows["roadmap"] = [card(1, status: "Verifying")]
+        let backlog = try make(fake, "review_link_field = \"solved_in_pr\"")
+        let c = try #require(try await backlog.card(CardRef(id: "u1", display: "~1")))
+        let pr = ReviewRequest(url: URL(string: "https://github.com/owner/app/pull/7")!, display: "owner/app#7")
+        try await backlog.markMerged(c, review: pr, note: "Merged into main as abc123.")
+        #expect(fake.rows["roadmap"]![0]["status"] == .string("Merged"))
+        #expect(fake.rows["roadmap"]![0]["solved_in_pr"] == .string("https://github.com/owner/app/pull/7"))
+        #expect(fake.rows["patch_blocks"]!.first?["content"]?["text"]
+            == .string("Merged: [owner/app#7](https://github.com/owner/app/pull/7)\n\nMerged into main as abc123."))
+        #expect(try await backlog.card(CardRef(id: "u1", display: "~1"))?.state == .reviewMerged)
+        let patch = try #require(fake.requests("PATCH", "/rest/v1/roadmap").last)
+        #expect(URLComponents(url: patch.url!, resolvingAgainstBaseURL: false)!.queryItems!
+            .contains(URLQueryItem(name: "status", value: "eq.Verifying")))
+    }
+
+    @Test("B224: markMerged needs a verifying card and writes nothing otherwise")
+    func markMergedOnlyFromVerifying() async throws {
+        let fake = FakePatch()
+        fake.rows["roadmap"] = [card(1, status: "In progress")]
+        let backlog = try make(fake)
+        let c = try #require(try await backlog.card(CardRef(id: "u1", display: "~1")))
+        let pr = ReviewRequest(url: URL(string: "https://github.com/owner/app/pull/7")!, display: "owner/app#7")
+        await #expect(throws: PatchError.unexpectedState(card: "~1", expected: "Verifying", actual: "In progress")) {
+            try await backlog.markMerged(c, review: pr, note: nil)
+        }
+        #expect(fake.rows["patch_blocks"]!.isEmpty)
+        #expect(fake.requests("PATCH", "/rest/v1/roadmap").isEmpty)
     }
 
     @Test func aRejectedWriteIsABackendRejection() async throws {

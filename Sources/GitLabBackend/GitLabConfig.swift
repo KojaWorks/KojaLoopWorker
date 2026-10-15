@@ -30,7 +30,7 @@ struct GitLabBacklogSettings: Sendable, Equatable {
     var labelPrefix: String
     var statusMode: StatusMode
     /// Status names per state, for `labels` and `work_item_status` modes. `verifying`
-    /// defaults to the `working` name.
+    /// defaults to the `working` name, `reviewMerged` to the `review` name.
     var statusNames: [CardState: String]
 
     /// The label prefix for a card's `key` value (`priority`, `model`). With a GitLab scoped
@@ -45,6 +45,7 @@ struct GitLabBacklogSettings: Sendable, Equatable {
         case .ready: labelPrefix + "next"
         case .working: labelPrefix + "working"
         case .review: labelPrefix + "review"
+        case .reviewMerged: labelPrefix + "merged"
         case .stuck: labelPrefix + "stuck"
         case .verifying: labelPrefix + "ci"
         case .other: nil
@@ -85,8 +86,9 @@ enum GitLabConfig {
             }
         }
         names[.verifying] = section.status?.verifying ?? names[.working]
+        names[.reviewMerged] = section.status?.merged ?? names[.review]
         if let empty = names.first(where: { $0.value.isEmpty }) {
-            throw ConfigError("config.toml: \(key).status \(empty.key.rawValue) must not be empty")
+            throw ConfigError("config.toml: \(key).status \(empty.key == .reviewMerged ? "merged" : empty.key.rawValue) must not be empty")
         }
         let prefix = section.label_prefix ?? "loopworker::"
         guard !prefix.isEmpty else { throw ConfigError("config.toml: \(key) label_prefix must not be empty") }
@@ -151,5 +153,6 @@ enum GitLabConfig {
         var review: String?
         var stuck: String?
         var verifying: String?
+        var merged: String?
     }
 }

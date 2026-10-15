@@ -53,8 +53,27 @@ struct GLMergeRequest: Decodable, Sendable {
     var iid: Int
     var webUrl: String
     var assignees: [GLUser]?
+    /// `opened`, `closed`, `locked` (a merge in progress) or `merged`.
+    var state: String?
+    var mergeCommitSha: String?
+    /// Why it can or can't merge now: `mergeable`, `not_approved`, `need_rebase`, ...
+    var detailedMergeStatus: String?
+    var targetBranch: String?
+    var sourceBranch: String?
+    /// The source branch head that GitLab last processed; it lags a push by a few seconds.
+    var sha: String?
     var createdAt: Date?
     var description: String?
+}
+
+struct GLBranch: Decodable, Sendable {
+    struct Commit: Decodable, Sendable { var id: String }
+    var commit: Commit
+}
+
+struct GLProtectedBranch: Decodable, Sendable {
+    struct AccessLevel: Decodable, Sendable { var accessLevelDescription: String? }
+    var mergeAccessLevels: [AccessLevel]?
 }
 
 /// A merge request discussion: a thread, or a single note (`individualNote`).

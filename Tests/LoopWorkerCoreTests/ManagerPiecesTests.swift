@@ -394,7 +394,7 @@ func temporaryDirectory() throws -> URL {
             """)
     }
 
-    @Test("B215: cards held by other Managers are listed with their holder")
+    @Test("B230: cards held by other Managers are listed with their holder")
     func heldCardsAreListed() {
         var s = status(updated: now)
         s.log = []

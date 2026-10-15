@@ -26,7 +26,7 @@ import Testing
         #expect(decide(.ready, outcomeAge: 100) == .abandon("card moved to ready outside the loop"))
     }
 
-    @Test("B216: a card that another Manager holds now is abandoned, even with an outcome")
+    @Test("B231: a card that another Manager holds now is abandoned, even with an outcome")
     func cardHeldByAnotherManagerIsAbandoned() {
         let o = SlotObservation(cardState: .working, sessionAlive: true, outcomeAge: 100, runningFor: 60, heldBy: "rival:/h")
         #expect(Reconciler.decide(o, policy: policy) == .abandon("card is held by rival:/h now"))

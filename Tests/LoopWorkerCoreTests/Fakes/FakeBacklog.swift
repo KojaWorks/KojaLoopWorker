@@ -10,6 +10,7 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
         case markStuck(String, blocker: String)
         case markReview(String, url: URL)
         case markVerifying(String, url: URL)
+        case markMerged(String, url: URL)
         case resumeFix(String)
     }
 
@@ -23,6 +24,11 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
         var failRelease = false
         var failMarkReview: (any Error)?
         var failMarkVerifying: (any Error)?
+        var failMarkMerged: (any Error)?
+        /// The plan each `markVerifying` got, by card id.
+        var verifyingPlans: [String: VerifyingPlan] = [:]
+        /// The note each `markMerged` got, by card id.
+        var mergedNotes: [String: String] = [:]
         var failVerifying = false
         /// `resumeFix` returns this instead of checking the card.
         var resumeFixOverride: Bool?
@@ -97,12 +103,23 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
         }
     }
 
-    func markVerifying(_ card: Card, review: ReviewRequest) async throws {
+    func markVerifying(_ card: Card, review: ReviewRequest, plan: VerifyingPlan) async throws {
         try state {
             if let e = $0.failMarkVerifying { throw e }
             guard $0.cards[card.ref.id]?.state == .working else { throw FakeError("markVerifying \(card.ref): not working") }
             $0.writes.append(.markVerifying(card.ref.id, url: review.url))
+            $0.verifyingPlans[card.ref.id] = plan
             $0.cards[card.ref.id]?.state = .verifying
+        }
+    }
+
+    func markMerged(_ card: Card, review: ReviewRequest, note: String?) async throws {
+        try state {
+            if let e = $0.failMarkMerged { throw e }
+            guard $0.cards[card.ref.id]?.state == .verifying else { throw FakeError("markMerged \(card.ref): not verifying") }
+            $0.writes.append(.markMerged(card.ref.id, url: review.url))
+            $0.mergedNotes[card.ref.id] = note
+            $0.cards[card.ref.id]?.state = .reviewMerged
         }
     }
 

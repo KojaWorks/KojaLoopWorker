@@ -16,7 +16,8 @@ struct PatchConfig: Sendable, Equatable {
     /// Author uids trusted besides the PAT owner. Never read from the database.
     var trustedAuthors: Set<String>
     var status: Statuses
-    /// The roadmap column that `markReview` writes the review request URL into, if any.
+    /// The roadmap column that `markReview`, `markVerifying` and `markMerged` write the review
+    /// request URL into, if any.
     var reviewLinkField: String?
     /// App origin and the roadmap table's item id, for `Card.url`; both or neither.
     var appBase: URL?
@@ -29,6 +30,9 @@ struct PatchConfig: Sendable, Equatable {
         var stuck = "Needs refinement"
         /// The review request waits for CI. Only written for projects with `wait_for_ci`.
         var verifying = "Verifying"
+        /// The Manager merged the review request; a human still has to look. Only written for
+        /// projects whose `finish` merges.
+        var merged = "Merged"
         /// The status a `blocked_by` target must have before the blocked card is workable.
         var shipped = "Shipped"
     }
@@ -74,10 +78,12 @@ struct PatchConfig: Sendable, Equatable {
             status.review = s.review ?? status.review
             status.stuck = s.stuck ?? status.stuck
             status.verifying = s.verifying ?? status.verifying
+            status.merged = s.merged ?? status.merged
             status.shipped = s.shipped ?? status.shipped
         }
         let keyed = [("ready", status.ready), ("working", status.working), ("verifying", status.verifying),
-                     ("review", status.review), ("stuck", status.stuck), ("shipped", status.shipped)]
+                     ("review", status.review), ("merged", status.merged), ("stuck", status.stuck),
+                     ("shipped", status.shipped)]
         if let empty = keyed.first(where: { $0.1.isEmpty }) {
             throw ConfigError("config.toml: [backlog.patch.status] \(empty.0) must not be empty")
         }
@@ -120,6 +126,7 @@ struct PatchConfig: Sendable, Equatable {
             var review: String?
             var stuck: String?
             var verifying: String?
+            var merged: String?
             var shipped: String?
         }
     }
