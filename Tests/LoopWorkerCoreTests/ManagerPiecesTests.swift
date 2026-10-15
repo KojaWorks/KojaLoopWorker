@@ -9,6 +9,15 @@ func temporaryDirectory() throws -> URL {
     return dir
 }
 
+@Suite struct CardRefTests {
+    @Test func aRenamedDisplayIsTheSameCard() {
+        let old = CardRef(id: "page-1", display: "OLD-1"), renamed = CardRef(id: "page-1", display: "CARD-1")
+        #expect(old == renamed)
+        #expect(Set([old, renamed]).count == 1)
+        #expect(old != CardRef(id: "page-2", display: "OLD-1"))
+    }
+}
+
 @Suite struct BudgetTests {
     @Test func affordableToleratesFractionalWeights() {  // B47
         #expect(Budget.affordable(remaining: 0.3, weight: 0.1) == 3)
