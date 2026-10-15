@@ -271,6 +271,38 @@ import Testing
         let c = try d.decode(CardRecord.self, from: Data(card.utf8))
         #expect(c.rebaseRound == nil && c.rebases == nil && c.ciRound == 1)
     }
+
+    @Test("B210: the status shows merging, merge pending, rebase queued and rebase starting")
+    func statusStrings() async throws {
+        let h = try await finished("merge")
+        #expect(try h.status().ci?.first?.state == "merging")
+        h.forge.state { $0.mergeResults = [.pending("checking"), .outdated("need_rebase")] }
+        await h.cycle()
+        #expect(try h.status().ci?.first?.state == "merge pending: checking")
+        try Data().write(to: h.home.appending(path: "state/PAUSED"))
+        h.clock.advance(121)
+        await h.cycle()
+        #expect(try h.status().ci?.first?.state == "rebase queued")
+        h.lifecycle.state { $0.acquireFailure = SlotFailure("reset.sh exited 1") }
+        try FileManager.default.removeItem(at: h.home.appending(path: "state/PAUSED"))
+        await h.cycle()
+        #expect(h.log.contains("g/app#12: rebase round 1 failed to start (1 in a row): preparing the slot failed: reset.sh exited 1", level: .error))
+        #expect(try h.status().ci?.first?.state == "rebase queued")
+        let text = StatusReport.render(try h.status(), lockHolder: 1, now: h.clock.now()).text
+        #expect(text.contains("waiting for CI or merge:\n  g/app#12 round 0 at commit-1: rebase queued"))
+    }
+
+    @Test("B202: the Manager logs a deprecated config key at start and when a reload changes the config")
+    func configWarningsAreLogged() async throws {
+        let h = try ManagerHarness(projects: "[[project]]\npath = \"g/app\"\ndraft = true")
+        try await h.boot()
+        let warning = "config.toml: g/app: draft is deprecated; replace it with finish = \"draft\""
+        #expect(h.log.contains(warning, level: .warning))
+        try h.writeConfig(projects: "[[project]]\npath = \"g/app\"\ndraft = false")
+        h.clock.advance(61)
+        await h.cycle()
+        #expect(h.log.contains("config.toml: g/app: draft is deprecated; replace it with finish = \"ready\"", level: .warning))
+    }
 }
 
 @Suite struct MergeDecisionTests {

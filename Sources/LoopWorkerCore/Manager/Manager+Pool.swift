@@ -441,6 +441,7 @@ extension Manager {
             log.error("\(configFile.path) changed but can't be used: \(error); keeping the current config")
             return
         }
+        for warning in next.warnings { log.warning(warning) }
         apply(next)
     }
 

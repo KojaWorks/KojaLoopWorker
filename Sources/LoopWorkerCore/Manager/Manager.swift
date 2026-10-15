@@ -200,6 +200,7 @@ public actor Manager {
         log.info("LoopWorker \(loopworkerVersion) starting on \(hostName), pid \(getpid()), home \(config.home.path)")
         log.info("budget \(config.maxSlots) slot units, at most \(config.maxConcurrentWorkers) workers, max \(config.maxAttempts) attempts; backlog \(config.backlogKind), forge \(config.forgeKind); CLAUDE_CODE_OAUTH_TOKEN \(token)")
         if config.projects.isEmpty { log.warning("no [[project]] in \(configFile.path); idling until one is added") }
+        for warning in config.warnings { log.warning(warning) }
 
         for spec in config.projects { addProject(spec) }
         resizeAll()

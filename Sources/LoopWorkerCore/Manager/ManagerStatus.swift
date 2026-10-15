@@ -110,7 +110,9 @@ public struct ManagerStatus: Codable, Sendable, Equatable {
         public var round: Int
         /// The first 12 characters of the pushed commit.
         public var commit: String
-        /// `no pipeline yet`, `running`, `passed`, `failed`, `canceled`, `fix queued` or `fix starting`.
+        /// `no pipeline yet`, `running`, `passed`, `failed`, `canceled`, `fix queued`, `fix starting`,
+        /// `merging` (a merge is in flight or due), `merge pending: <the forge's reason>`,
+        /// `rebase queued` or `rebase starting`.
         public var state: String
         /// When the commit was pushed.
         public var since: Date

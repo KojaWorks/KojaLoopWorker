@@ -57,6 +57,8 @@ enum FixKind: Sendable {
     case ci(PipelineStatus, baselines: [String: CIJobBaseline])
     /// The forge refused to merge because the base branch moved; its reason.
     case rebase(reason: String)
+
+    var isRebase: Bool { if case .rebase = self { true } else { false } }
 }
 
 /// A fix round about to start: the watch it came from and what it fixes.
@@ -64,7 +66,7 @@ struct FixRound: Sendable {
     var record: CIWatchRecord
     var kind: FixKind
 
-    var isRebase: Bool { if case .rebase = kind { true } else { false } }
+    var isRebase: Bool { kind.isRebase }
 
     /// "CI fix round 2" or "rebase round 1", for the log.
     var name: String { isRebase ? "rebase round \((record.rebases ?? 0) + 1)" : "CI fix round \(record.ciRounds + 1)" }
@@ -730,7 +732,13 @@ extension Manager {
     /// The `ci` list of the status file.
     func ciStatus() -> [ManagerStatus.CI] {
         ciWatches.values.sorted { $0.record.pushedAt < $1.record.pushedAt }.map { w in
-            let state = w.fixStarting ? "fix starting" : w.fix != nil ? "fix queued" : w.pipeline?.state.rawValue ?? "no pipeline yet"
+            let rebase = w.fix?.isRebase == true
+            let state = if w.fixStarting { rebase ? "rebase starting" : "fix starting" }
+                else if w.fix != nil { rebase ? "rebase queued" : "fix queued" }
+                else if w.merging { "merging" }
+                else if let why = w.pendingReason { "merge pending: \(why)" }
+                else if currentPlan(w.record) == .merge { "merging" }
+                else { w.pipeline?.state.rawValue ?? "no pipeline yet" }
             return ManagerStatus.CI(
                 card: w.record.card.display, cardURL: w.card.url, round: w.record.round,
                 commit: String(w.record.sha.prefix(12)), state: state, since: w.record.pushedAt,
