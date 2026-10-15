@@ -188,8 +188,10 @@ public struct GitHubForge: Forge {
         }
     }
 
-    /// Reads the pull request's review threads and its conversation comments over GraphQL. A
-    /// thread keeps its 100 newest comments; `cut` says when older ones were left out.
+    /// Reads the pull request's review threads, its conversation comments and the bodies of its
+    /// submitted reviews over GraphQL; a review body counts like a conversation comment. A
+    /// thread keeps its 100 newest comments; `cut` says when older ones were left out. A note's
+    /// time is `publishedAt`, because a comment in a review keeps its draft's `createdAt`.
     public func reviewFeedback(for review: ReviewRequest, project: ProjectSpec, vouchedAt: Date?) async throws -> ReviewFeedback {
         let number = try pullNumber(review)
         let me = try await request("GET", "user", as: User.self).login
@@ -200,10 +202,10 @@ public struct GitHubForge: Forge {
                 .edited(by: c.editor?.login ?? "ghost", owner: c.editor?.login.lowercased() == me.lowercased(), at: $0)
             } ?? .never
             return .init(id: c.id, author: c.author?.login ?? "ghost", byOwner: c.author?.login.lowercased() == me.lowercased(),
-                         createdAt: c.createdAt, body: c.body, edit: edit)
+                         createdAt: c.publishedAt ?? c.createdAt, body: c.body, edit: edit)
         }
         var threads: [ReviewFeedback.RawThread] = [], cut: [String] = [], opened: Date?
-        for query in [Self.reviewThreadsQuery, Self.commentsQuery] {
+        for query in [Self.reviewThreadsQuery, Self.commentsQuery, Self.reviewsQuery] {
             var after: String?
             repeat {
                 let data: GQLPullPage = try await graphQL("review feedback on \(review.display)", query, [
@@ -213,7 +215,7 @@ public struct GitHubForge: Forge {
                     throw GitHubError.malformed("GraphQL returned no pull request for \(review.display)")
                 }
                 opened = pull.createdAt
-                let info = pull.reviewThreads?.pageInfo ?? pull.comments?.pageInfo
+                let info = pull.reviewThreads?.pageInfo ?? pull.comments?.pageInfo ?? pull.reviews?.pageInfo
                 if let t = pull.reviewThreads {
                     for thread in t.nodes {
                         let first = thread.comments.nodes.first
@@ -229,7 +231,8 @@ public struct GitHubForge: Forge {
                                              notes: thread.comments.nodes.map(note)))
                     }
                 }
-                for c in pull.comments?.nodes ?? [] {
+                let reviews = (pull.reviews?.nodes ?? []).filter { $0.state != "PENDING" && !$0.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                for c in (pull.comments?.nodes ?? []) + reviews {
                     threads.append(.init(id: c.id, position: nil, resolvable: false, resolved: false, notes: [note(c)]))
                 }
                 after = info?.hasNextPage == true ? info?.endCursor : nil
@@ -252,7 +255,7 @@ public struct GitHubForge: Forge {
                   id isResolved path line originalLine diffSide
                   comments(last: 100) {
                     totalCount
-                    nodes { id author { login } body createdAt lastEditedAt editor { login } commit { oid } originalCommit { oid } }
+                    nodes { id author { login } body createdAt publishedAt lastEditedAt editor { login } commit { oid } originalCommit { oid } }
                   }
                 }
               }
@@ -268,7 +271,21 @@ public struct GitHubForge: Forge {
               createdAt
               comments(first: 100, after: $after) {
                 pageInfo { hasNextPage endCursor }
-                nodes { id author { login } body createdAt lastEditedAt editor { login } }
+                nodes { id author { login } body createdAt publishedAt lastEditedAt editor { login } }
+              }
+            }
+          }
+        }
+        """
+
+    static let reviewsQuery = """
+        query($owner: String!, $name: String!, $number: Int!, $after: String) {
+          repository(owner: $owner, name: $name) {
+            pullRequest(number: $number) {
+              createdAt
+              reviews(first: 100, after: $after) {
+                pageInfo { hasNextPage endCursor }
+                nodes { id state author { login } body createdAt publishedAt lastEditedAt editor { login } }
               }
             }
           }
@@ -282,8 +299,12 @@ public struct GitHubForge: Forge {
         var author: GQLLogin?
         var body: String
         var createdAt: Date
+        /// Nil while the comment sits in a pending review.
+        var publishedAt: Date?
         var lastEditedAt: Date?
         var editor: GQLLogin?
+        /// A review's state; `PENDING` until it is submitted.
+        var state: String?
         var commit: GQLCommit?
         var originalCommit: GQLCommit?
     }
@@ -313,6 +334,7 @@ public struct GitHubForge: Forge {
             var createdAt: Date
             var reviewThreads: Connection<GQLThread>?
             var comments: Connection<GQLComment>?
+            var reviews: Connection<GQLComment>?
         }
         struct Repository: Decodable { var pullRequest: Pull? }
         var repository: Repository?
@@ -327,8 +349,8 @@ public struct GitHubForge: Forge {
         return true
     }
 
-    /// A review thread gets a reply to its first comment. A conversation comment has no
-    /// thread, so its reply is a new conversation comment that links it.
+    /// A review thread gets a reply to its first comment. A conversation comment or a review
+    /// body has no thread, so its reply is a new conversation comment that links it.
     public func replyToThread(_ thread: String, text: String, marker: String, on review: ReviewRequest, project: ProjectSpec) async throws -> ThreadReply {
         let number = try pullNumber(review)
         let result = try await graphQLEnvelope("thread \(thread) of \(review.display)", Self.threadQuery, ["id": thread], as: GQLNodeData.self)
@@ -347,7 +369,7 @@ public struct GitHubForge: Forge {
             }
             struct Reply: Encodable { var body: String }
             _ = try await request("POST", "repos/\(project.path)/pulls/\(number)/comments/\(first)/replies", body: Reply(body: body), as: Ignored.self)
-        case "IssueComment":
+        case "IssueComment", "PullRequestReview":
             if try await myConversationComments(project, number).contains(where: { ReviewMarker.has(marker, $0) }) { return .alreadyPosted }
             let link = node.url.map { "[@\(node.author?.login ?? "ghost")'s comment](\($0.absoluteString))" } ?? "a comment"
             try await postComment(project, number, ReviewMarker.note("In reply to \(link):\n\n\(text)", markers: [marker]))
@@ -368,6 +390,12 @@ public struct GitHubForge: Forge {
               comments(last: 100) { nodes { author { login } body } }
             }
             ... on IssueComment {
+              repository { nameWithOwner }
+              pullRequest { number }
+              url
+              author { login }
+            }
+            ... on PullRequestReview {
               repository { nameWithOwner }
               pullRequest { number }
               url

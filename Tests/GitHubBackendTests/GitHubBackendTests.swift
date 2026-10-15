@@ -328,9 +328,11 @@ private func graphQLBody(_ req: URLRequest) -> [String: Any] {
     /// `2026-10-01T10:<minutes>:00Z`.
     static func t(_ minutes: Int) -> String { String(format: "2026-10-01T10:%02d:00Z", minutes) }
 
-    func comment(_ id: String, _ body: String, by login: String? = "alice", at minutes: Int, editedBy: String? = nil, editedAt: Int? = nil) -> [String: Any] {
+    func comment(_ id: String, _ body: String, by login: String? = "alice", at minutes: Int, published: Int? = nil,
+                 editedBy: String? = nil, editedAt: Int? = nil, state: String? = nil) -> [String: Any] {
         [
             "id": id, "author": login.map { ["login": $0] } ?? NSNull(), "body": body, "createdAt": Self.t(minutes),
+            "publishedAt": Self.t(published ?? minutes), "state": state ?? NSNull(),
             "lastEditedAt": editedAt.map { Self.t($0) } ?? NSNull(), "editor": editedBy.map { ["login": $0] } ?? NSNull(),
             "commit": ["oid": "head1"], "originalCommit": ["oid": "orig1"],
         ]
@@ -343,7 +345,7 @@ private func graphQLBody(_ req: URLRequest) -> [String: Any] {
         ]]]])
     }
 
-    @Test("B205: review threads and conversation comments over GraphQL, trust-checked against the vouch")
+    @Test("B205: review threads, conversation comments and review bodies over GraphQL, trust-checked against the vouch by publish time")
     func reviewFeedback() async throws {
         let summary = ReviewMarker.note("LoopWorker pushed abc", markers: [ReviewMarker.round("r1", commit: "abc", read: try Date(Self.t(3), strategy: .iso8601))])
         let stub = StubGitHub { [self] req, _ in
@@ -364,6 +366,16 @@ private func graphQLBody(_ req: URLRequest) -> [String: Any] {
                      "comments": ["totalCount": 1, "nodes": [comment("C3", "Done.", at: 1)]]],
                     ["id": "PRRT_3", "isResolved": false, "path": "c.swift", "line": NSNull(), "originalLine": 4, "diffSide": "LEFT",
                      "comments": ["totalCount": 1, "nodes": [comment("C4", "Hm.", at: 1, editedBy: "mallory", editedAt: 9)]]],
+                    ["id": "PRRT_4", "isResolved": false, "path": "d.swift", "line": 2, "originalLine": 2, "diffSide": "RIGHT",
+                     "comments": ["totalCount": 1, "nodes": [comment("C5", "Drafted early, submitted late.", at: 1, published: 7)]]],
+                ]))
+            }
+            if query.contains("reviews(first") {
+                return (200, [:], page("reviews", [
+                    comment("PRR_1", "Looks good apart from naming.", at: 1, published: 4, state: "COMMENTED"),
+                    comment("PRR_2", "Needs tests.", by: "bob", at: 2, published: 6, state: "CHANGES_REQUESTED"),
+                    comment("PRR_3", "", at: 4, state: "APPROVED"),
+                    comment("PRR_4", "Not sent yet.", by: "me", at: 4, state: "PENDING"),
                 ]))
             }
             return (200, [:], page("comments", [
@@ -375,11 +387,12 @@ private func graphQLBody(_ req: URLRequest) -> [String: Any] {
         }
         let f = try forge(stub)
         let feedback = try await f.reviewFeedback(for: Self.review, project: project, vouchedAt: try Date(Self.t(5), strategy: .iso8601))
-        #expect(feedback.threads.map(\.id) == ["PRRT_1", "IC_3", "IC_4"])
+        #expect(feedback.threads.map(\.id) == ["PRRT_1", "IC_3", "IC_4", "PRR_1"])
         #expect(feedback.threads[0].position == ReviewFeedback.Position(path: "a.swift", line: 10, side: .new, commit: "head1"))
         #expect(feedback.threads[0].notes.map(\.author) == ["alice", "me"])
         #expect(feedback.threads[1].notes[0].author == "ghost")
-        #expect(feedback.withheld.count == 1 && feedback.withheld[0].hasPrefix("note C4 by @alice in thread PRRT_3: edited by @mallory"))
+        #expect(feedback.withheld.map { $0.prefix(while: { $0 != ":" }) } == ["note C4 by @alice in thread PRRT_3", "note C5 by @alice in thread PRRT_4", "note PRR_2 by @bob in thread PRR_2"])
+        #expect(feedback.withheld[1].hasSuffix("posted at \(Self.t(7)), after the card was vouched for at \(Self.t(5))"))
         #expect(feedback.cut == ["the 100 oldest comments of thread PRRT_1 were left out"])
         let variables = graphQLBody(stub.requests[1])["variables"] as? [String: Any]
         #expect(variables?["number"] as? Int == 7 && variables?["owner"] as? String == "owner" && variables?["name"] as? String == "app")
@@ -413,7 +426,7 @@ private func graphQLBody(_ req: URLRequest) -> [String: Any] {
         #expect(try await !f.postReviewNote("Pushed.", marker: "<!-- loopworker:round=c2 -->", on: Self.review, project: project))
     }
 
-    @Test("B208: a review thread reply answers its first comment; a conversation comment gets a linked new comment; unknown ids are reported")
+    @Test("B208: a review thread reply answers its first comment; a conversation comment or review gets a linked new comment; unknown ids are reported")
     func threadReply() async throws {
         let stub = StubGitHub { req, _ in
             switch (req.httpMethod!, req.url!.path) {
@@ -432,6 +445,11 @@ private func graphQLBody(_ req: URLRequest) -> [String: Any] {
                         "__typename": "IssueComment", "repository": ["nameWithOwner": "owner/app"], "pullRequest": ["number": 7],
                         "url": "https://github.com/owner/app/pull/7#issuecomment-5", "author": ["login": "bob"],
                     ]]]))
+                case "PRR_1":
+                    return (200, [:], json(["data": ["node": [
+                        "__typename": "PullRequestReview", "repository": ["nameWithOwner": "owner/app"], "pullRequest": ["number": 7],
+                        "url": "https://github.com/owner/app/pull/7#pullrequestreview-9", "author": ["login": "carol"],
+                    ]]]))
                 case "PRRT_other":
                     return (200, [:], json(["data": ["node": [
                         "__typename": "PullRequestReviewThread", "repository": ["nameWithOwner": "owner/app"], "pullRequest": ["number": 8],
@@ -445,10 +463,12 @@ private func graphQLBody(_ req: URLRequest) -> [String: Any] {
         let f = try forge(stub)
         #expect(try await f.replyToThread("PRRT_1", text: "Renamed.", marker: ReviewMarker.reply("c2", thread: "PRRT_1"), on: Self.review, project: project) == .posted)
         #expect(try await f.replyToThread("IC_1", text: "Added.", marker: ReviewMarker.reply("c2", thread: "IC_1"), on: Self.review, project: project) == .posted)
+        #expect(try await f.replyToThread("PRR_1", text: "Renamed.", marker: ReviewMarker.reply("c2", thread: "PRR_1"), on: Self.review, project: project) == .posted)
         #expect(try await f.replyToThread("garbage", text: "x", marker: ReviewMarker.reply("c2", thread: "garbage"), on: Self.review, project: project) == .noSuchThread)
         #expect(try await f.replyToThread("PRRT_other", text: "x", marker: ReviewMarker.reply("c2", thread: "PRRT_other"), on: Self.review, project: project) == .noSuchThread)
         let posts = stub.requests.filter { $0.httpMethod == "POST" && $0.url?.path != "/graphql" }
-        #expect(posts.map { $0.url!.path } == ["/repos/owner/app/pulls/7/comments/111/replies", "/repos/owner/app/issues/7/comments"])
+        #expect(posts.map { $0.url!.path } == ["/repos/owner/app/pulls/7/comments/111/replies", "/repos/owner/app/issues/7/comments", "/repos/owner/app/issues/7/comments"])
+        #expect((graphQLBody(posts[2])["body"] as? String)?.contains("In reply to [@carol's comment](https://github.com/owner/app/pull/7#pullrequestreview-9)") == true)
         #expect(graphQLBody(posts[0])["body"] as? String == "<!-- loopworker -->\n<!-- loopworker:reply=c2 thread=PRRT_1 -->\n\nRenamed.")
         #expect(graphQLBody(posts[1])["body"] as? String
                 == "<!-- loopworker -->\n<!-- loopworker:reply=c2 thread=IC_1 -->\n\nIn reply to [@bob's comment](https://github.com/owner/app/pull/7#issuecomment-5):\n\nAdded.")
