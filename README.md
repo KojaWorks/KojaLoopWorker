@@ -7,8 +7,9 @@ moves the card on. The Manager is deterministic and runs no model; workers hold 
 forge credentials.
 
 One Manager runs per host and serves every project in its host config, cloning each repo on
-demand. Backlogs: GitLab issues, Patch and Notion databases. Forges: GitLab and GitHub. This README shows GitLab;
-the other backends document their config sections in their source.
+demand. Backlogs: GitLab issues, Patch and Notion databases. Forges: GitLab and GitHub. This README
+shows GitLab and Notion; the Patch and GitHub backends document their config sections in their
+source.
 [DESIGN.md](DESIGN.md) has the architecture; [docs/glossary.md](docs/glossary.md) the terms.
 
 ## North star
@@ -198,13 +199,21 @@ option or connection that is missing; it never changes a database. When a `trust
 wrong, doctor lists the workspace's people with their ids.
 
 A trusted user vouches for a card by setting its `LoopWorker` property to `next`. The Manager
-claims a `next` card only when a trusted user edited the page last. The worker sees the title,
-the blocks of the page that a trusted user edited last, and the comments that a trusted user
-wrote; everything else is withheld and named in the log. The Manager moves the card through
-the same states as on GitLab and posts a comment for each move: when it claims the card, when
-it releases it (and why), when the worker is stuck (and on what), and when it opens a review
-request or waits for its CI. A teammate sees those comments and the `LoopWorker` property
-change; the integration is their author.
+claims a `next` card only when a trusted user edited the page last, and its claim comment
+records the title as it was then. The worker sees that title, the blocks of the page that a
+trusted user edited last, and the comments that a trusted user wrote on the page; everything
+else is withheld and named in the log. Comments on a block inside the page (inline comments)
+aren't read at all, so trusted users comment on the page itself. The Manager moves the card
+through the same states as on GitLab and posts a comment for most moves: when it claims the
+card, when it releases it (and why), when the worker is stuck (and on what), and when it opens
+a review request or waits for its CI. Starting a round that fixes failed CI posts no comment.
+A teammate sees those comments and the `LoopWorker` property change; the integration is their
+author.
+
+Don't resolve LoopWorker's comments. Notion's API doesn't return resolved comments, so the
+Manager would lose count of failed attempts and could stop treating a released card as ready.
+The Manager treats a `working` or `ci` card as its own only when its own comments say that it
+claimed the card, so setting `working` by hand does nothing.
 
 Notion doesn't record who changed one property, only who edited the page last. If someone
 untrusted sets `next` and a trusted user then edits the page for any reason, the Manager reads
