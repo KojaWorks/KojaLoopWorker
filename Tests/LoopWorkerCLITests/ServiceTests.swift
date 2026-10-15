@@ -63,7 +63,8 @@ final class Lines: @unchecked Sendable {
         #expect(job["ExitTimeOut"] as? Int == 180)
         #expect(job["StandardOutPath"] as? String == root.appending(path: "lwhome/state/manager.out").path)
         #expect(job["StandardErrorPath"] as? String == job["StandardOutPath"] as? String)
-        #expect(job["ProcessType"] as? String == "Background")
+        #expect(job["ProcessType"] as? String == "Interactive")
+        #expect(job["SoftResourceLimits"] as? [String: Int] == ["NumberOfFiles": 16384])
         #expect(job["UserName"] == nil)
         #expect(launchctl.calls == [["print", "gui/501/dev.nevyn.loopworker"], ["bootstrap", "gui/501", s.agentPlist.path]])
     }
@@ -125,5 +126,24 @@ final class Lines: @unchecked Sendable {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: exe.path)
         #expect(invokedBinaryPath("loopworker", environment: ["PATH": "/nonexistent:\(bin.path)"]) == exe.path)
         #expect(invokedBinaryPath("/a/b/../c/loopworker") == "/a/c/loopworker")
+    }
+
+    @Test func B155_doctorWarnsAboutAnInstalledPlistThatPredatesTheLimits() throws {
+        let s = service(FakeLaunchctl(loaded: false))
+        let nowhere = root.appending(path: "no-daemon.plist").path
+        #expect(s.installedPlistCheck(daemonPath: nowhere) == nil)
+
+        try FileManager.default.createDirectory(at: s.agentPlist.deletingLastPathComponent(), withIntermediateDirectories: true)
+        var old = s.plist(daemon: false)
+        old["ProcessType"] = "Background"
+        old["SoftResourceLimits"] = nil
+        try PropertyListSerialization.data(fromPropertyList: old, format: .xml, options: 0).write(to: s.agentPlist)
+        let stale = try #require(s.installedPlistCheck(daemonPath: nowhere))
+        #expect(stale.level == .warn)
+        #expect(stale.detail.contains("Background priority with 256 open files"))
+        #expect(stale.remedy == "run `loopworker service install` again to rewrite it")
+
+        try s.plistData(daemon: false).write(to: s.agentPlist)
+        #expect(s.installedPlistCheck(daemonPath: nowhere)?.level == .ok)
     }
 }
