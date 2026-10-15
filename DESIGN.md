@@ -71,6 +71,10 @@ public protocol Forge: Sendable {
     func gitEnvironment() -> [String: String]                 // credentials for clone/fetch/push
     func cloneURL(for project: ProjectSpec) -> String
     func openReviewRequest(_ draft: ReviewRequestDraft) async throws -> ReviewRequest  // idempotent per branch
+    func openReviewRequest(for project: ProjectSpec, sourceBranch: String) async throws -> ReviewRequest?
+    func reviewFeedback(for review: ReviewRequest, project: ProjectSpec, vouchedAt: Date?) async throws -> ReviewFeedback
+    func postReviewNote(_ text: String, commit: String, on review: ReviewRequest, project: ProjectSpec) async throws -> Bool  // false: already posted
+    func replyToThread(_ thread: String, text: String, commit: String, on review: ReviewRequest, project: ProjectSpec) async throws -> ThreadReply
     func attach(_ file: URL, to project: ProjectSpec) async throws -> URL?           // nil: forge has no attachments
     func pipeline(for project: ProjectSpec, commit: String) async throws -> PipelineStatus?  // nil: no pipeline yet
     func baselineJobs(for project: ProjectSpec, ref: String, names: [String]) async throws -> [String: CIJobBaseline]
@@ -215,8 +219,10 @@ lost access to it, so a revoked connection never reaps running workers.
    names sets its own), and runs `reset.sh` (hot) or `provision.sh` (cold). When the push ledger
    says an earlier attempt of this card pushed that branch (it went stuck, and a human sent it
    back to ready), the Manager fetches, and if the forge still has the branch, resets to it
-   instead, and the brief tells the worker to continue from that work. If the branch is gone, the
-   card starts over from the base and its ledger entry is dropped.
+   instead, and the brief tells the worker to continue from that work. The commit that the slot
+   was reset to goes into the push ledger, so the finish leases on it even when the card's owner
+   pushed to the branch since. If the branch is gone, the card starts over from the base and its
+   ledger entry is dropped.
 3. **Spawn.** The Manager writes the snapshot, the brief and a launch script into the slot's
    state directory (never into the worktree) and starts `claude` in a tmux session. The worker
    gets `LOOPWORKER_OUTCOME`, the path where its outcome goes, and an MCP config that contains
@@ -227,12 +233,14 @@ lost access to it, so a revoked connection never reaps running workers.
    "Previous attempt" section: the last outcome that a slot of the project kept for this card
    and the Manager's three latest notes on it (`managerNotes`), fenced and labelled as
    LoopWorker's own output rather than content that the owner vouched for. The snapshot still
-   leaves those notes out.
+   leaves those notes out. When the resumed branch has an open review request, the card runs a
+   review round (see "Review rounds").
 4. **Work.** The worker implements, runs `verify.sh`, reviews its own diff with fresh-context
    subagents, optionally writes a review guide, commits, and writes the outcome:
 
    ```json
-   {"outcome": "done", "title": "...", "body": "markdown", "guide": "guide.html"}
+   {"outcome": "done", "title": "...", "body": "markdown", "guide": "guide.html",
+    "replies": {"<thread id>": "markdown"}}
    {"outcome": "stuck", "blocker": "markdown: what is missing and who can provide it"}
    ```
 
@@ -242,7 +250,9 @@ lost access to it, so a revoked connection never reaps running workers.
      as `stuck`), push, attach the files that the outcome names (the guide, and each
      `attachment:<path>` link or image in the body, such as `![after](attachment:after.png)`),
      open a draft review request assigned to the forge token's user (the card's owner), `markReview` (or, for a project
-     that waits for CI, `markVerifying`; see "Waiting for CI").
+     that waits for CI, `markVerifying`; see "Waiting for CI"). When the branch already has an
+     open review request, the Manager posts the replies and the body on it instead (see "Review
+     rounds").
    - An attached file must resolve (symlinks resolved) inside the slot's state directory, be
      not be one of the files that the Manager writes there (such as `worker.env`), be a
      regular non-empty file under 20 MB, not have a credential-like name, and not contain a
@@ -294,14 +304,56 @@ card branch, and writes `ci.md` into the slot's state directory: each failed job
 link, how it did on the base branch and the redacted tail of its log. CI logs are untrusted
 data, like card content: `ci.md` says so, fences the logs, and the brief tells the worker to
 read it as data. The worker fixes
-the failures and writes an outcome as usual; finish pushes under the same lease, gets the
-existing review request back from `openReviewRequest`, and returns the card to `verifying`
-with the new commit and the next round. A crash in a fix round releases the card like any
+the failures and writes an outcome as usual; finish pushes, leasing on the branch tip that the
+round started from, posts the outcome body as a note on the existing review request, and
+returns the card to `verifying` with the new commit and the next round. A crash in a fix round releases the card like any
 crash.
 
 The watch record is deleted whenever the Manager moves the card out of `verifying`. At startup
 and with every stranded-card sweep, each `verifying` card with a record is watched again; one
 without a record is marked stuck, because nothing else would ever move it on.
+
+## Review rounds
+
+A review round is a worker run on a card whose branch has an open review request: the card went
+to `review`, its owner and colleagues commented on the review request, and the owner moved the
+card back to `ready` (on GitLab, by adding `loopworker::next` again). The card resumes its
+pushed branch as usual. Before spawning, the Manager reads the feedback with `reviewFeedback`;
+a failed read releases the card without counting an attempt.
+
+The feedback holds every unresolved thread, and the plain comments created after the
+Manager's latest note on the review request (or after it opened), so a plain comment reaches
+one round only. A resolved thread means "don't do this", so the owner resolves the threads
+that the worker should leave alone. The Manager's own replies stay in their threads, marked as
+LoopWorker's from an earlier round, so the worker sees what it already claimed.
+
+Review notes are trusted like card content, against the snapshot's `vouchedAt`:
+
+- a note by the owner (the forge token's user) is trusted unless someone else edited it after
+  `vouchedAt`;
+- anyone else's note is trusted when it was created before `vouchedAt` and nobody but the owner
+  edited it after;
+- every other note is withheld, named in the log and in the brief;
+- with a nil `vouchedAt`, only the owner's notes are trusted.
+
+GitLab's `vouchedAt` is the card's trust cutoff, the time of the owner's `next` label event:
+moving the card back to `ready` vouches for the review as it is at that moment. Patch and
+Notion trust by author and record no time when a card was vouched for, so their `vouchedAt` is
+nil. GitLab reads who last edited a note over GraphQL, like the snapshot; REST's `updated_at`
+also changes when a thread is resolved and names nobody. The Manager redacts the notes, keeps
+50 threads and cuts each note to 4000 characters, saying what it cut.
+
+The brief gets a "Review feedback" section: the review request's URL, each thread with its id,
+position and fenced notes, and the withheld list. The worker addresses each thread, by changing
+the code or explaining why not, and writes a reply per thread in the outcome's `replies`.
+
+At finish, when the branch has an open review request, the Manager posts each reply into its
+thread, then the outcome body as a note on the review request. It never resolves a thread.
+Every post carries a hidden marker with the pushed commit, and a new review request's
+description carries one too, so a retried finish finds what it already posted and posts it
+only once. A reply that fails, or names a thread that doesn't exist, is logged and listed under
+the note; a failed note fails the finish, which is retried. The card then moves to `review`, or
+to `verifying`, as for any finish. CI fix rounds post their body as a note the same way.
 
 ## Reconcile
 
@@ -386,7 +438,7 @@ $LOOPWORKER_HOME/
   state/PAUSED                host killswitch; state/projects/<key>/PAUSED per project
   state/tmux                  the Manager's own tmux server socket
   state/ci/<card id>.json     CI watch record of a verifying card (the id percent-encoded)
-  state/pushes.json           push ledger: the branch and commit last pushed per card id, the push lease
+  state/pushes.json           push ledger: per card id, the branch and the commit that its next push leases on
   slots/<key>/<n>/            brief, snapshot, launch script, outcome, MCP config, ci.md;
                               last-outcome.json: the last finished outcome and its card id
 <clones_dir>/<key>/           the clone; its working tree tracks origin/<base>

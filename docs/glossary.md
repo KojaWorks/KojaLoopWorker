@@ -15,13 +15,15 @@ One term per concept. Code, docs, logs and commits use the term in the left colu
 | **State property** | The Notion select property that holds a card's state for the Manager alone (`LoopWorker` by default: `next`, `working`, `ci`, `review`, `stuck`), the counterpart of GitLab's `loopworker::*` labels. A team's own status property is never used. | status property, LoopWorker column |
 | **Verifying** | The card state between opening the review request and its CI passing, for projects that set `wait_for_ci`. No worker runs and no slot is held; the Manager polls the pipeline of the pushed commit. | waiting for CI, CI pending |
 | **Fix round** | A worker run that fixes a `verifying` card's failed CI on its existing branch and review request. | CI retry, rework |
+| **Review round** | A worker run on a card that its owner moved back to ready while its review request is open: the worker addresses the review feedback on the existing branch, and the Manager posts its replies and summary on the same review request. | review cycle, revision |
+| **Review feedback** | The unresolved threads and newer plain comments on a review request that a review round's worker gets, with only the notes that the trust check accepts. | review comments, MR comments |
 | **Pipeline** | The forge's CI run for one commit: a GitLab pipeline, or a GitHub commit's check runs taken together. | CI job (that is one part of it), build |
 | **Claim** | The Manager moving a ready card to `working` before it spawns a worker. | pick, take, assign |
 | **Release** | The Manager returning a `working` card to `ready` after a crash, hang or auth failure, with a note on the card. | reclaim, unclaim, bail |
 | **Outcome** | The JSON file that a worker writes as its last act: `done` (with review request text) or `stuck` (with the blocker). The worker's only output channel to the Manager. | result, exit signal |
 | **Attachment** | A file that a worker writes into its slot state directory and names in its outcome, as the `guide` or as `attachment:<path>` in the body. The Manager checks it and uploads it to the forge at finish. | upload, asset |
 | **Finish** | The Manager applying an outcome: pushing the branch, opening the review request and moving the card to `review` or `stuck`. | wind down, ship |
-| **Push ledger** | `state/pushes.json`: the branch and commit that the Manager last pushed for each card. A push leases on it, and a re-queued card whose branch is still on the forge resumes from it. | push record, lease file |
+| **Push ledger** | `state/pushes.json`: per card, the branch and the commit that the Manager last pushed, or that a resumed card or fix round started from. A push leases on it, and a re-queued card whose branch is still on the forge resumes from it. | push record, lease file |
 | **Review request** | A forge's request to merge a branch: a GitLab merge request, a GitHub pull request. | MR, PR (except when naming one forge's object) |
 | **Vouch** | A human's act that makes a card trusted: on GitLab, the token's user adding the `next` label; on Notion, a trusted user being the last to edit a card in `next`. | approve, authorize |
 | **Trusted user** | A Notion user listed in `[backlog.notion] trusted_users`. Their edits vouch for cards and their blocks and comments reach the worker. | allowed user, owner |
