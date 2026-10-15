@@ -120,7 +120,7 @@ extension Manager {
         }
         for c in candidates {
             guard let p = projects[c.key], !draining, !forceRequested,
-                  let card = cards.first(where: { $0.project.lowercased() == p.spec.path.lowercased() }),
+                  let card = cards.first(where: { $0.project.lowercased() == p.spec.path.lowercased() && !(claimBackoff[$0.ref.id].map { $0.until > now } ?? false) }),
                   let slot = p.slots.first(where: { $0.id == c.slot }), isFree(slot) else { continue }
             startWorker(card, on: SlotRef(key: c.key, id: c.slot))
             return
@@ -218,7 +218,20 @@ extension Manager {
             await abortStart(ref, card: card, contract: contract, why: "\(error)", broken: nil)
             return
         }
-        await acquireAndSpawn(ref, spec: spec, card: card, contract: contract, base: base, branch: branch, fix: nil, resuming: resuming)
+        // Read before acquiring, so a read that keeps failing doesn't provision a slot every time.
+        var snapshot: CardSnapshot?, reviewRound: WorkerBrief.ReviewRound?
+        if resuming {
+            do {
+                let read = try await self.snapshot(spec, card: card)
+                reviewRound = try await self.reviewRound(spec, card: card, branch: branch, vouchedAt: read.vouchedAt)
+                snapshot = read
+            } catch {
+                await releaseBeforeAcquire(ref, card: card, why: "\(error)")
+                return
+            }
+        }
+        await acquireAndSpawn(ref, spec: spec, card: card, contract: contract, base: base, branch: branch, fix: nil, resuming: resuming,
+                              snapshot: snapshot, reviewRound: reviewRound)
     }
 
     /// True when an earlier attempt of this card pushed `branch` and it is still on the forge,
@@ -247,7 +260,8 @@ extension Manager {
     /// A fix round or a resumed card resets the slot to the pushed card branch instead of the
     /// base branch.
     func acquireAndSpawn(_ ref: SlotRef, spec: SlotSpec, card: Card, contract: ProjectContract, base: String, branch: String,
-                         fix: FixRound?, resuming: Bool = false) async {
+                         fix: FixRound?, resuming: Bool = false, snapshot: CardSnapshot? = nil,
+                         reviewRound: WorkerBrief.ReviewRound? = nil) async {
         let dir = spec.stateDir
         let baseCommit: String
         do { baseCommit = try await deps.lifecycle.acquire(spec, contract: contract, base: fix == nil && !resuming ? base : branch, branch: branch) }
@@ -265,7 +279,8 @@ extension Manager {
         }
 
         do {
-            try await writeWorkerFiles(spec, card: card, contract: contract, base: base, branch: branch, fix: fix, resuming: resuming)
+            try await writeWorkerFiles(spec, card: card, contract: contract, base: base, branch: branch, fix: fix, resuming: resuming,
+                                       snapshot: snapshot, reviewRound: reviewRound)
         } catch {
             await abortStart(ref, card: card, contract: contract, why: "\(error)", broken: nil, fix: fix)
             return
@@ -283,17 +298,18 @@ extension Manager {
             $0.spawnedAt = clock.now()
         }
         if fix != nil { unwatch(card.ref.id) }
+        claimBackoff[card.ref.id] = nil
         let round = fix.map { " for CI fix round \($0.record.round + 1)" } ?? (resuming ? " resuming its pushed branch" : "")
         log.info("\(label(spec)): spawned worker\(round) for \(card.ref) on \(branch) at \(baseCommit.prefix(12)), base \(base), model \(model ?? "default")")
         watchFolderTrust(spec.session)
     }
 
     func writeWorkerFiles(_ spec: SlotSpec, card: Card, contract: ProjectContract, base: String, branch: String,
-                          fix: FixRound? = nil, resuming: Bool = false) async throws {
+                          fix: FixRound? = nil, resuming: Bool = false, snapshot read: CardSnapshot? = nil,
+                          reviewRound: WorkerBrief.ReviewRound? = nil) async throws {
         let dir = spec.stateDir
         let snapshot: CardSnapshot
-        do { snapshot = try await deps.backlog.snapshot(card) }
-        catch { throw StepError(step: "reading the card's snapshot", error: error) }
+        if let read { snapshot = read } else { snapshot = try await self.snapshot(spec, card: card) }
         for line in snapshot.excluded { log.info("\(label(spec)): withheld from \(card.ref): \(line)") }
         var markdown = snapshot.markdown
         if !snapshot.excluded.isEmpty {
@@ -305,7 +321,6 @@ extension Manager {
             WorkerBrief.CIFix(review: $0.record.review, commit: $0.record.sha, ciFile: ciFile,
                               round: $0.record.round + 1, rounds: contract.ci.fixAttempts)
         }
-        let reviewRound = resuming && fix == nil ? try await reviewRound(spec, card: card, branch: branch, vouchedAt: snapshot.vouchedAt) : nil
         let brief = WorkerBrief(card: card, project: spec.project, slot: spec, baseBranch: base, branch: branch,
                                 snapshotFile: snapshotFile, excluded: snapshot.excluded, contract: contract, ciFix: ciFix,
                                 resuming: resuming, previousAttempt: await previousAttempt(spec, card: card),
@@ -348,6 +363,26 @@ extension Manager {
         } catch {
             throw StepError(step: "writing the worker's files in \(dir.path)", error: error)
         }
+    }
+
+    func snapshot(_ spec: SlotSpec, card: Card) async throws -> CardSnapshot {
+        do { return try await deps.backlog.snapshot(card) }
+        catch { throw StepError(step: "reading the card's snapshot", error: error) }
+    }
+
+    /// A start failed before the slot was acquired: releases the card (not counted: the read
+    /// failed, not the worker) and backs off claiming it, 30 s doubling to 10 min, so a read
+    /// that fails every time doesn't loop claim and release every tick.
+    func releaseBeforeAcquire(_ ref: SlotRef, card: Card, why: String) async {
+        guard let spec = slot(ref)?.spec else { return }
+        let failures = (claimBackoff[card.ref.id]?.failures ?? 0) + 1
+        let delay = min(30 * pow(2, Double(failures - 1)), 600)
+        claimBackoff[card.ref.id] = (clock.now().addingTimeInterval(delay), failures)
+        log.error("\(label(spec)): couldn't start a worker for \(card.ref): \(why); releasing it and not claiming it again for \(Int(delay)) s (\(failures) failure(s) in a row)")
+        do { try await deps.backlog.release(card, reason: "Couldn't start a worker: \(why)", countsAsAttempt: false) }
+        catch { log.error("\(label(spec)): can't release \(card.ref): \(error); the stranded-card sweep retries") }
+        try? FileManager.default.removeItem(at: cardRecordFile(spec))
+        free(ref)
     }
 
     /// The open review request of `branch` and its capped, redacted feedback; nil when none is

@@ -318,8 +318,10 @@ without a record is marked stuck, because nothing else would ever move it on.
 A review round is a worker run on a card whose branch has an open review request: the card went
 to `review`, its owner and colleagues commented on the review request, and the owner moved the
 card back to `ready` (on GitLab, by adding `loopworker::next` again). The card resumes its
-pushed branch as usual. Before spawning, the Manager reads the feedback with `reviewFeedback`;
-a failed read releases the card without counting an attempt.
+pushed branch as usual. Before it acquires the slot, the Manager reads the snapshot and the
+feedback with `reviewFeedback`. A failed read releases the card without counting an attempt, and
+the Manager doesn't claim that card again for 30 s, doubling up to 10 min while it keeps failing,
+so a read that always fails never provisions a slot.
 
 The feedback holds every unresolved thread, and the plain comments created after the last
 round read the feedback (or after the review request opened), so a plain comment reaches one

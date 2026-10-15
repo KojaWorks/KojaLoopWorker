@@ -165,6 +165,8 @@ public actor Manager {
     var lastStatusError: String?
     /// `verifying` cards whose CI the Manager watches, by card id.
     var ciWatches: [String: CIWatch] = [:]
+    /// Cards whose start failed before acquiring a slot, by card id: not claimed again until `until`.
+    var claimBackoff: [String: (until: Date, failures: Int)] = [:]
 
     public init(config: HostConfig, dependencies: ManagerDependencies, clock: any ManagerClock = SystemClock()) {
         self.config = config

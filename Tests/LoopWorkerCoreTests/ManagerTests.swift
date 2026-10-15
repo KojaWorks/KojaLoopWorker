@@ -536,16 +536,30 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.log.contains("withheld from g/app#12's review round: note 9 by @mallory in thread d2: posted late", level: .info))
     }
 
-    @Test("B206: no review section without feedback; a failed read releases the card without counting an attempt")
+    @Test("B206, B211: a failed feedback read releases the card before acquiring, uncounted, and backs off its claim; no section without feedback")
     func aReviewRoundWithoutFeedback() async throws {
         let h = try await spawned()
         let review = try await requeuedFromReview(h)
+        let acquires = { h.lifecycle.calls.filter { $0.hasPrefix("acquire") }.count }
         h.forge.state { $0.failFeedback = FakeError("discussions failed") }
         await h.cycle()
-        #expect(h.tmux.spawned.count == 1)
+        #expect(h.tmux.spawned.count == 1 && acquires() == 1)
         #expect(h.backlog.writes.last == .release("id-12", reason: "Couldn't start a worker: reading the review feedback on \(review.display): discussions failed", countsAsAttempt: false))
+        #expect(h.log.contains("couldn't start a worker for g/app#12: reading the review feedback on g/app!1: discussions failed; releasing it and not claiming it again for 30 s (1 failure(s) in a row)", level: .error))
+
+        let claims = { h.backlog.writes.filter { $0 == .claim("id-12") }.count }
+        let before = claims()
+        h.clock.advance(20)
+        await h.cycle()
+        #expect(claims() == before)  // backing off
+        h.clock.advance(60)  // past the backoff and the fill interval
+        await h.cycle()
+        #expect(claims() == before + 1)
+        #expect(h.log.contains("not claiming it again for 60 s (2 failure(s) in a row)", level: .error))
+        #expect(acquires() == 1)
 
         h.forge.state { $0.failFeedback = nil }
+        h.clock.advance(61)
         await h.cycle()
         #expect(h.tmux.spawned.count == 2)
         let brief = try String(contentsOf: h.stateDir().appending(path: "brief.md"), encoding: .utf8)
