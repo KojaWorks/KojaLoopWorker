@@ -724,24 +724,22 @@ extension Manager {
         let existing = try await step("looking for an open review request of \(branch)") {
             try await forge.openReviewRequest(for: project, sourceBranch: branch)
         }
-        let review: ReviewRequest
-        if let existing {
-            review = existing
+        if existing == nil, !replies.isEmpty {
+            let ids = replies.keys.sorted()
+            log.warning("\(label(spec)): \(card.ref)'s worker replied to threads \(ids.joined(separator: ", ")), but \(branch) has no open review request; adding them to the new one's description")
+            text += "\n\nLoopWorker didn't post the worker's replies to threads " + ids.map(Self.inlineCode).joined(separator: ", ")
+                + ": the branch had no open review request.\n\n" + ids.map { "\(Self.inlineCode($0)):\n\n\(replies[$0]!)" }.joined(separator: "\n\n")
+        }
+        let cardLine = card.url.map { "Card: [\(card.ref.display)](\($0.absoluteString))" } ?? "Card: \(card.ref.display)"
+        let draft = ReviewRequestDraft(
+            project: spec.project, card: card, sourceBranch: branch, targetBranch: base, title: title,
+            body: "\(text)\n\n---\n\(cardLine)\(guideLine)\n", draft: spec.project.draftReviewRequests, assignToOwner: true,
+            marker: ReviewMarker.round(round.id, commit: commit, read: round.readAt))
+        // On an open one this only assigns the owner when it has no assignee.
+        let review = try await step("opening the review request") { try await forge.openReviewRequest(draft) }
+        if existing != nil {
             try await postRound(spec, card: card, review: review, round: round, commit: commit,
                                 text: text + (guideLine.isEmpty ? "" : "\n" + guideLine), replies: replies)
-        } else {
-            if !replies.isEmpty {
-                let ids = replies.keys.sorted()
-                log.warning("\(label(spec)): \(card.ref)'s worker replied to threads \(ids.joined(separator: ", ")), but \(branch) has no open review request; adding them to the new one's description")
-                text += "\n\nLoopWorker didn't post the worker's replies to threads " + ids.map(Self.inlineCode).joined(separator: ", ")
-                    + ": the branch had no open review request.\n\n" + ids.map { "\(Self.inlineCode($0)):\n\n\(replies[$0]!)" }.joined(separator: "\n\n")
-            }
-            let cardLine = card.url.map { "Card: [\(card.ref.display)](\($0.absoluteString))" } ?? "Card: \(card.ref.display)"
-            let draft = ReviewRequestDraft(
-                project: spec.project, card: card, sourceBranch: branch, targetBranch: base, title: title,
-                body: "\(text)\n\n---\n\(cardLine)\(guideLine)\n", draft: spec.project.draftReviewRequests, assignToOwner: true,
-                marker: ReviewMarker.round(round.id, commit: commit, read: round.readAt))
-            review = try await step("opening the review request") { try await forge.openReviewRequest(draft) }
         }
         guard waitForCI else {
             try await step("moving \(card.ref) to review") { try await self.deps.backlog.markReview(card, review: review) }

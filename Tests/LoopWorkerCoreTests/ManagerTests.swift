@@ -412,7 +412,7 @@ func fileMode(_ url: URL) throws -> Int {
         h.clock.advance(31)
         await h.cycle()
         // The retry finds the review request open, and its description already marks this round.
-        #expect(h.forge.state.get.openCalls.count == 1)
+        #expect(h.forge.state.get.openCalls.count == 2 && h.forge.state.get.opened.count == 1)
         let marker = try #require(h.forge.state.get.opened.first?.marker)
         #expect(marker.hasPrefix("<!-- loopworker:round=") && marker.hasSuffix(" commit=commit-1 -->"))
         #expect(h.forge.state.get.notes.isEmpty)
@@ -587,7 +587,8 @@ func fileMode(_ url: URL) throws -> Int {
         h.tmux.set("lw_g--app_0", alive: false)
         await h.cycle()
         let f = h.forge.state.get, host = await h.manager.hostName
-        #expect(f.opened.count == 1 && f.openCalls.count == 1)
+        #expect(f.opened.count == 1 && f.openCalls.count == 2)
+        #expect(f.openCalls.last?.assignToOwner == true)  // B186: an open one without an assignee gets the owner
         #expect(f.replies.map { [$0.review.absoluteString, $0.thread, $0.text] } == [[review.url.absoluteString, "d1", "Renamed it."]])
         #expect(f.notes.first?.marker.contains(" commit=commit-2 read=") == true)
         #expect(f.notes.map(\.text) == ["""

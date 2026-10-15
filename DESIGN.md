@@ -331,7 +331,10 @@ records the read time in the slot's `card.json` and puts it in the round's note 
 that the worker should leave alone. The Manager's own replies stay in their threads, marked as
 LoopWorker's from an earlier round, so the worker sees what it already claimed.
 
-Review notes are trusted like card content, against the snapshot's `vouchedAt`:
+The owner, for review feedback, is the forge token's user: the user that pushes, opens the
+review request and gets it assigned. With a GitLab backlog and forge that is the card's owner;
+with Patch or Notion it is whoever the forge token belongs to. Review notes are trusted like card
+content, against the snapshot's `vouchedAt`:
 
 - a note by the owner (the forge token's user) is trusted unless someone else edited it after
   `vouchedAt`;
@@ -351,8 +354,8 @@ The brief gets a "Review feedback" section: the review request's URL, each threa
 position and fenced notes, and the withheld list. The worker addresses each thread, by changing
 the code or explaining why not, and writes a reply per thread in the outcome's `replies`.
 
-At finish, when the branch has an open review request, the Manager posts each reply into its
-thread, then the outcome body as a note on the review request. It never resolves a thread.
+At finish, when the branch has an open review request, the Manager assigns it to the owner if
+it has no assignee, posts each reply into its thread, then the outcome body as a note on the review request. It never resolves a thread.
 Every post carries a hidden marker that names the round by its claim time (kept in
 `card.json`, so it survives a restart), and a new review request's description carries one
 too, so a retried finish finds what it already posted and posts it only once, while a later
