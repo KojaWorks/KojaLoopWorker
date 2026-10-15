@@ -382,8 +382,9 @@ extension Manager {
         }
     }
 
-    /// Resumes watching each `verifying` card that has a watch record, and marks the others
-    /// stuck, since nothing else would ever move them on. Then deletes the records of served
+    /// Resumes watching each `verifying` card that this Manager holds and has a watch record,
+    /// and marks the others that it holds stuck, since nothing else would ever move them on.
+    /// Cards that another Manager holds are left alone. Then deletes the records of served
     /// cards that are gone or no longer `verifying`. Runs at startup and with the stranded-card
     /// sweep; a failed read changes nothing.
     func sweepVerifying() {
@@ -397,7 +398,11 @@ extension Manager {
                 log.warning("CI sweep: can't read verifying cards: \(error); changing nothing")
                 return
             }
-            for card in cards { await self.resumeWatch(card) }
+            var held: [Card] = []
+            for card in cards {
+                if await self.heldElsewhere(card) != nil { held.append(card) } else { await self.resumeWatch(card) }
+            }
+            await self.noteHeldElsewhere(held, in: .verifying)
             await self.pruneWatchRecords()
         }
     }

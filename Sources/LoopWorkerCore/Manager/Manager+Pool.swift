@@ -130,8 +130,9 @@ extension Manager {
                 adopted.insert(s.spec.session)
                 continue
             }
-            guard let fresh, fresh.state == .working else {
-                log.info("\(label(s.spec)): \(record.ref) is \(fresh?.state.rawValue ?? "gone") now; clearing the slot")
+            guard let fresh, fresh.state == .working, heldElsewhere(fresh) == nil else {
+                let now = fresh.map { heldElsewhere($0).map { "held by \($0)" } ?? $0.state.rawValue } ?? "gone"
+                log.info("\(label(s.spec)): \(record.ref) is \(now) now; clearing the slot")
                 try? fm.removeItem(at: cardRecordFile(s.spec))
                 try? fm.removeItem(at: s.spec.outcomeFile)
                 if !p.spec.hot {
@@ -371,12 +372,25 @@ extension Manager {
         card.holder.flatMap { $0 == holder ? nil : $0 }
     }
 
+    /// Logs once per card and holder that another Manager holds `card`.
+    func leaveHeld(_ card: Card, by other: String) {
+        guard loggedHeld.insert("\(card.ref.id)|\(other)").inserted else { return }
+        log.warning("\(card.ref) is held by \(other); leaving it. Two Managers serve \(card.project); if \(other) is gone for good, move \(card.ref) back to ready")
+    }
+
+    /// Replaces the held-elsewhere cards in `state` with those that a sweep just read.
+    func noteHeldElsewhere(_ cards: [Card], in state: CardState) {
+        heldElsewhereCards[state] = cards
+        for card in cards { leaveHeld(card, by: card.holder ?? "") }
+    }
+
     func holds(_ ref: CardRef) -> Bool {
         projects.values.contains { $0.slots.contains { $0.card?.ref == ref } }
     }
 
-    /// Releases `working` cards that no slot holds. A failed read changes nothing; each card
-    /// is re-read before its release so a finish that just moved it is not undone.
+    /// Releases `working` cards that no slot holds and no other Manager holds. A failed read
+    /// changes nothing; each card is re-read before its release so a finish that just moved it
+    /// is not undone.
     func sweepStranded() {
         let specs = order.compactMap { projects[$0]?.spec }
         guard !specs.isEmpty else { return }
@@ -388,10 +402,19 @@ extension Manager {
                 log.warning("stranded-card sweep: can't read working cards: \(error); changing nothing")
                 return
             }
+            var held: [Card] = []
             for card in cards {
+                if await self.heldElsewhere(card) != nil {
+                    held.append(card)
+                    continue
+                }
                 guard await !self.holds(card.ref),
                       let fresh = try? await backlog.card(card.ref), fresh.state == .working,
                       await !self.holds(card.ref) else { continue }
+                if await self.heldElsewhere(fresh) != nil {
+                    held.append(fresh)
+                    continue
+                }
                 do {
                     try await backlog.release(fresh, reason: "The Manager lost track of this card's worker.", countsAsAttempt: false)
                     log.warning("released \(card.ref): no slot of this Manager held it")
@@ -399,6 +422,7 @@ extension Manager {
                     log.error("can't release stranded \(card.ref): \(error); retrying at the next sweep")
                 }
             }
+            await self.noteHeldElsewhere(held, in: .working)
         }
     }
 

@@ -169,6 +169,10 @@ public actor Manager {
     var ciWatches: [String: CIWatch] = [:]
     /// Cards whose start failed before acquiring a slot, by card id: not claimed again until `until`.
     var claimBackoff: [String: (until: Date, failures: Int)] = [:]
+    /// `working` and `verifying` cards that another Manager holds, as the last sweep of each state saw them.
+    var heldElsewhereCards: [CardState: [Card]] = [:]
+    /// `<card id>|<holder>` of each held-elsewhere card already logged.
+    var loggedHeld: Set<String> = []
 
     public init(config: HostConfig, dependencies: ManagerDependencies, clock: any ManagerClock = SystemClock()) {
         self.config = config
@@ -444,6 +448,9 @@ public actor Manager {
                     })
             },
             ci: ciStatus(),
+            held: ([CardState.working, .verifying].flatMap { heldElsewhereCards[$0] ?? [] }).map {
+                .init(card: $0.ref.display, cardURL: $0.url, state: $0.state.rawValue, holder: $0.holder ?? "")
+            },
             log: Array(deps.recentLines().suffix(50)))
         do {
             try status.write(to: ManagerStatus.file(stateDir: stateDir))

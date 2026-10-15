@@ -123,6 +123,20 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.log.contains("can't re-read g/app#1 after claiming it", level: .error))
     }
 
+    @Test("B216: a worker whose card another Manager now holds is reaped without a backlog write")
+    func workerOnACardHeldElsewhereIsAbandoned() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        h.addCard(1)
+        try await h.boot()
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 1)
+        h.backlog.state { $0.cards["id-1"]?.holder = "rival.local:/srv/lw" }
+        await h.cycle()
+        #expect(h.tmux.killed.contains("lw_g--app_0"))
+        #expect(h.backlog.writes == [.claim("id-1")])
+        #expect(h.log.contains("abandoning g/app#1: card is held by rival.local:/srv/lw now", level: .warning))
+    }
+
     @Test func aClaimWhoseResponseWasLostButLandedIsKept() async throws {
         let h = try ManagerHarness(projects: oneColdProject)
         h.addCard(1)
@@ -919,6 +933,58 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(!writes.contains { if case .release("id-1", _, _) = $0 { true } else { false } })
         let slots = try h.status().projects[0].slots
         #expect(slots[0].state == "busy" && slots[0].card == "g/app#1")
+    }
+
+    func addCard(_ h: ManagerHarness, _ n: Int, state: CardState, holder: String?) {
+        var card = h.addCard(n, state: state)
+        card.holder = holder
+        h.backlog.add(card)
+    }
+
+    @Test("B215: the sweep releases stranded cards it or nobody holds, and leaves another Manager's, logged once and listed")
+    func sweepLeavesCardsHeldElsewhere() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        addCard(h, 1, state: .working, holder: h.manager.holder)
+        addCard(h, 2, state: .working, holder: nil)
+        addCard(h, 3, state: .working, holder: "rival.local:/srv/lw")
+        try await h.boot()
+        h.clock.advance(Manager.sweepInterval)
+        await h.cycle()
+
+        let releases = h.backlog.writes.compactMap { if case .release(let id, _, _) = $0 { id } else { nil } }
+        #expect(Set(releases) == ["id-1", "id-2"])
+        #expect(h.backlog.card(id: "id-3")?.state == .working)
+        #expect(h.log.lines.get.filter { $0.message.hasPrefix("g/app#3 is held by rival.local:/srv/lw; leaving it.") }.count == 1)
+        #expect(try h.status().held == [.init(card: "g/app#3", cardURL: URL(string: "https://forge.example/g/app/-/issues/3"),
+                                               state: "working", holder: "rival.local:/srv/lw")])
+    }
+
+    @Test("B215: startup clears a slot whose card another Manager holds now, without releasing it")
+    func startupClearsASlotWhoseCardIsHeldElsewhere() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        addCard(h, 1, state: .working, holder: "rival.local:/srv/lw")
+        try FileManager.default.createDirectory(at: h.stateDir(), withIntermediateDirectories: true)
+        try record(1, slot: 0).write(h.stateDir().appending(path: "card.json"))
+        h.tmux.set("lw_g--app_0")
+        try await h.boot()
+        #expect(!h.tmux.exists("lw_g--app_0"))
+        #expect(!FileManager.default.fileExists(atPath: h.stateDir().appending(path: "card.json").path))
+        #expect(h.backlog.writes.isEmpty)
+        #expect(h.log.contains("g/app#1 is held by rival.local:/srv/lw now; clearing the slot"))
+    }
+
+    @Test("B215: a verifying card that another Manager holds is neither watched nor marked stuck")
+    func verifyingCardHeldElsewhereIsLeftAlone() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        addCard(h, 5, state: .verifying, holder: "rival.local:/srv/lw")
+        addCard(h, 6, state: .verifying, holder: nil)
+        try await h.boot()
+        #expect(h.backlog.writes.map { if case .markStuck(let id, _) = $0 { id } else { "" } } == ["id-6"])
+        let status = try h.status()
+        #expect(status.ci?.isEmpty == true)
+        #expect(status.held?.map(\.card) == ["g/app#5"])
+        #expect(status.held?.first?.state == "verifying")
+        #expect(h.log.contains("g/app#5 is held by rival.local:/srv/lw; leaving it", level: .warning))
     }
 
     @Test func extraSlotBeyondThePoolIsRetiredWhenItsCardMovedOn() async throws {

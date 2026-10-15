@@ -575,7 +575,8 @@ extension Manager {
         let cap = (projects[ref.key]?.contract?.wallclockCapMinutes ?? 90) * 60
         let observation = SlotObservation(
             cardState: fresh?.state, sessionAlive: alive, authFailed: deps.pane.showsAuthFailure(pane),
-            outcomeAge: outcomeAge, runningFor: current.spawnedAt.map { now.timeIntervalSince($0) } ?? 0)
+            outcomeAge: outcomeAge, runningFor: current.spawnedAt.map { now.timeIntervalSince($0) } ?? 0,
+            heldBy: fresh.flatMap(heldElsewhere))
         let decision = Reconciler.decide(observation, policy: ReconcilePolicy(wallclockCap: cap))
         let target = fresh ?? card
 

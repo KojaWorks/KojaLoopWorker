@@ -63,6 +63,10 @@ public enum StatusReport {
                 out.append("  \(c.card) round \(c.round) at \(c.commit): \(c.state), pushed \(duration(now.timeIntervalSince(c.since))) ago, \(c.url.absoluteString)")
             }
         }
+        if let held = s.held, !held.isEmpty {
+            out.append("held by other Managers (if one is gone for good, move its cards back to ready):")
+            for h in held { out.append("  \(h.card) (\(h.state)) held by \(h.holder)") }
+        }
         if !s.log.isEmpty {
             out.append("recent log:")
             out += s.log.suffix(10).map { "  \($0)" }
