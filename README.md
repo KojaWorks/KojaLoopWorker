@@ -29,6 +29,17 @@ The host also needs `git`, the Claude Code CLI (`claude`), `git-lfs` for repos t
 LFS, `storygrafter` for projects that ask for review guides, and a container engine if a
 project's lifecycle scripts start containers. macOS 14 or later.
 
+## Set up with your coding agent
+
+Give your coding agent this line:
+
+> Run `loopworker prompt` and follow its instructions to set up LoopWorker on this host.
+
+`loopworker prompt` prints what it finds on this host (the config, which tokens `secrets.env`
+sets, whether a Manager runs; never a token value), then step-by-step setup instructions. The
+agent asks you which backlog, forge and projects to use and who may vouch for cards, writes the
+config, and leaves every token value for you to paste.
+
 ## Configuration
 
 Everything lives in `$LOOPWORKER_HOME`, which defaults to `~/.loopworker`. `config.toml` is the
@@ -152,6 +163,7 @@ A card that crashes `max_attempts` times becomes stuck. Closing an issue or remo
 ## Running
 
 ```bash
+loopworker prompt              # setup instructions for a coding agent, with this host's context
 loopworker doctor              # check the host first
 loopworker                     # run the Manager in the foreground (same as `loopworker run`)
 ```
