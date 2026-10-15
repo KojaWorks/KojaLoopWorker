@@ -116,7 +116,21 @@ public actor PatchBacklog: Backlog {
         ], .object(["status": .string(config.status.working)]))
         guard !changed.isEmpty else { return false }
         let host = holder.split(separator: ":", maxSplits: 1).first.map(String.init) ?? holder
-        try await appendNote(r.id, "LoopWorker on \(host) is working on this card.", kind: "claim", extra: ["holder": .string(holder)])
+        let record = { try await self.appendNote(r.id, "LoopWorker on \(host) is working on this card.", kind: "claim", extra: ["holder": .string(holder)]) }
+        do {
+            do { try await record() } catch {
+                log.warning("\(card.ref.display): recording the claim's holder failed: \(error); retrying once")
+                try await record()
+            }
+        } catch {
+            // Without its holder, the working card would read as theirs to every Manager's sweep.
+            let previous = r.status ?? "(none)"
+            _ = try await client.patch(config.roadmapTable, [
+                URLQueryItem(name: "id", value: "eq.\(r.id)"), URLQueryItem(name: "status", value: "eq.\(config.status.working)"),
+            ], .object(["status": r.status.map(JSON.string) ?? .null]))
+            log.error("\(card.ref.display): can't record the claim's holder: \(error); returned the card to status \(previous) and skipped it")
+            return false
+        }
         return true
     }
 

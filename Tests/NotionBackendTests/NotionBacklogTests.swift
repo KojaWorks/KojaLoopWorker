@@ -436,6 +436,40 @@ private let releaseText = "LoopWorker released this card:\n\nrestart"
         #expect(try await backlog.card(CardRef(id: page, display: "x"))?.holder == testHolder)
     }
 
+    @Test("B219: a claim comment that fails once is retried; twice, and the card goes back to next and the claim is skipped")
+    func claimCommentFailures() async throws {
+        let once = FakeNotion()
+        once.addDatabase()
+        let p1 = once.addPage(1)
+        once.queued["POST /v1/comments"] = [(500, [:], .object(["message": "oops"]))]
+        #expect(try await make(once).claim(card(p1, .ready), holder: testHolder) == true)
+        #expect(once.commentTexts(p1).count == 1)
+
+        let twice = FakeNotion()
+        twice.addDatabase()
+        let p2 = twice.addPage(1)
+        twice.queued["POST /v1/comments"] = [(500, [:], .object(["message": "oops"])), (500, [:], .object(["message": "oops"]))]
+        let log = LogRecorder()
+        #expect(try await make(twice, log: log).claim(card(p2, .ready), holder: testHolder) == false)
+        #expect(twice.state(p2) == "next")
+        #expect(twice.commentTexts(p2).isEmpty)
+        #expect(log.lines.contains { $0.contains("can't post the claim comment") && $0.contains("a trusted user sets next again") })
+    }
+
+    @Test("B219: a retried claim comment whose first post landed still wins")
+    func retriedClaimWhoseFirstPostLandedWins() async throws {
+        let fake = FakeNotion()
+        fake.addDatabase()
+        let page = fake.addPage(1)
+        fake.afterComment = {
+            guard fake.comments[page]?.count == 1, case .object(var landed) = fake.comments[page]![0] else { return }
+            landed["id"] = .string(id(99, "cc"))  // the first post, whose response was lost, sits before the retry's
+            fake.comments[page]!.insert(.object(landed), at: 0)
+        }
+        #expect(try await make(fake).claim(card(page, .ready), holder: testHolder) == true)
+        #expect(fake.requests.filter { $0.httpMethod == "DELETE" }.isEmpty)
+    }
+
     @Test func B196_aClaimThatLostToAnOlderClaimDeletesItsComment() async throws {
         let fake = FakeNotion()
         fake.addDatabase()

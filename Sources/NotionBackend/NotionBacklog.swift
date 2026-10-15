@@ -145,12 +145,25 @@ public actor NotionBacklog: Backlog {
             return false
         }
         try await setState(card.ref.id, "working")
-        let nonce = UUID().uuidString.prefix(8).lowercased()
-        let mine = try await post(card.ref.id, .claim(holder: holder, nonce: nonce), [(ManagerComment.vouchedTitlePrefix + title, nil)])
+        let claim = ManagerComment.claim(holder: holder, nonce: String(UUID().uuidString.prefix(8).lowercased()))
+        let postClaim = { try await self.post(card.ref.id, claim, [(ManagerComment.vouchedTitlePrefix + title, nil)]) }
+        let mine: String
+        do {
+            do { mine = try await postClaim() } catch {
+                log.warning("\(card.ref.display): posting the claim comment failed: \(error); retrying once")
+                mine = try await postClaim()
+            }
+        } catch {
+            // Without its claim comment, the working card would carry no holder, and no vouched title.
+            try await setState(card.ref.id, "next")
+            log.error("\(card.ref.display): can't post the claim comment: \(error); set \(config.stateProperty) back to next and skipped the card. If it doesn't come back as ready, a trusted user sets next again")
+            return false
+        }
         let ours = try await comments(card.ref.id).filter { $0.author == me && !stale.contains($0.id) }
         // The claims after the integration's newest other comment are this round's.
         let round = ours.reversed().prefix { ManagerComment.kind($0.text)?.isClaim == true }.reversed()
-        guard let winner = round.first, winner.id != mine else { return true }
+        // A retried post whose first try landed leaves two claims with this claim's nonce; both are this one.
+        guard let winner = round.first, !winner.text.hasPrefix(claim.header) else { return true }
         log.info("claim lost for \(card.ref.display): the older claim comment \(winner.id) won the race")
         do { _ = try await client.request("DELETE", "comments/\(mine)") }
         catch { log.error("\(card.ref.display): can't delete the lost claim comment \(mine): \(error)") }

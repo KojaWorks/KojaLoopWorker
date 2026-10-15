@@ -368,6 +368,26 @@ private func make(_ fake: FakePatch, _ patchKeys: String = "", log: LogRecorder 
         #expect(fake.rows["patch_blocks"]!.count == 1)
     }
 
+    @Test("B218: a claim block that fails once is retried; twice, and the card goes back to its status and the claim is skipped")
+    func claimBlockFailures() async throws {
+        let fake = FakePatch()
+        fake.rows["roadmap"] = [card(1), card(2)]
+        let log = LogRecorder()
+        let backlog = try make(fake, log: log)
+        let cards = try await backlog.workable(in: [app])
+
+        fake.restStatus = ["POST": [500]]
+        #expect(try await backlog.claim(try #require(cards.first { $0.number == "1" }), holder: testHolder))
+        #expect(fake.rows["patch_blocks"]!.count == 1)
+        #expect(try await backlog.card(CardRef(id: "u1", display: "~1"))?.holder == testHolder)
+
+        fake.restStatus = ["POST": [500, 500]]
+        #expect(try await backlog.claim(try #require(cards.first { $0.number == "2" }), holder: testHolder) == false)
+        #expect(fake.rows["roadmap"]![1]["status"] == .string("Backlog"))
+        #expect(fake.rows["patch_blocks"]!.count == 1)
+        #expect(log.lines.contains { $0.hasPrefix("~2: can't record the claim's holder:") && $0.hasSuffix("returned the card to status Backlog and skipped it") })
+    }
+
     @Test("B218: the holder is the owner's last claim block unless a release follows it")
     func holderFollowsClaimAndReleaseBlocks() async throws {
         let fake = FakePatch()

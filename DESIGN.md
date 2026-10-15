@@ -401,6 +401,15 @@ Manager saves in `state/holder` on its first start so a renamed host keeps it. A
 | Patch | A `claim` block appended to the card's page body after the claim's PATCH lands, with `content.holder`. Only the PAT owner's blocks count; a later `release` or `failed-attempt` block clears it. |
 | Notion | The claim comment's header, `LoopWorker claimed this card (holder <id>, <nonce>).` The holder is the winner that `claim` picks: the oldest of the consecutive claim comments within 120 s of the newest one, since a losing claim stays until its Manager deletes it. A later release comment clears it. |
 
+GitLab posts the claim note before it moves the labels, so a card is never `working` without
+its holder. Patch's claim is one compare-and-set PATCH, and Notion's race resolution needs
+`working` written before the claim comment, so both write the holder right after the claim
+lands. A holder write that fails is retried once; then the card goes back to the state that it
+came from and the claim is skipped. Another Manager's sweep that reads the card between the two
+writes sees no holder and may release it; the claiming Manager's re-read then finds the card no
+longer `working` and starts no worker. On Notion the card can then need a trusted user to set
+`next` again, when the claim comment lands after the release comment.
+
 A Manager touches only the cards that it holds, or that nobody holds (claimed by a LoopWorker
 without holder ids, or after a release):
 
