@@ -91,6 +91,22 @@ import Testing
         #expect(h.forge.state.get.pipelineCalls.isEmpty)
     }
 
+    @Test("B205: a watch of a project that left the config keeps reading CI and moves to review, never merging")
+    func projectLeftTheConfig() async throws {
+        let h = try await finished("ci_then_merge")
+        try h.writeConfig(projects: "")
+        h.clock.advance(121)
+        await h.cycle()
+        #expect(h.forge.state.get.pipelineCalls == ["commit-1"])
+        #expect(h.backlog.card(id: "id-12")?.state == .verifying)
+        h.forge.state { $0.pipelines["commit-1"] = PipelineStatus(state: .passed, url: pipelineURL) }
+        h.clock.advance(121)
+        await h.cycle()
+        #expect(h.backlog.card(id: "id-12")?.state == .review)
+        #expect(h.backlog.state.get.reviewNotes["id-12"] == "CI passed on `commit-1`: \(pipelineURL.absoluteString)")
+        #expect(h.forge.state.get.mergeCalls.isEmpty)
+    }
+
     @Test("B206: a failed markMerged backs off, and the retry merges again")
     func markMergedFails() async throws {
         let h = try await finished("merge")

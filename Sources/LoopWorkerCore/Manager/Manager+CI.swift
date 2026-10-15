@@ -117,10 +117,10 @@ extension Manager {
     }
 
     /// The plan for a watched card under its project's current config. A project that left
-    /// the config counts as `finish = draft` without `wait_for_ci`, so it never merges.
+    /// the config, or drains, waits for CI and never merges.
     func currentPlan(_ r: CIWatchRecord) -> VerifyingPlan? {
-        let p = servedProject(r.project)
-        return Self.verifyingPlan(p?.spec ?? ProjectSpec(path: r.project), contract: p?.contract)
+        guard let p = servedProject(r.project) else { return .ciThenReview }
+        return Self.verifyingPlan(p.spec, contract: p.contract)
     }
 
     // MARK: Watching
@@ -200,7 +200,7 @@ extension Manager {
         }
         guard ciWatches[id] != nil else { return }
         ciWatches[id]!.card = fresh
-        let project = servedProject(r.project)
+        let project = projects[ProjectSpec(path: r.project).key]
         let spec = project?.spec ?? ProjectSpec(path: r.project)
         let ci = (project?.contract ?? ProjectContract(directory: URL(filePath: "/"))).ci
         let plan = currentPlan(r)
