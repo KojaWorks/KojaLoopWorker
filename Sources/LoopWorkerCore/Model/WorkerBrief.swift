@@ -81,12 +81,16 @@ public struct WorkerBrief: Sendable {
         public var review: ReviewRequest
         /// The pushed commit that the forge refused to merge; the card branch starts there.
         public var commit: String
+        /// The commit to rebase onto: `origin/<base>` as of this round, pinned so that a later
+        /// fetch can't move it.
+        public var target: String
         /// The forge's reason, as one line of escaped markdown.
         public var reason: String
 
-        public init(review: ReviewRequest, commit: String, reason: String) {
+        public init(review: ReviewRequest, commit: String, target: String, reason: String) {
             self.review = review
             self.commit = commit
+            self.target = target
             self.reason = reason
         }
     }
@@ -189,8 +193,9 @@ public struct WorkerBrief: Sendable {
             return out
         } ?? ""
         let firstSteps = rebase != nil ? """
-            1. Rebase this branch onto `origin/\(baseBranch)` (`git rebase origin/\(baseBranch)`). The \
-            Manager already fetched it; you can't fetch. Resolve each conflict so that both sides keep \
+            1. Rebase this branch onto `\(rebase!.target)`, which is `origin/\(baseBranch)` as of this \
+            round: `git rebase \(rebase!.target)`. Rebase onto that commit, not onto `origin/\(baseBranch)`, \
+            which may move meanwhile; don't fetch. Resolve each conflict so that both sides keep \
             their intent: this card's change and what landed on `\(baseBranch)`. If a conflict needs a \
             decision that only a human can make, run `git rebase --abort`, write a stuck outcome that \
             names the conflicting files and the decision, and stop.

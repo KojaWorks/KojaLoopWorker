@@ -132,7 +132,10 @@ struct GitFixture {
         try await f.run(["-C", f.seed.path, "push", "origin", "main"])
         try await f.git.cloneOrFetch(url: f.origin.path, into: f.clone, environment: [:])
         #expect(try await !f.git.isAncestor(slot, ancestor: "origin/main"))
-        try await f.run(["-C", slot.path, "rebase", "origin/main"])
+        let target = try await f.git.resolve(slot, ref: "origin/main")
+        #expect(target == (try await f.run(["-C", f.seed.path, "rev-parse", "HEAD"])))
+        await #expect(throws: GitError.self) { try await f.git.resolve(slot, ref: "origin/no-such-branch") }
+        try await f.run(["-C", slot.path, "rebase", target])
         #expect(try await f.git.isAncestor(slot, ancestor: "origin/main"))
         await #expect(throws: GitError.self) { try await f.git.isAncestor(slot, ancestor: "origin/no-such-branch") }
     }

@@ -195,6 +195,7 @@ extension Manager {
             $0.ciCommit = record.ciCommit
             $0.rebaseRound = record.rebaseRound ?? false
             $0.rebases = record.rebases ?? 0
+            $0.rebaseTarget = record.rebaseTarget
             $0.spawnedAt = record.claimedAt
             $0.prepared = true
         }

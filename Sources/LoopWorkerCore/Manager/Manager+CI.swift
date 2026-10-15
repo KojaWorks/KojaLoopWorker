@@ -629,6 +629,7 @@ extension Manager {
             $0.ciCommit = r.sha
             $0.rebaseRound = fix.isRebase
             $0.rebases = (r.rebases ?? 0) + (fix.isRebase ? 1 : 0)
+            $0.rebaseTarget = nil
             $0.spawnedAt = nil
             $0.pane = []
             $0.finishFailures = 0

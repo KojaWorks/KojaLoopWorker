@@ -65,6 +65,9 @@ public protocol GitDriving: Sendable {
     /// doesn't change when a fetch moves a tracking ref.
     func commitsSince(_ worktree: URL, commit: String) async throws -> Int
 
+    /// The commit that `ref` (such as `origin/main`) points at in `repo`.
+    func resolve(_ repo: URL, ref: String) async throws -> String
+
     /// True when `ancestor` (a commit or ref, such as `origin/main`) is HEAD or an ancestor of it.
     func isAncestor(_ worktree: URL, ancestor: String) async throws -> Bool
 
@@ -196,6 +199,11 @@ public struct Git: GitDriving {
 
     public func commitsSince(_ worktree: URL, commit: String) async throws -> Int {
         try await countCommits(worktree, "\(commit)..HEAD")
+    }
+
+    public func resolve(_ repo: URL, ref: String) async throws -> String {
+        try await git(["-C", repo.path, "rev-parse", "--verify", "--end-of-options", "\(ref)^{commit}"]).output
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     public func isAncestor(_ worktree: URL, ancestor: String) async throws -> Bool {

@@ -189,6 +189,7 @@ import Testing
     /// round runs.
     func rebasing(_ finish: String = "merge", manifest: String = "", results: [MergeResult] = [.outdated("need_rebase")]) async throws -> ManagerHarness {
         let h = try await finished(finish, manifest: manifest)
+        h.git.state { $0.refs["origin/main"] = "base-1" }
         h.forge.state { $0.mergeResults = results }
         if finish == "ci_then_merge" {
             h.forge.state { $0.pipelines["commit-1"] = PipelineStatus(state: .passed, url: pipelineURL) }
@@ -212,18 +213,18 @@ import Testing
         #expect(h.tmux.spawned.count == 2)
         #expect(h.lifecycle.state.get.acquiredBases.last == "loopworker-12-fix-it")
         let card = try #require(CardRecord.read(h.stateDir().appending(path: "card.json")))
-        #expect(card.ciRound == 1 && card.ciCommit == "commit-1" && card.rebaseRound == true && card.rebases == 1)
+        #expect(card.ciRound == 1 && card.ciCommit == "commit-1" && card.rebaseRound == true && card.rebases == 1 && card.rebaseTarget == "base-1")
         #expect(!FileManager.default.fileExists(atPath: h.stateDir().appending(path: "ci.md").path))
         let brief = try String(contentsOf: h.stateDir().appending(path: "brief.md"), encoding: .utf8)
         #expect(brief.contains("## Rebase"))
         #expect(brief.contains("because `main` moved since commit `commit-1` was pushed. The forge's reason: need_rebase"))
-        #expect(brief.contains("`git rebase origin/main`"))
+        #expect(brief.contains("Rebase this branch onto `base-1`, which is `origin/main` as of this round: `git rebase base-1`."))
         #expect(brief.contains("pushed as `commit-1`"))
         #expect(!brief.contains("## CI failed"))
         #expect(h.log.contains("spawned worker for rebase round 1 for g/app#12", level: .info))
 
         try await finishRound(h)
-        #expect(h.git.calls.contains("isAncestor origin/main"))
+        #expect(h.git.calls.contains("isAncestor base-1"))
         #expect(h.git.state.get.pushes.map(\.expected) == [nil, "commit-1"])
         #expect(h.forge.state.get.opened.count == 1)
         let r = try #require(try record(h))
@@ -246,10 +247,36 @@ import Testing
     @Test("B208: a rebase round whose branch isn't based on origin/<base> is stuck and pushes nothing")
     func rebaseNotBased() async throws {
         let h = try await rebasing()
-        h.git.state { $0.ancestors["origin/main"] = false }
+        h.git.state { $0.ancestors["base-1"] = false }
         try await finishRound(h)
-        #expect(blocker(h) == "The worker reported done for rebase round 1, but `loopworker-12-fix-it` isn't based on the current `main`.")
+        #expect(blocker(h) == "The worker reported done for rebase round 1, but `loopworker-12-fix-it` isn't based on `main` at `base-1`, which the round rebased onto.")
         #expect(h.git.state.get.pushes.count == 1)
+    }
+
+    @Test("B208: origin/<base> moving during a rebase round doesn't fail a branch rebased onto the pinned commit")
+    func baseMovesDuringTheRound() async throws {
+        let h = try await rebasing()
+        h.git.state {
+            $0.refs["origin/main"] = "base-2"
+            $0.ancestors["origin/main"] = false
+            $0.ancestors["base-2"] = false
+        }
+        try await finishRound(h)
+        #expect(blocker(h) == nil)
+        #expect(h.git.calls.filter { $0.hasPrefix("isAncestor") } == ["isAncestor base-1"])
+        #expect(try record(h)?.sha == "commit-2")
+        #expect(h.backlog.card(id: "id-12")?.state == .verifying)
+    }
+
+    @Test("B208: a rebase round survives a Manager restart with its pinned target")
+    func rebaseTargetSurvivesARestart() async throws {
+        let h = try await rebasing()
+        try h.restart()
+        h.git.state { $0.ancestors["origin/main"] = false }
+        try await h.boot()
+        try await finishRound(h)
+        #expect(blocker(h) == nil)
+        #expect(h.git.calls.contains("isAncestor base-1"))
     }
 
     @Test("B208: rebase rounds don't use up ci_fix_attempts")
@@ -285,7 +312,7 @@ import Testing
              "slot":0,"ciRound":1,"ciCommit":"abc"}
             """
         let c = try d.decode(CardRecord.self, from: Data(card.utf8))
-        #expect(c.rebaseRound == nil && c.rebases == nil && c.ciRound == 1)
+        #expect(c.rebaseRound == nil && c.rebases == nil && c.rebaseTarget == nil && c.ciRound == 1)
     }
 
     @Test("B210: the status shows merging, merge pending, rebase queued and rebase starting")

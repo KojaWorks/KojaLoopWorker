@@ -99,6 +99,8 @@ public actor Manager {
         var rebaseRound = false
         /// For a fix round: the watch's rebase rounds, this one included.
         var rebases = 0
+        /// For a rebase round: the commit that `origin/<base>` pointed at when the round spawned.
+        var rebaseTarget: String?
         var spawnedAt: Date?
         var lastError: String?
         var lastAttemptFinished: Date?

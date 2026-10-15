@@ -18,6 +18,9 @@ struct CardRecord: Codable, Equatable {
     var rebaseRound: Bool? = nil
     /// Set for a fix round: the watch's rebase rounds, this one included.
     var rebases: Int? = nil
+    /// Set for a rebase round once spawned: the commit that `origin/<base>` pointed at, which
+    /// the worker rebases onto.
+    var rebaseTarget: String? = nil
 
     static func read(_ file: URL) -> CardRecord? {
         guard let data = try? Data(contentsOf: file) else { return nil }
@@ -139,6 +142,7 @@ extension Manager {
             $0.ciCommit = nil
             $0.rebaseRound = false
             $0.rebases = 0
+            $0.rebaseTarget = nil
             $0.spawnedAt = nil
             $0.pane = []
             $0.finishFailures = 0
@@ -255,8 +259,26 @@ extension Manager {
             return
         }
 
+        // The project refresh moves the shared origin/<base>, so the round rebases onto a pinned commit.
+        var rebaseTarget: String?
+        if fix?.isRebase == true {
+            let file = cardRecordFile(spec)
+            do {
+                let target = try await deps.git.resolve(spec.worktree, ref: "origin/\(base)")
+                guard var record = CardRecord.read(file) else { throw ConfigError("\(file.path) is missing or unreadable") }
+                record.rebaseTarget = target
+                try record.write(file)
+                rebaseTarget = target
+            } catch {
+                await abortStart(ref, card: card, contract: contract, why: "pinning origin/\(base) for the rebase failed: \(error)", broken: nil, fix: fix)
+                return
+            }
+            update(ref) { $0.rebaseTarget = rebaseTarget }
+        }
+
         do {
-            try await writeWorkerFiles(spec, card: card, contract: contract, base: base, branch: branch, fix: fix, resuming: resuming)
+            try await writeWorkerFiles(spec, card: card, contract: contract, base: base, branch: branch, fix: fix,
+                                       rebaseTarget: rebaseTarget, resuming: resuming)
         } catch {
             await abortStart(ref, card: card, contract: contract, why: "\(error)", broken: nil, fix: fix)
             return
@@ -280,7 +302,7 @@ extension Manager {
     }
 
     func writeWorkerFiles(_ spec: SlotSpec, card: Card, contract: ProjectContract, base: String, branch: String,
-                          fix: FixRound? = nil, resuming: Bool = false) async throws {
+                          fix: FixRound? = nil, rebaseTarget: String? = nil, resuming: Bool = false) async throws {
         let dir = spec.stateDir
         let snapshot: CardSnapshot
         do { snapshot = try await deps.backlog.snapshot(card) }
@@ -299,7 +321,8 @@ extension Manager {
                                       round: fix!.record.ciRounds + 1, rounds: contract.ci.fixAttempts)
             report = ciReport(fix!.record, pipeline, baselines: baselines, card: card)
         case .rebase(let reason)?:
-            rebase = WorkerBrief.Rebase(review: fix!.record.review, commit: fix!.record.sha, reason: Self.inlineMarkdown(reason))
+            rebase = WorkerBrief.Rebase(review: fix!.record.review, commit: fix!.record.sha, target: rebaseTarget ?? "origin/\(base)",
+                                        reason: Self.inlineMarkdown(reason))
         case nil:
             break
         }
@@ -420,6 +443,7 @@ extension Manager {
             $0.ciCommit = nil
             $0.rebaseRound = false
             $0.rebases = 0
+            $0.rebaseTarget = nil
             $0.spawnedAt = nil
             $0.finishFailures = 0
             $0.finishRetryAt = nil
@@ -587,7 +611,7 @@ extension Manager {
                 case .done(let title, let body, let guide):
                     do {
                         try await finishDone(spec, card: card, branch: branch, base: base, title: title, body: body, guide: guide,
-                                             ciRound: s.ciRound, ciCommit: s.ciCommit, rebaseRound: s.rebaseRound, rebases: s.rebases,
+                                             ciRound: s.ciRound, ciCommit: s.ciCommit, rebaseRound: s.rebaseRound, rebases: s.rebases, rebaseTarget: s.rebaseTarget,
                                              plan: Self.verifyingPlan(spec.project, contract: projects[ref.key]?.contract))
                     } catch let rejection as BackendRejection {
                         try await stuck(spec, card: card, blocker: "Couldn't finish: the forge or backlog refused: \(rejection)")
@@ -610,12 +634,13 @@ extension Manager {
     ///   - ciRound: set for a fix round: the watch's round after it.
     ///   - ciCommit: set for a CI fix round: the failed commit, which the round's new commits
     ///     count from. Not `origin/<branch>`, which any later fetch moves to the round's own push.
-    ///   - rebaseRound: the fix round rebases the branch, so `origin/<base>` must be an ancestor of HEAD.
+    ///   - rebaseRound: the fix round rebases the branch, so its target must be an ancestor of HEAD.
+    ///   - rebaseTarget: the commit that the rebase round targets; nil checks `origin/<base>`.
     ///   - rebases: the watch's rebase rounds after this round.
     ///   - plan: what the card waits for in `verifying`; nil moves it straight to `review`.
     func finishDone(
         _ spec: SlotSpec, card: Card, branch: String, base: String, title: String, body: String, guide: String?,
-        ciRound: Int? = nil, ciCommit: String? = nil, rebaseRound: Bool = false, rebases: Int = 0, plan: VerifyingPlan? = nil
+        ciRound: Int? = nil, ciCommit: String? = nil, rebaseRound: Bool = false, rebases: Int = 0, rebaseTarget: String? = nil, plan: VerifyingPlan? = nil
     ) async throws {
         let ahead = try await step("counting commits on \(branch)") {
             if let ciCommit { try await self.deps.git.commitsSince(spec.worktree, commit: ciCommit) }
@@ -630,11 +655,12 @@ extension Manager {
             return
         }
         if rebaseRound {
-            let based = try await step("checking that \(branch) is based on origin/\(base)") {
-                try await self.deps.git.isAncestor(spec.worktree, ancestor: "origin/\(base)")
+            let target = rebaseTarget ?? "origin/\(base)"
+            let based = try await step("checking that \(branch) is based on \(target)") {
+                try await self.deps.git.isAncestor(spec.worktree, ancestor: target)
             }
             guard based else {
-                try await stuck(spec, card: card, blocker: "The worker reported done for rebase round \(rebases), but `\(branch)` isn't based on the current `\(base)`.")
+                try await stuck(spec, card: card, blocker: "The worker reported done for rebase round \(rebases), but `\(branch)` isn't based on `\(base)` at `\(target.prefix(12))`, which the round rebased onto.")
                 return
             }
         }
