@@ -147,9 +147,11 @@ release note records it), so a retry never trusts content that arrived while the
 The snapshot only contains content that I vouched for: the title and description if I edited
 them last or they were last edited before the cutoff, and comments that I wrote or that were
 last edited before the cutoff. Notes that the Manager posted (releases, blockers, review links)
-are left out, because they carry worker-written text under my name. Everything left out is
-named in the snapshot's `excluded` list and logged, so a human can see why a worker didn't see
-something.
+are left out, because they carry worker-written text under my name; the next worker gets them
+as background through `managerNotes` instead. Everything withheld for trust is named in the
+snapshot's `excluded` list and logged, so a human can see why a worker didn't see something.
+Manager notes are not named there: the brief presents `excluded` as content that someone else
+changed after the vouch, which a Manager note is not.
 
 Every piece of worker-written text that the Manager posts (blockers, review request titles and
 bodies) is posted under my name, so the GitLab backend neutralizes quick actions in it: a line

@@ -397,10 +397,7 @@ import Testing
         #expect(!snapshot.markdown.contains("delete prod"))
         #expect(!snapshot.markdown.contains("worker crashed"))
         #expect(snapshot.markdown.contains("mine after approval"))
-        #expect(snapshot.excluded == [
-            "comment 305 by @mallory at \(Fixture.t(10))",
-            "comment 310 by @me at \(Fixture.t(20)): posted by LoopWorker",
-        ])
+        #expect(snapshot.excluded == ["comment 305 by @mallory at \(Fixture.t(10))"])
         #expect(snapshot.vouchedAt == Fixture.date(2))  // B203: the release keeps the human's cutoff
     }
 
