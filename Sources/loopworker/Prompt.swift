@@ -55,10 +55,12 @@ struct Prompt: ParsableCommand {
 
         1. Which backlog holds the cards: GitLab issues, a Notion database, or Patch?
         2. Which forge hosts the code: GitLab or GitHub? If it is self-hosted, what is its base URL?
-        3. Which projects should LoopWorker serve? For each project, ask for its path on the forge (`group/app` on GitLab, `owner/repo` on GitHub), its base branch (the default is the forge's default branch), how many slots it gets (one slot runs one worker at a time; the default is 1), whether its slots are hot or cold, and the claude model for its workers (such as `opus`; the default is claude's own default). With a Notion backlog, also ask for the URL of the database that holds the project's cards.
+        3. Which projects should LoopWorker serve? For each project, ask for its path on the forge (`group/app` on GitLab, `owner/repo` on GitHub), its base branch (the default is the forge's default branch), how many slots it gets (one slot runs one worker at a time; the default is 1), whether its slots are hot or cold, the claude model for its workers (such as `opus`; the default is claude's own default), and how a finished card ends (its finish mode, explained below). With a Notion backlog, also ask for the URL of the database that holds the project's cards.
         4. Who may vouch for cards?
 
         Explain hot and cold slots to the user: a hot slot keeps its stack and build caches between cards and uses memory all the time; a cold slot builds its stack for each card and tears it down afterwards.
+
+        Explain the four finish modes to the user. `draft` (the default) opens a draft review request, and `ready` opens one that is ready for review; a human reviews and merges it. `merge` merges the review request into the base branch right after the worker's `verify.sh` passed, without waiting for CI. `ci_then_merge` waits for the pushed commit's CI, lets a worker fix failures, and merges once CI passes. With either merging mode, no human looks at the change before it lands in the base branch; the card then waits for a human to look at the result and close it.
 
         Explain what vouching means for their backlog, because the answer to question 4 depends on it. The Manager claims only cards that a person vouched for, and only content that the person vouched for reaches the worker.
 
@@ -104,7 +106,7 @@ struct Prompt: ParsableCommand {
         [backlog.notion]
         token_env         = "LOOPWORKER_NOTION_TOKEN"   # an internal integration's secret
         trusted_users     = ["<notion user id>"]        # the people whose edits vouch for cards
-        state_property    = "LoopWorker"                # a select with next, working, ci, review, stuck
+        state_property    = "LoopWorker"                # a select with next, working, ci, review, stuck (and merged)
         # priority_property = "Priority"                # optional: number, select or multi_select
         # model_property    = "Model"                   # optional: select or text with a claude model alias
 
@@ -145,6 +147,7 @@ struct Prompt: ParsableCommand {
         hot         = false
         model       = "opus"            # optional
         base_branch = "main"            # optional; the default is the forge's default branch
+        finish      = "draft"           # draft, ready, merge or ci_then_merge
         ```
 
         ## 5. Secrets
@@ -173,15 +176,15 @@ struct Prompt: ParsableCommand {
 
         ## 6. Prepare the backlog
 
-        GitLab: the Manager moves each card between labels. Ask the user before you create them, because everyone in the group sees them. Create `loopworker::next`, `loopworker::working`, `loopworker::review` and `loopworker::stuck` once in the group that holds the projects, and `loopworker::ci` if a project's contract sets `[review] wait_for_ci`. On GitLab Premium these are scoped labels, so an issue carries one of them at a time. On GitLab Free, the user must remove the old label by hand when they add `loopworker::next` to a stuck card.
+        GitLab: the Manager moves each card between labels. Ask the user before you create them, because everyone in the group sees them. Create `loopworker::next`, `loopworker::working`, `loopworker::review` and `loopworker::stuck` once in the group that holds the projects, `loopworker::ci` if a project's contract sets `[review] wait_for_ci` or its `finish` is `merge` or `ci_then_merge`, and `loopworker::merged` if a project's `finish` is `merge` or `ci_then_merge`. On GitLab Premium these are scoped labels, so an issue carries one of them at a time. On GitLab Free, the user must remove the old label by hand when they add `loopworker::next` to a stuck card.
 
         Notion, for each project's database:
 
         1. The user connects the integration to the database: on the database's page, the ••• menu, then Connections, then the integration. You can't do this step. Until it is done, the API can't see the database.
-        2. Add the state property: a select property named `LoopWorker` (or the configured `state_property`) with exactly the options `next`, `working`, `ci`, `review` and `stuck`. Only LoopWorker writes it; LoopWorker never reads or writes the team's own status property.
+        2. Add the state property: a select property named `LoopWorker` (or the configured `state_property`) with the options `next`, `working`, `ci`, `review` and `stuck`, and also `merged` when the project's `finish` is `merge` or `ci_then_merge`. Only LoopWorker writes it; LoopWorker never reads or writes the team's own status property.
         3. Optionally, add a priority property (a number, or a select or multi-select whose earlier options rank higher) and a model property (a select or a text property that holds a claude model alias such as `opus`), and name them in `priority_property` and `model_property`.
 
-        Make the changes in steps 2 and 3 with your Notion tools once the user agrees. If you have no Notion tools, give the user the clicks: open the database, add a property with the + at the end of the property header row, choose Select, name it `LoopWorker`, and add the five options.
+        Make the changes in steps 2 and 3 with your Notion tools once the user agrees. If you have no Notion tools, give the user the clicks: open the database, add a property with the + at the end of the property header row, choose Select, name it `LoopWorker`, and add the options.
 
         Patch: see the README (\#(docs)README.md) and the Patch backend's documentation.
 

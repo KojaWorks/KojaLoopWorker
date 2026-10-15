@@ -93,8 +93,9 @@ wallclock_cap_minutes = 90
 # Ask the worker to write a storygrafter review guide, attached to the review request.
 guide = false
 # Move the card to review only once the pushed commit's CI passes (see below).
+# The host config's finish = "merge" ignores it; "ci_then_merge" always waits.
 wait_for_ci = false
-# Mark the card stuck when CI hasn't finished this long after a push.
+# Mark the card stuck when CI hasn't finished this long after a push, or a merge stays pending this long.
 ci_timeout_minutes = 120
 # Worker rounds that fix a failed pipeline before the card is marked stuck.
 ci_fix_attempts = 2
@@ -121,6 +122,12 @@ jobs' log tails in `ci.md` and pushes a fix, which the Manager watches again, up
 `ci_fix_attempts` times. A timeout, a cancel, no pipeline within 15 minutes, or a failure after
 the last fix round marks the card stuck. CI must run for the card branch's commits, on branch
 pushes or merge request pipelines; GitHub forges read the commit's check runs.
+
+The project's `finish` in the host config can override `wait_for_ci`. `finish = "merge"` merges
+the review request without reading CI, whatever `wait_for_ci` says. `finish = "ci_then_merge"`
+waits for CI as described above whether `wait_for_ci` is set or not, and merges once the
+pipeline passes. Both use `ci_timeout_minutes`, and `ci_then_merge` also uses `ci_fix_attempts`.
+The contract can't set `finish`, so a repo can't opt itself into a merge.
 
 ## Git LFS
 
