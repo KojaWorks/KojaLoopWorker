@@ -100,3 +100,22 @@ import Testing
         #expect(text.contains("Manager: none runs"))
     }
 }
+
+/// B201: the built-in setup instructions.
+@Suite struct PromptInstructionsTests {
+    @Test func everySectionIsPrinted() {
+        let text = Prompt.instructions(version: "1.2.3")
+        let headings = ["What LoopWorker is", "Rules for you", "Ask the user", "Write config.toml", "Secrets",
+                        "Prepare the backlog", "Project contract", "Verify", "Start"]
+        for (n, heading) in headings.enumerated() {
+            #expect(text.contains("\n## \(n + 1). \(heading)\n"))
+        }
+        #expect(text.contains("Run `loopworker doctor`"))
+    }
+
+    @Test func docLinksPinTheReleaseTag() {
+        #expect(Prompt.docs(version: "1.2.3") == "https://github.com/KojaWorks/KojaLoopWorker/blob/v1.2.3/")
+        #expect(Prompt.docs(version: "0.0.0-dev") == "https://github.com/KojaWorks/KojaLoopWorker/blob/main/")
+        #expect(Prompt.instructions(version: "1.2.3").contains("blob/v1.2.3/docs/project-contract.md"))
+    }
+}
