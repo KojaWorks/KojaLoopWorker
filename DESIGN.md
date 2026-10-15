@@ -294,6 +294,11 @@ its branch while a worker ran. Two facts decide that, each with one home:
   newest. The card, not a Manager's state directory, is the record of what LoopWorker pushed, so
   a Manager on another host (a replaced host, a card moved between Managers) resumes the branch
   too. Only the Manager's own notes count, as for the holder, and a release doesn't clear it.
+  So Managers share push records only when they use the same backlog identity: the GitLab
+  token's user, the Patch PAT owner, the Notion integration. A Manager with another identity
+  doesn't trust the records and refuses the branch as someone else's. On Notion, a human who
+  resolves the Manager's comment hides its record from the API, so the next claim refuses the
+  branch.
 
   | Backlog | Where the push record lives |
   | --- | --- |

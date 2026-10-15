@@ -248,7 +248,8 @@ A teammate sees those comments and the `LoopWorker` property change; the integra
 author.
 
 Don't resolve LoopWorker's comments. Notion's API doesn't return resolved comments, so the
-Manager would lose count of failed attempts and could stop treating a released card as ready.
+Manager would lose count of failed attempts, could stop treating a released card as ready, and
+could refuse to continue a branch that it pushed.
 The Manager treats a `working` or `ci` card as its own only when its own comments say that it
 claimed the card, so setting `working` by hand does nothing.
 
@@ -338,7 +339,10 @@ backlog (two hosts configured for it by mistake), each leaves the cards that the
 alone: `status` lists them under "held by other Managers" with the other Manager's
 `<host>:<home>`, and the log says so once per card. Remove the project from one host's config;
 if the other Manager is gone for good, move its cards back to ready. The card records each
-branch that LoopWorker pushed for it, so whichever Manager claims it next continues that branch.
+branch that LoopWorker pushed for it, so the next Manager that claims it continues that branch
+when both use the same backlog identity (the GitLab token's user, the Patch PAT owner or the
+Notion integration). A Manager with another identity doesn't trust those records and refuses
+the branch.
 
 Stopping escalates. The first SIGINT (Ctrl-C) drains: running workers finish, nothing new is
 claimed, then the Manager exits. A second SIGINT force-stops: it reaps every worker and releases
