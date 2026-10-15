@@ -10,6 +10,8 @@ import LoopWorkerCore
 /// did after releasing a card that it owned; a `working` or `ci` card is the Manager's only
 /// while the integration's newest comment says so (DESIGN.md "Trust in Notion"). The Manager's
 /// notes are page comments that the integration wrote, each under a header line (`ManagerComment`).
+/// A claim comment names the claiming Manager's holder id; a `working` or `ci` card's `holder`
+/// is the winner of its newest claim round, unless a release comment is newer (`holder(of:)`).
 ///
 /// `CardRef.id` is the page id; `display` is the unique-id property (`CARD-12`) when the
 /// database has one, else `notion:` and the page id's first 8 hex digits.
@@ -18,12 +20,14 @@ public actor NotionBacklog: Backlog {
         "next": .ready, "working": .working, "ci": .verifying, "review": .review, "merged": .reviewMerged, "stuck": .stuck,
     ]
     static let schemaLifetime: TimeInterval = 600
+    /// Rival claims of one round land within seconds; a claim further back belongs to an earlier
+    /// round, such as a Manager that crashed after claiming before a human set `next` again.
+    static let claimRoundWindow: TimeInterval = 120
 
     let config: NotionConfig
     let client: NotionClient
     private let log: LogSink
     private let now: @Sendable () -> Date
-    private let host: String
     private var loggedOnce: Set<String> = []
     /// The database that each page was last read from, so a page's 404 can be told from a lost connection.
     private var pageDatabases: [String: String] = [:]
@@ -31,12 +35,11 @@ public actor NotionBacklog: Backlog {
     private var schemas: [String: (read: Date, properties: [String: JSON])] = [:]
     private var userNames: [String: String] = [:]
 
-    init(config: NotionConfig, client: NotionClient, log: LogSink, now: @escaping @Sendable () -> Date, host: String) {
+    init(config: NotionConfig, client: NotionClient, log: LogSink, now: @escaping @Sendable () -> Date) {
         self.config = config
         self.client = client
         self.log = log
         self.now = now
-        self.host = host
     }
 
     // MARK: Reads
@@ -136,7 +139,7 @@ public actor NotionBacklog: Backlog {
 
     // MARK: Writes
 
-    public func claim(_ card: Card) async throws -> Bool {
+    public func claim(_ card: Card, holder: String) async throws -> Bool {
         let me = try await meID()
         // Listed before the page is re-read: a rival's claim posted after this list follows its
         // `working` write, so the re-read below sees `working` and this claim stops there.
@@ -146,12 +149,25 @@ public actor NotionBacklog: Backlog {
             return false
         }
         try await setState(card.ref.id, "working")
-        let nonce = UUID().uuidString.prefix(8).lowercased()
-        let mine = try await post(card.ref.id, .claim(host: host, nonce: nonce), [(ManagerComment.vouchedTitlePrefix + title, nil)])
+        let claim = ManagerComment.claim(holder: holder, nonce: String(UUID().uuidString.prefix(8).lowercased()))
+        let postClaim = { try await self.post(card.ref.id, claim, [(ManagerComment.vouchedTitlePrefix + title, nil)]) }
+        let mine: String
+        do {
+            do { mine = try await postClaim() } catch {
+                log.warning("\(card.ref.display): posting the claim comment failed: \(error); retrying once")
+                mine = try await postClaim()
+            }
+        } catch {
+            // Without its claim comment, the working card would carry no holder, and no vouched title.
+            try await setState(card.ref.id, "next")
+            log.error("\(card.ref.display): can't post the claim comment: \(error); set \(config.stateProperty) back to next and skipped the card. If it doesn't come back as ready, a trusted user sets next again")
+            return false
+        }
         let ours = try await comments(card.ref.id).filter { $0.author == me && !stale.contains($0.id) }
         // The claims after the integration's newest other comment are this round's.
         let round = ours.reversed().prefix { ManagerComment.kind($0.text)?.isClaim == true }.reversed()
-        guard let winner = round.first, winner.id != mine else { return true }
+        // A retried post whose first try landed leaves two claims with this claim's nonce; both are this one.
+        guard let winner = round.first, !winner.text.hasPrefix(claim.header) else { return true }
         log.info("claim lost for \(card.ref.display): the older claim comment \(winner.id) won the race")
         do { _ = try await client.request("DELETE", "comments/\(mine)") }
         catch { log.error("\(card.ref.display): can't delete the lost claim comment \(mine): \(error)") }
@@ -338,8 +354,24 @@ public actor NotionBacklog: Backlog {
             ref: CardRef(id: page.id, display: display), project: project, number: unique.map { "\($0.number)" },
             title: page.title, state: state, priority: try await priority(page, project: project), model: model(page),
             attempts: comments.filter { $0.author == me && ManagerComment.kind($0.text) == .failedRelease }.count,
-            url: page.url)
+            url: page.url,
+            holder: state == .working || state == .verifying ? Self.holder(of: comments.filter { $0.author == me }) : nil)
         return Evaluation(card: card, vouchedTitle: state == .ready ? vouched : nil)
+    }
+
+    /// B234: the holder that `claim` lets win. The integration's newest claim or release comment
+    /// decides: a release means nil; a claim means the oldest claim of the consecutive claims
+    /// that end in it and lie within `claimRoundWindow` of it, the same winner that `claim` picks.
+    /// `ours` are the integration's comments, oldest first.
+    static func holder(of ours: [Comment]) -> String? {
+        func isClaim(_ c: Comment) -> Bool { ManagerComment.kind(c.text)?.isClaim == true }
+        guard let last = ours.lastIndex(where: { ManagerComment.kind($0.text).map { $0.isClaim || $0.isRelease } == true }),
+              isClaim(ours[last]) else { return nil }
+        var first = last
+        while first > 0, isClaim(ours[first - 1]), ours[last].created.timeIntervalSince(ours[first - 1].created) <= claimRoundWindow {
+            first -= 1
+        }
+        return ManagerComment.holder(ours[first].text)
     }
 
     /// B194: a number as is; a select or multi-select option ranks by its place in the

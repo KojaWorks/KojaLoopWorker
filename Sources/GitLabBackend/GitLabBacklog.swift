@@ -4,6 +4,10 @@ import LoopWorkerCore
 /// GitLab issues as a backlog. Card state lives in `<prefix>next|working|ci|review|merged|stuck` labels;
 /// only issues that the token's user vouched for are ever `ready` (DESIGN.md "Trust").
 ///
+/// `claim` posts a Manager note whose header carries `<!-- loopworker:holder=<id> -->`. A
+/// card's `holder` is the one in the token's user's newest claim note, unless a release note
+/// (the one with the cutoff marker) is newer. Every read already loads the notes.
+///
 /// `CardRef.id` is `<project id>/<issue iid>`, `display` is `<project path>#<iid>`.
 public actor GitLabBacklog: Backlog {
     let client: GitLabClient
@@ -105,7 +109,8 @@ public actor GitLabBacklog: Backlog {
             priority: labelValue(issue, "priority").flatMap(Double.init) ?? 0,
             model: labelValue(issue, "model"),
             attempts: notes.filter { Trust.countsAsAttempt($0, me: me) }.count,
-            url: URL(string: issue.webUrl))
+            url: URL(string: issue.webUrl),
+            holder: state == .working || state == .verifying ? Trust.holder(notes: notes, me: me) : nil)
         return Read(card: card, issue: issue, projectPath: path, notes: notes)
     }
 
@@ -193,7 +198,8 @@ public actor GitLabBacklog: Backlog {
         }
         """
 
-    /// Notes by the token's user that start with the Manager marker, header stripped, oldest first.
+    /// Notes by the token's user that start with the Manager marker, except claims, header
+    /// stripped, oldest first.
     public func managerNotes(_ card: Card) async throws -> [String] {
         guard let read = try await read(card.ref) else { return [] }
         let me = try await client.me()
@@ -202,7 +208,7 @@ public actor GitLabBacklog: Backlog {
             .sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
             .compactMap { note in
                 let header = Trust.managerHeader(note.body)
-                guard !header.isEmpty else { return nil }
+                guard !header.isEmpty, Trust.claimHolder(header) == nil else { return nil }
                 return note.body.split(separator: "\n", omittingEmptySubsequences: false)
                     .dropFirst(header.count + 1).joined(separator: "\n")
             }
@@ -210,11 +216,17 @@ public actor GitLabBacklog: Backlog {
 
     // MARK: - Writes
 
-    public func claim(_ card: Card) async throws -> Bool {
+    /// Posts the claim note that names `holder` before it moves the labels, so the card is
+    /// never `working` without its holder. The holder only counts for a `working` or
+    /// `verifying` card, so a note left by a move that failed is inert, and the retry's
+    /// `postNote` doesn't repeat it.
+    public func claim(_ card: Card, holder: String) async throws -> Bool {
         guard let read = try await read(card.ref), read.card.state == .ready else {
             log.info("claim lost for \(card.ref.display): it is no longer ready")
             return false
         }
+        let host = holder.split(separator: ":", maxSplits: 1).first.map(String.init) ?? holder
+        try await postNote(read, "LoopWorker on \(host) is working on this card.", markers: "\(Trust.holderMarkerPrefix)\(holder) -->\n")
         try await move(read, to: .working)
         return true
     }

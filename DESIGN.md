@@ -62,7 +62,7 @@ public protocol Backlog: Sendable {
     func card(_ ref: CardRef) async throws -> Card?                  // nil: the card is gone
     func working(in projects: [ProjectSpec]) async throws -> [Card]   // for stranded-card recovery
     func verifying(in projects: [ProjectSpec]) async throws -> [Card] // to resume CI watches
-    func claim(_ card: Card) async throws -> Bool                     // false: lost a race, skip
+    func claim(_ card: Card, holder: String) async throws -> Bool     // false: lost a race, skip
     func snapshot(_ card: Card) async throws -> CardSnapshot
     func markReview(_ card: Card, review: ReviewRequest, note: String?) async throws
     func markVerifying(_ card: Card, review: ReviewRequest, plan: VerifyingPlan) async throws
@@ -205,7 +205,7 @@ trusted users can edit when that is not acceptable.
 
 Notion has no compare-and-set. `claim` lists the page's comments first and remembers the claim
 comments that are already there, then re-reads the page, writes `working` and posts a claim
-comment that names the host and a nonce. Of the new claim comments that follow the integration's
+comment that names the Manager's holder id and a nonce. Of the new claim comments that follow the integration's
 previous other comment, the oldest wins, and every other claimer returns false and deletes its
 own comment. The claims listed before the re-read are left out: they belong to a Manager that
 crashed after claiming, and a rival's claim can't be among them, because the rival writes
@@ -213,10 +213,8 @@ crashed after claiming, and a rival's claim can't be among them, because the riv
 rounded to the minute too, so claims in the same minute keep the order in which the API lists
 them.
 
-The claim comments only keep two claims from both starting work. They don't make it safe for
-two Managers to share a database: each Manager's stranded-card sweep would release the other's
-cards. The rule in "Reconcile" holds: one Manager per backlog identity and project, and for
-Notion one Manager per database.
+The claim comments keep two claims from both starting work, and they record the holder (see
+"Two Managers on one project" under "Reconcile").
 
 Notion answers 404 both for a deleted page and for a page that is no longer shared with the
 integration. On a 404, `card(_:)` re-reads the page's database and throws when the integration
@@ -312,8 +310,9 @@ switched to `draft` or `ready` moves its watched cards to `review` instead of me
 a watch whose project left the config never merges. The watch record is deleted whenever the
 Manager moves the card out of `verifying`, and a card that a human moved out of `verifying`
 stops the watch with no backlog write. At startup and with every stranded-card sweep, each
-`verifying` card with a record is watched again; one without a record is marked stuck, because
-nothing else would ever move it on.
+`verifying` card that this Manager holds (or nobody does) and that has a record is watched
+again; one without a record is marked stuck, because nothing else would ever move it on. A card
+that another Manager holds is left to it: its CI isn't read and it is never merged.
 
 The status file shows each watch's pipeline or merge state (`merging`, `merge pending:
 <reason>`, `rebase queued`, `rebase starting`), and `loopworker status` prints the watches
@@ -440,6 +439,7 @@ decision:
 | --- | --- |
 | Outcome file present | `finish` |
 | Card gone, or a human moved it out of `working` | `abandon`: reap, recycle, no backlog write |
+| Another Manager's claim of the card is newer | `abandon` |
 | Session dead, no outcome, card `working` | `release(crashed)` |
 | Pane shows claude's login or 401 screen | `release(auth)`, and the auth circuit breaker backs off |
 | Running longer than the wall-clock cap | `release(hung)` |
@@ -454,8 +454,50 @@ At startup, and every few minutes after, the Manager calls `working(in:)` and co
 against its slots. A `working` card with no slot is either finishable (its slot directory has an
 outcome file) or stranded (released with reason "Manager restarted", not counted as an
 attempt). `verifying` cards hold no slot and are never released; see "Waiting for CI and
-merging". This assumes one Manager per backlog identity and project: two Managers that share a
-GitLab user and a project, or a Notion database, would release each other's cards.
+merging".
+
+### Two Managers on one project
+
+One Manager serves each project of a backlog. Two that overlap (two hosts configured for one
+project by mistake, or two test runs against one sandbox) are kept from fighting by the
+**holder**: `claim` records the Manager's holder id, `<host name>:<LOOPWORKER_HOME>`, which a
+Manager saves in `state/holder` on its first start so a renamed host keeps it. A Manager whose
+`state/holder` exists but can't be read refuses to start. A `working` or
+`verifying` card's holder is the one in its newest claim; a release after that claim clears it.
+
+| Backlog | Where the holder lives |
+| --- | --- |
+| GitLab | The claim note, posted before the labels move: a Manager note whose header carries `<!-- loopworker:holder=<id> -->`, and "LoopWorker on <host> is working on this card." Only the token's user's notes count, and only marker lines in their header. A release note (the one with the cutoff marker) clears it. |
+| Patch | A `claim` block appended to the card's page body after the claim's PATCH lands, with `content.holder`. Only the PAT owner's blocks count; a later `release` or `failed-attempt` block clears it. |
+| Notion | The claim comment's header, `LoopWorker claimed this card (holder <id>, <nonce>).` The holder is the winner that `claim` picks: the oldest of the consecutive claim comments within 120 s of the newest one, since a losing claim stays until its Manager deletes it. A later release comment clears it. |
+
+GitLab posts the claim note before it moves the labels, so a card is never `working` without
+its holder. Patch's claim is one compare-and-set PATCH, and Notion's race resolution needs
+`working` written before the claim comment, so both write the holder right after the claim
+lands. A holder write that fails is retried once; then the card goes back to the state that it
+came from and the claim is skipped. Another Manager's sweep that reads the card between the two
+writes sees no holder and may release it; the claiming Manager's re-read then finds the card no
+longer `working` and starts no worker. On Notion the card can then need a trusted user to set
+`next` again, when the claim comment lands after the release comment.
+
+A Manager touches only the cards that it holds, or that nobody holds (claimed by a LoopWorker
+without holder ids, or after a release):
+
+- The stranded-card sweep and startup adoption leave a card that another Manager holds alone.
+- The CI sweep resumes CI and merge watches only of `verifying` cards that it holds, and a
+  poll that finds its card held by another Manager drops the watch without merging.
+- A worker whose card another Manager's newer claim took over is abandoned.
+- GitLab's claim is not compare-and-set, so two claims can both succeed. After claiming, the
+  Manager re-reads the card and doesn't start a worker when it is no longer `working` or a
+  rival's claim is newer. If the
+  rival's claim lands only after that re-read, the rival's re-read sees itself, and the first
+  Manager's worker is abandoned on its next reconcile.
+
+Each card that another Manager holds is logged once per holder and listed in `status.json` and
+`loopworker status` under "held by other Managers". When that Manager is gone for good, a human
+moves the card back to ready. A CI fix round or rebase round doesn't write a new claim: only
+the holder of a `verifying` card starts one, or any Manager when nobody holds the card (claimed before holder
+ids), so the holder is already right.
 
 ## Host config
 
@@ -510,6 +552,7 @@ $LOOPWORKER_HOME/
   config.toml
   secrets.env                 tokens, mode 0600
   state/manager.lock          pid lock: one Manager per home
+  state/holder                the holder id that this install's claims record
   state/status.json           written atomically each tick; `loopworker status` reads it
   state/manager.log           redacted
   state/PAUSED                host killswitch; state/projects/<key>/PAUSED per project

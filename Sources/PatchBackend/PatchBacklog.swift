@@ -11,8 +11,10 @@ import LoopWorkerCore
 /// The claim marker is the status itself: `claim` moves ready to working in one PATCH filtered
 /// on the status it read and `assignee=is.null`, so a lost race changes no row. `assignee` is
 /// never set. Manager notes are text blocks appended to the card's page body, tagged
-/// `content.loopworker` (`note` or `failed-attempt`) so that `attempts` can count them and
-/// `snapshot` can leave them out.
+/// `content.loopworker` (`note`, `release`, `failed-attempt` or `claim`) so that `attempts` can
+/// count them and `snapshot` can leave them out. After a claim lands, `claim` appends a `claim`
+/// block whose `content.holder` names the Manager; a card's `holder` is the one in its last
+/// `claim` block in body order, unless a release block follows it.
 public actor PatchBacklog: Backlog {
     let config: PatchConfig
     let client: PatchClient
@@ -85,14 +87,14 @@ public actor PatchBacklog: Backlog {
         return PatchMarkdown.snapshot(title: row.title, createdBy: row.createdBy, blocks: blocks, trusted: try await trustedAuthors())
     }
 
-    /// The text of the card's blocks tagged `content.loopworker` that the PAT owner wrote and
-    /// last edited, in body order.
+    /// The text of the card's blocks tagged `content.loopworker`, except claims, that the PAT
+    /// owner wrote and last edited, in body order.
     public func managerNotes(_ card: Card) async throws -> [String] {
         let owner = try await client.owner()
         return try await client.getAll("patch_blocks", [
             URLQueryItem(name: "table_name", value: "eq.\(config.roadmapTable)"),
             URLQueryItem(name: "row_id", value: "eq.\(card.ref.id)"),
-            URLQueryItem(name: "content->>\(PatchMarkdown.markerKey)", value: "not.is.null"),
+            URLQueryItem(name: "content->>\(PatchMarkdown.markerKey)", value: "in.(note,release,failed-attempt)"),
             URLQueryItem(name: "owner", value: "eq.\(owner)"),
             URLQueryItem(name: "updated_by", value: "eq.\(owner)"),
             URLQueryItem(name: "select", value: "content"),
@@ -102,7 +104,7 @@ public actor PatchBacklog: Backlog {
 
     // MARK: Writes
 
-    public func claim(_ card: Card) async throws -> Bool {
+    public func claim(_ card: Card, holder: String) async throws -> Bool {
         guard let r = try await row(card.ref.id), isReady(r.status), r.assignee == nil, !r.isEpic,
               let author = r.createdBy, try await trustedAuthors().contains(author)
         else { return false }
@@ -112,7 +114,24 @@ public actor PatchBacklog: Backlog {
             URLQueryItem(name: "id", value: "eq.\(r.id)"), statusFilter,
             URLQueryItem(name: "assignee", value: "is.null"),
         ], .object(["status": .string(config.status.working)]))
-        return !changed.isEmpty
+        guard !changed.isEmpty else { return false }
+        let host = holder.split(separator: ":", maxSplits: 1).first.map(String.init) ?? holder
+        let record = { try await self.appendNote(r.id, "LoopWorker on \(host) is working on this card.", kind: "claim", extra: ["holder": .string(holder)]) }
+        do {
+            do { try await record() } catch {
+                log.warning("\(card.ref.display): recording the claim's holder failed: \(error); retrying once")
+                try await record()
+            }
+        } catch {
+            // Without its holder, the working card would read as theirs to every Manager's sweep.
+            let previous = r.status ?? "(none)"
+            _ = try await client.patch(config.roadmapTable, [
+                URLQueryItem(name: "id", value: "eq.\(r.id)"), URLQueryItem(name: "status", value: "eq.\(config.status.working)"),
+            ], .object(["status": r.status.map(JSON.string) ?? .null]))
+            log.error("\(card.ref.display): can't record the claim's holder: \(error); returned the card to status \(previous) and skipped it")
+            return false
+        }
+        return true
     }
 
     public func markReview(_ card: Card, review: ReviewRequest, note: String?) async throws {
@@ -161,7 +180,7 @@ public actor PatchBacklog: Backlog {
     public func release(_ card: Card, reason: String, countsAsAttempt: Bool) async throws {
         // Clearing assignee lets a card claimed by an older Manager, which set it, become workable again.
         try await move(card, note: "LoopWorker released this card: \(reason)",
-                       kind: countsAsAttempt ? "failed-attempt" : "note",
+                       kind: countsAsAttempt ? "failed-attempt" : "release",
                        fields: ["status": .string(config.status.ready), "assignee": .null])
     }
 
@@ -177,12 +196,7 @@ public actor PatchBacklog: Backlog {
         guard let status = r.status, from.contains(status) else {
             throw PatchError.unexpectedState(card: card.ref.display, expected: expected, actual: r.status ?? "")
         }
-        let owner = try await client.owner()
-        try await client.insert("patch_blocks", .object([
-            "table_name": .string(config.roadmapTable), "row_id": .string(r.id), "type": .string("text"),
-            "content": .object(["text": .string(note), PatchMarkdown.markerKey: .string(kind)]),
-            "owner": .string(owner), "updated_by": .string(owner),
-        ]))
+        try await appendNote(r.id, note, kind: kind)
         let changed = try await client.patch(config.roadmapTable, [
             URLQueryItem(name: "id", value: "eq.\(r.id)"),
             URLQueryItem(name: "status", value: "eq.\(status)"),
@@ -190,6 +204,16 @@ public actor PatchBacklog: Backlog {
         if changed.isEmpty {
             throw PatchError.unexpectedState(card: card.ref.display, expected: status, actual: "(changed during the write)")
         }
+    }
+
+    /// Appends a text block tagged `content.loopworker = kind` to the card's page body.
+    private func appendNote(_ rowID: String, _ text: String, kind: String, extra: [String: JSON] = [:]) async throws {
+        let owner = try await client.owner()
+        try await client.insert("patch_blocks", .object([
+            "table_name": .string(config.roadmapTable), "row_id": .string(rowID), "type": .string("text"),
+            "content": .object(["text": .string(text), PatchMarkdown.markerKey: .string(kind)].merging(extra) { a, _ in a }),
+            "owner": .string(owner), "updated_by": .string(owner),
+        ]))
     }
 
     // MARK: Mapping
@@ -242,6 +266,7 @@ public actor PatchBacklog: Backlog {
 
     private func cards(_ rows: [Row], trusted: Set<String>) async throws -> [Card] {
         let attempts = try await failedAttempts(rows.map(\.id))
+        let holders = try await holders(rows.filter { $0.status == config.status.working || $0.status == config.status.verifying }.map(\.id))
         return rows.compactMap { r in
             guard let path = r.project.flatMap({ config.projectPaths[$0] }) else { return nil }
             var url: URL?
@@ -251,7 +276,7 @@ public actor PatchBacklog: Backlog {
             return Card(
                 ref: CardRef(id: r.id, display: "~\(r.number)"), project: path, number: "\(r.number)",
                 title: r.title, state: state(r, trusted: trusted), priority: r.priority, model: r.model,
-                attempts: attempts[r.id] ?? 0, url: url)
+                attempts: attempts[r.id] ?? 0, url: url, holder: holders[r.id])
         }
     }
 
@@ -269,6 +294,28 @@ public actor PatchBacklog: Backlog {
         return blocks.reduce(into: [:]) { counts, b in
             if let id = b["row_id"]?.string { counts[id, default: 0] += 1 }
         }
+    }
+
+    /// Per card, the holder in its last claim block when no release block follows it; only
+    /// blocks that the PAT owner wrote and last edited count.
+    private func holders(_ ids: [String]) async throws -> [String: String] {
+        guard !ids.isEmpty else { return [:] }
+        let owner = try await client.owner()
+        let blocks = try await client.getAll("patch_blocks", [
+            URLQueryItem(name: "table_name", value: "eq.\(config.roadmapTable)"),
+            URLQueryItem(name: "row_id", value: "in.(\(ids.joined(separator: ",")))"),
+            URLQueryItem(name: "content->>\(PatchMarkdown.markerKey)", value: "in.(claim,release,failed-attempt)"),
+            URLQueryItem(name: "owner", value: "eq.\(owner)"),
+            URLQueryItem(name: "updated_by", value: "eq.\(owner)"),
+            URLQueryItem(name: "select", value: "row_id,content"),
+            URLQueryItem(name: "order", value: "sort.asc,id.asc"),
+        ])
+        var holders: [String: String] = [:]
+        for b in blocks {
+            guard let id = b["row_id"]?.string else { continue }
+            holders[id] = b["content"]?[PatchMarkdown.markerKey]?.string == "claim" ? b["content"]?["holder"]?.string : nil
+        }
+        return holders
     }
 
     private func allRows(_ filter: [URLQueryItem] = []) async throws -> [Row] {

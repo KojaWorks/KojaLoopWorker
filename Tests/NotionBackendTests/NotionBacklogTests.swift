@@ -354,7 +354,7 @@ private let releaseText = "LoopWorker released this card:\n\nrestart"
         let fake = FakeNotion()
         fake.addDatabase()
         let page = fake.addPage(1, editor: mallory)
-        #expect(try await make(fake).claim(card(page, .ready)) == false)
+        #expect(try await make(fake).claim(card(page, .ready), holder: testHolder) == false)
         #expect(fake.writes.isEmpty)
     }
 
@@ -362,12 +362,39 @@ private let releaseText = "LoopWorker released this card:\n\nrestart"
         let fake = FakeNotion()
         fake.addDatabase()
         let page = fake.addPage(1, title: "Fix the login")
-        #expect(try await make(fake).claim(card(page, .ready)) == true)
+        #expect(try await make(fake).claim(card(page, .ready), holder: testHolder) == true)
         #expect(fake.state(page) == "working")
         #expect(fake.writes.map(\.httpMethod) == ["PATCH", "POST"])
         let text = try #require(fake.commentTexts(page).first)
-        #expect(text.hasPrefix("LoopWorker claimed this card (host testhost, "))
+        #expect(text.hasPrefix("LoopWorker claimed this card (holder \(testHolder), "))
+        #expect(try await make(fake).card(CardRef(id: page, display: "x"))?.holder == testHolder)
         #expect(text.hasSuffix(").\n\nVouched title: Fix the login"))
+    }
+
+    @Test("B234: the holder is the one in the integration's newest claim comment unless a release is newer")
+    func holderFollowsClaimAndReleaseComments() async throws {
+        let cases: [(String, (FakeNotion, String) -> Void, String?)] = [
+            ("working", { f, p in f.addClaim(p, holder: "a:/h") }, "a:/h"),
+            ("ci", { f, p in f.addClaim(p, holder: "a:/h"); f.addComment(p, by: botID, "LoopWorker is waiting for CI on its review request:\n\ng/app!3") }, "a:/h"),
+            // A rival's claim of the same round that it hasn't deleted yet: the older claim wins, as in `claim`.
+            ("working", { f, p in f.addClaim(p, holder: "a:/h"); f.addClaim(p, holder: "b:/h") }, "a:/h"),
+            // A claim left by a crashed Manager before a human set next again is an earlier round.
+            ("working", { f, p in f.addClaim(p, holder: "dead:/h"); f.clock += 600; f.addClaim(p, holder: "b:/h") }, "b:/h"),
+            ("working", { f, p in f.addClaim(p, holder: "a:/h"); f.addComment(p, by: botID, releaseText); f.addClaim(p, holder: "b:/h") }, "b:/h"),
+            ("working", { f, p in f.addClaim(p, holder: "a:/h"); f.addComment(p, by: botID, releaseText) }, nil),
+            ("working", { f, p in f.addClaim(p, holder: "a:/h"); f.addClaim(p, holder: "x:/h", by: alice) }, "a:/h"),
+            ("working", { f, p in f.addClaim(p, host: "old") }, nil),
+        ]
+        for (state, comments, holder) in cases {
+            let fake = FakeNotion()
+            fake.addDatabase()
+            let page = fake.addPage(1, state: state, editor: botID)
+            comments(fake, page)
+            let backlog = try make(fake)
+            #expect(try await backlog.card(CardRef(id: page, display: "x"))?.holder == holder)
+            let listed = state == "ci" ? try await backlog.verifying(in: [app]) : try await backlog.working(in: [app])
+            #expect(listed.first?.holder == holder)
+        }
     }
 
     @Test func B196_aClaimThroughTheReleaseVouchCopiesThePreviousVouchedTitle() async throws {
@@ -376,7 +403,7 @@ private let releaseText = "LoopWorker released this card:\n\nrestart"
         let page = fake.addPage(1, editor: botID, title: "Renamed by someone")
         fake.addClaim(page, title: "Fix the login")
         fake.addComment(page, by: botID, releaseText)
-        #expect(try await make(fake).claim(card(page, .ready)) == true)
+        #expect(try await make(fake).claim(card(page, .ready), holder: testHolder) == true)
         #expect(fake.commentTexts(page).last?.hasSuffix("\n\nVouched title: Fix the login") == true)
     }
 
@@ -394,13 +421,62 @@ private let releaseText = "LoopWorker released this card:\n\nrestart"
         }
     }
 
+    @Test("B234: while the losing claim of a simultaneous round is not deleted yet, the winner's re-read names the winner")
+    func simultaneousClaimsAgreeOnTheWinner() async throws {
+        let fake = FakeNotion()
+        fake.addDatabase()
+        let page = fake.addPage(1)
+        fake.afterComment = {
+            guard fake.comments[page]?.count == 1 else { return }
+            fake.addClaim(page, holder: "rival:/h")  // the rival's claim, newer, not yet deleted
+        }
+        let backlog = try make(fake)
+        #expect(try await backlog.claim(card(page, .ready), holder: testHolder) == true)
+        #expect(fake.commentTexts(page).count == 2)
+        #expect(try await backlog.card(CardRef(id: page, display: "x"))?.holder == testHolder)
+    }
+
+    @Test("B234: a claim comment that fails once is retried; twice, and the card goes back to next and the claim is skipped")
+    func claimCommentFailures() async throws {
+        let once = FakeNotion()
+        once.addDatabase()
+        let p1 = once.addPage(1)
+        once.queued["POST /v1/comments"] = [(500, [:], .object(["message": "oops"]))]
+        #expect(try await make(once).claim(card(p1, .ready), holder: testHolder) == true)
+        #expect(once.commentTexts(p1).count == 1)
+
+        let twice = FakeNotion()
+        twice.addDatabase()
+        let p2 = twice.addPage(1)
+        twice.queued["POST /v1/comments"] = [(500, [:], .object(["message": "oops"])), (500, [:], .object(["message": "oops"]))]
+        let log = LogRecorder()
+        #expect(try await make(twice, log: log).claim(card(p2, .ready), holder: testHolder) == false)
+        #expect(twice.state(p2) == "next")
+        #expect(twice.commentTexts(p2).isEmpty)
+        #expect(log.lines.contains { $0.contains("can't post the claim comment") && $0.contains("a trusted user sets next again") })
+    }
+
+    @Test("B234: a retried claim comment whose first post landed still wins")
+    func retriedClaimWhoseFirstPostLandedWins() async throws {
+        let fake = FakeNotion()
+        fake.addDatabase()
+        let page = fake.addPage(1)
+        fake.afterComment = {
+            guard fake.comments[page]?.count == 1, case .object(var landed) = fake.comments[page]![0] else { return }
+            landed["id"] = .string(id(99, "cc"))  // the first post, whose response was lost, sits before the retry's
+            fake.comments[page]!.insert(.object(landed), at: 0)
+        }
+        #expect(try await make(fake).claim(card(page, .ready), holder: testHolder) == true)
+        #expect(fake.requests.filter { $0.httpMethod == "DELETE" }.isEmpty)
+    }
+
     @Test func B196_aClaimThatLostToAnOlderClaimDeletesItsComment() async throws {
         let fake = FakeNotion()
         fake.addDatabase()
         let page = fake.addPage(1)
         rivalClaimsFirst(fake, page)
         let log = LogRecorder()
-        #expect(try await make(fake, log: log).claim(card(page, .ready)) == false)
+        #expect(try await make(fake, log: log).claim(card(page, .ready), holder: testHolder) == false)
         #expect(fake.commentTexts(page).count == 1)
         #expect(fake.commentTexts(page)[0].hasPrefix("LoopWorker claimed this card (host other,"))
         #expect(fake.requests.filter { $0.httpMethod == "DELETE" }.count == 1)
@@ -415,7 +491,7 @@ private let releaseText = "LoopWorker released this card:\n\nrestart"
             guard fake.comments[page]?.count == 1 else { return }
             fake.addClaim(page, host: "other")
         }
-        #expect(try await make(fake).claim(card(page, .ready)) == true)
+        #expect(try await make(fake).claim(card(page, .ready), holder: testHolder) == true)
         #expect(fake.requests.filter { $0.httpMethod == "DELETE" }.isEmpty)
     }
 
@@ -427,7 +503,7 @@ private let releaseText = "LoopWorker released this card:\n\nrestart"
         fake.queued["DELETE /v1/comments/\(mine)"] = [(500, [:], .object(["message": "oops"]))]
         rivalClaimsFirst(fake, page)
         let log = LogRecorder()
-        #expect(try await make(fake, log: log).claim(card(page, .ready)) == false)
+        #expect(try await make(fake, log: log).claim(card(page, .ready), holder: testHolder) == false)
         #expect(log.lines.contains { $0.contains("can't delete the lost claim comment \(mine)") })
     }
 
@@ -436,7 +512,7 @@ private let releaseText = "LoopWorker released this card:\n\nrestart"
         fake.addDatabase()
         let page = fake.addPage(1, editor: alice)
         fake.addClaim(page, host: "crashed")  // a Manager died after claiming; a human set next again
-        #expect(try await make(fake).claim(card(page, .ready)) == true)
+        #expect(try await make(fake).claim(card(page, .ready), holder: testHolder) == true)
         #expect(fake.requests.filter { $0.httpMethod == "DELETE" }.isEmpty)
     }
 
@@ -446,7 +522,7 @@ private let releaseText = "LoopWorker released this card:\n\nrestart"
         let page = fake.addPage(1, editor: botID)
         fake.addClaim(page, host: "old")
         fake.addComment(page, by: botID, releaseText)
-        #expect(try await make(fake).claim(card(page, .ready)) == true)
+        #expect(try await make(fake).claim(card(page, .ready), holder: testHolder) == true)
         #expect(fake.requests.filter { $0.httpMethod == "DELETE" }.isEmpty)
     }
 

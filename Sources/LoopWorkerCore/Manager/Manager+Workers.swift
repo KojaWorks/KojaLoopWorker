@@ -205,7 +205,7 @@ extension Manager {
         }
 
         var claimed: Bool
-        do { claimed = try await deps.backlog.claim(card) }
+        do { claimed = try await deps.backlog.claim(card, holder: holder) }
         catch {
             // A lost response may hide a claim that landed; the card then reads as working.
             if let current = try? await deps.backlog.card(card.ref), current.state == .working {
@@ -220,6 +220,27 @@ extension Manager {
         }
         guard claimed else {
             log.info("\(label(spec)): \(card.ref) was no longer ready; skipping it")
+            try? fm.removeItem(at: cardRecordFile(spec))
+            free(ref)
+            return
+        }
+        // Not every backlog's claim is compare-and-set: a rival's newer claim holds the card.
+        do {
+            let fresh = try await deps.backlog.card(card.ref)
+            guard let fresh, fresh.state == .working else {
+                log.warning("\(label(spec)): \(card.ref) is \(fresh?.state.rawValue ?? "gone") right after this Manager claimed it; not starting a worker")
+                try? fm.removeItem(at: cardRecordFile(spec))
+                free(ref)
+                return
+            }
+            if let other = heldElsewhere(fresh) {
+                log.warning("\(label(spec)): \(card.ref) was claimed by \(other) too, after this Manager; leaving it to that Manager")
+                try? fm.removeItem(at: cardRecordFile(spec))
+                free(ref)
+                return
+            }
+        } catch {
+            log.error("\(label(spec)): can't re-read \(card.ref) after claiming it: \(error); not starting a worker, and the stranded-card sweep releases the card unless another Manager holds it")
             try? fm.removeItem(at: cardRecordFile(spec))
             free(ref)
             return
@@ -601,7 +622,8 @@ extension Manager {
         let cap = (projects[ref.key]?.contract?.wallclockCapMinutes ?? 90) * 60
         let observation = SlotObservation(
             cardState: fresh?.state, sessionAlive: alive, authFailed: deps.pane.showsAuthFailure(pane),
-            outcomeAge: outcomeAge, runningFor: current.spawnedAt.map { now.timeIntervalSince($0) } ?? 0)
+            outcomeAge: outcomeAge, runningFor: current.spawnedAt.map { now.timeIntervalSince($0) } ?? 0,
+            heldBy: fresh.flatMap(heldElsewhere))
         let decision = Reconciler.decide(observation, policy: ReconcilePolicy(wallclockCap: cap))
         let target = fresh ?? card
 

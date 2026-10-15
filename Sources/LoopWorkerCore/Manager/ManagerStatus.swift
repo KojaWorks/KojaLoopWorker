@@ -17,6 +17,9 @@ public struct ManagerStatus: Codable, Sendable, Equatable {
     /// Cards in `verifying` whose CI the Manager watches, oldest push first. Nil from a
     /// Manager that predates CI watching.
     public var ci: [CI]?
+    /// `working` and `verifying` cards that another Manager holds, as the last sweeps saw them.
+    /// Nil from a Manager that predates holder ids.
+    public var held: [Held]?
     /// The most recent log lines, oldest first.
     public var log: [String]
 
@@ -130,9 +133,26 @@ public struct ManagerStatus: Codable, Sendable, Equatable {
         }
     }
 
+    /// A card that another Manager holds; this Manager leaves it alone.
+    public struct Held: Codable, Sendable, Equatable {
+        public var card: String
+        public var cardURL: URL?
+        /// `working` or `verifying`.
+        public var state: String
+        /// The other Manager's holder id, `<host name>:<LOOPWORKER_HOME>`.
+        public var holder: String
+
+        public init(card: String, cardURL: URL?, state: String, holder: String) {
+            self.card = card
+            self.cardURL = cardURL
+            self.state = state
+            self.holder = holder
+        }
+    }
+
     public init(
         version: String = loopworkerVersion, pid: Int32, host: String, started: Date, updated: Date,
-        paused: Bool, draining: Bool, auth: Auth, projects: [Project], ci: [CI]? = nil, log: [String]
+        paused: Bool, draining: Bool, auth: Auth, projects: [Project], ci: [CI]? = nil, held: [Held]? = nil, log: [String]
     ) {
         self.version = version
         self.pid = pid
@@ -144,6 +164,7 @@ public struct ManagerStatus: Codable, Sendable, Equatable {
         self.auth = auth
         self.projects = projects
         self.ci = ci
+        self.held = held
         self.log = log
     }
 

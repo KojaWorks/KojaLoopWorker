@@ -129,3 +129,6 @@ func card(_ number: Int, status: String? = "Backlog", project: JSON = .string("p
     row.merge(extra) { $1 }
     return row
 }
+
+/// The holder id that tests claim as.
+let testHolder = "buildmac.local:/Users/x/.loopworker"

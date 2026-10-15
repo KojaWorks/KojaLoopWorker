@@ -333,7 +333,7 @@ private func make(_ fake: FakePatch, _ patchKeys: String = "", log: LogRecorder 
         fake.rows["roadmap"] = [card(1)]
         let backlog = try make(fake)
         let c = try #require(try await backlog.workable(in: [app]).first)
-        #expect(try await backlog.claim(c))
+        #expect(try await backlog.claim(c, holder: testHolder))
         #expect(fake.rows["roadmap"]![0]["status"] == .string("In progress"))
         #expect(fake.rows["roadmap"]![0]["assignee"] == .null)
         let patch = try #require(fake.requests("PATCH", "/rest/v1/roadmap").first)
@@ -348,7 +348,7 @@ private func make(_ fake: FakePatch, _ patchKeys: String = "", log: LogRecorder 
         let backlog = try make(fake)
         let c = try #require(try await backlog.workable(in: [app]).first)
         fake.beforePatch = { fake.rows["roadmap"]![0]["status"] = .string("In progress") }
-        #expect(try await backlog.claim(c) == false)
+        #expect(try await backlog.claim(c, holder: testHolder) == false)
     }
 
     @Test(arguments: [(String?.none, "is.null"), ("", "eq.")])
@@ -356,10 +356,76 @@ private func make(_ fake: FakePatch, _ patchKeys: String = "", log: LogRecorder 
         let fake = FakePatch()
         fake.rows["roadmap"] = [card(1, status: stored)]
         let backlog = try make(fake)
-        #expect(try await backlog.claim(try #require(try await backlog.workable(in: [app]).first)))
+        #expect(try await backlog.claim(try #require(try await backlog.workable(in: [app]).first), holder: testHolder))
         let patch = try #require(fake.requests("PATCH", "/rest/v1/roadmap").first)
         #expect(URLComponents(url: patch.url!, resolvingAgainstBaseURL: false)!.queryItems!
             .contains(URLQueryItem(name: "status", value: filter)))
+    }
+
+    @Test("B233: a won claim appends a claim block that names the holder; a lost one writes nothing")
+    func claimRecordsTheHolder() async throws {
+        let fake = FakePatch()
+        fake.rows["roadmap"] = [card(1), card(2)]
+        let backlog = try make(fake)
+        let cards = try await backlog.workable(in: [app])
+        #expect(try await backlog.claim(try #require(cards.first { $0.number == "1" }), holder: testHolder))
+        let block = try #require(fake.rows["patch_blocks"]!.first)
+        #expect(block["row_id"] == .string("u1") && block["owner"] == .string(FakePatch.owner) && block["updated_by"] == .string(FakePatch.owner))
+        #expect(block["content"] == .object(["text": .string("LoopWorker on buildmac.local is working on this card."), "loopworker": .string("claim"), "holder": .string(testHolder)]))
+        #expect(try await backlog.card(CardRef(id: "u1", display: "~1"))?.holder == testHolder)
+        #expect(try await backlog.managerNotes(try #require(cards.first)) == [])
+
+        fake.beforePatch = { fake.rows["roadmap"]![1]["status"] = .string("In progress") }
+        #expect(try await backlog.claim(try #require(cards.first { $0.number == "2" }), holder: testHolder) == false)
+        #expect(fake.rows["patch_blocks"]!.count == 1)
+    }
+
+    @Test("B233: a claim block that fails once is retried; twice, and the card goes back to its status and the claim is skipped")
+    func claimBlockFailures() async throws {
+        let fake = FakePatch()
+        fake.rows["roadmap"] = [card(1), card(2)]
+        let log = LogRecorder()
+        let backlog = try make(fake, log: log)
+        let cards = try await backlog.workable(in: [app])
+
+        fake.restStatus = ["POST": [500]]
+        #expect(try await backlog.claim(try #require(cards.first { $0.number == "1" }), holder: testHolder))
+        #expect(fake.rows["patch_blocks"]!.count == 1)
+        #expect(try await backlog.card(CardRef(id: "u1", display: "~1"))?.holder == testHolder)
+
+        fake.restStatus = ["POST": [500, 500]]
+        #expect(try await backlog.claim(try #require(cards.first { $0.number == "2" }), holder: testHolder) == false)
+        #expect(fake.rows["roadmap"]![1]["status"] == .string("Backlog"))
+        #expect(fake.rows["patch_blocks"]!.count == 1)
+        #expect(log.lines.contains { $0.hasPrefix("~2: can't record the claim's holder:") && $0.hasSuffix("returned the card to status Backlog and skipped it") })
+    }
+
+    @Test("B233: the holder is the owner's last claim block unless a release follows it")
+    func holderFollowsClaimAndReleaseBlocks() async throws {
+        let fake = FakePatch()
+        fake.rows["roadmap"] = [card(1, status: "In progress")]
+        let backlog = try make(fake)
+        func block(_ kind: String, holder: String? = nil, owner: String = FakePatch.owner) -> [String: JSON] {
+            var content: [String: JSON] = ["text": .string("x"), "loopworker": .string(kind)]
+            if let holder { content["holder"] = .string(holder) }
+            return ["table_name": .string("roadmap"), "row_id": .string("u1"), "owner": .string(owner), "updated_by": .string(owner), "content": .object(content)]
+        }
+        let cases: [([[String: JSON]], String?)] = [
+            ([], nil),
+            ([block("claim", holder: "a:/h"), block("note")], "a:/h"),
+            ([block("claim", holder: "a:/h"), block("claim", holder: "b:/h")], "b:/h"),
+            ([block("claim", holder: "a:/h"), block("release")], nil),
+            ([block("claim", holder: "a:/h"), block("failed-attempt")], nil),
+            ([block("release"), block("claim", holder: "a:/h")], "a:/h"),
+            ([block("claim", holder: "a:/h"), block("claim", holder: "x:/h", owner: "stranger")], "a:/h"),
+        ]
+        for (blocks, holder) in cases {
+            fake.rows["patch_blocks"] = blocks
+            #expect(try await backlog.card(CardRef(id: "u1", display: "~1"))?.holder == holder)
+            #expect(try await backlog.working(in: [app]).first?.holder == holder)
+        }
+        fake.rows["roadmap"]![0]["status"] = .string("Backlog")
+        #expect(try await backlog.card(CardRef(id: "u1", display: "~1"))?.holder == nil)
     }
 
     @Test func claimRefusesACardThatIsNoLongerReady() async throws {
@@ -368,7 +434,7 @@ private func make(_ fake: FakePatch, _ patchKeys: String = "", log: LogRecorder 
         let backlog = try make(fake)
         let c = try #require(try await backlog.workable(in: [app]).first)
         fake.rows["roadmap"]![0]["assignee"] = .string("someone")
-        #expect(try await backlog.claim(c) == false)
+        #expect(try await backlog.claim(c, holder: testHolder) == false)
         #expect(fake.requests("PATCH", "/rest/v1/roadmap").isEmpty)
     }
 

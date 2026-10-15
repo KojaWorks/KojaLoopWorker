@@ -38,21 +38,14 @@ public enum NotionBackend {
     static func makeBacklog(
         config: HostConfig, log: LogSink, environment: [String: String], transport: @escaping HTTPTransport,
         sleep: @escaping @Sendable (Double) async throws -> Void = { try await Task.sleep(nanoseconds: NotionClient.nanoseconds($0)) },
-        now: @escaping @Sendable () -> Date = Date.init,
-        host: String = hostName()
+        now: @escaping @Sendable () -> Date = Date.init
     ) throws -> NotionBacklog {
         let notion = try NotionConfig.from(config)
         guard let token = environment[notion.tokenEnv], !token.isEmpty else {
             throw ConfigError("\(notion.tokenEnv) is not set: create an internal integration (https://www.notion.com/help/add-and-manage-connections-with-the-api) and put its secret in secrets.env ([backlog.notion] token_env)")
         }
         let client = NotionClient(tokenEnv: notion.tokenEnv, token: token, transport: transport, now: now, sleep: sleep)
-        return NotionBacklog(config: notion, client: client, log: log, now: now, host: host)
-    }
-
-    static func hostName() -> String {
-        var buf = [CChar](repeating: 0, count: 256)
-        guard gethostname(&buf, buf.count) == 0 else { return "unknown-host" }
-        return String(decoding: buf.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        return NotionBacklog(config: notion, client: client, log: log, now: now)
     }
 }
 

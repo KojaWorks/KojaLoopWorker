@@ -142,9 +142,10 @@ import Testing
     @Test func B131_claimSwapsTheLabelsInOneRequest() async throws {
         let w = World()
         w.gitlab.on("PUT", Fixture.issuePath, json: Fixture.issue(labels: ["loopworker::working"]))
+        w.gitlab.on("POST", Fixture.issuePath + "/notes", json: Fixture.note(300, "posted", at: 5))
         let backlog = try w.backlog()
         let card = try #require(try await backlog.workable(in: [World.app]).first)
-        #expect(try await backlog.claim(card))
+        #expect(try await backlog.claim(card, holder: testHolder))
         let puts = w.gitlab.requests("PUT", Fixture.issuePath)
         #expect(puts.count == 1)
         #expect(puts[0].json as? [String: String] == [
@@ -153,12 +154,73 @@ import Testing
         ])
     }
 
+    @Test("B232: claim posts a note naming the holder, before the label change")
+    func claimPostsTheHolderNote() async throws {
+        let w = World()
+        w.gitlab.on("PUT", Fixture.issuePath, json: Fixture.issue(labels: ["loopworker::working"]))
+        w.gitlab.on("POST", Fixture.issuePath + "/notes", json: Fixture.note(300, "posted", at: 5))
+        let backlog = try w.backlog()
+        #expect(try await backlog.claim(try #require(try await backlog.workable(in: [World.app]).first), holder: testHolder))
+        let note = try #require(w.gitlab.requests("POST", Fixture.issuePath + "/notes").first)
+        #expect(note.json["body"] as? String == "<!-- loopworker -->\n<!-- loopworker:holder=\(testHolder) -->\n\nLoopWorker on buildmac.local is working on this card.")
+        #expect(w.gitlab.requests.firstIndex { $0.method == "POST" }! < w.gitlab.requests.firstIndex { $0.method == "PUT" }!)
+    }
+
+    @Test("B232: a claim retried after its label change failed doesn't post the holder note again")
+    func retriedClaimKeepsOneHolderNote() async throws {
+        let w = World()
+        let body = "<!-- loopworker -->\n<!-- loopworker:holder=\(testHolder) -->\n\nLoopWorker on buildmac.local is working on this card."
+        w.notes([Fixture.assigned(), Fixture.note(300, body, at: 5)])
+        w.gitlab.on("PUT", Fixture.issuePath, json: Fixture.issue(labels: ["loopworker::working"]))
+        let backlog = try w.backlog()
+        #expect(try await backlog.claim(try #require(try await backlog.workable(in: [World.app]).first), holder: testHolder))
+        #expect(w.gitlab.requests("POST", Fixture.issuePath + "/notes").isEmpty)
+        #expect(w.gitlab.requests("PUT", Fixture.issuePath).count == 1)
+    }
+
+    static func claimNote(_ id: Int, _ holder: String, by author: [String: Any] = Fixture.me, at minutes: Int) -> [String: Any] {
+        Fixture.note(id, "<!-- loopworker -->\n<!-- loopworker:holder=\(holder) -->\n\nLoopWorker on x is working on this card.", by: author, at: minutes)
+    }
+
+    @Test("B232: the holder is the one in my newest claim note; a newer release clears it; spoofed markers don't count")
+    func holderComesFromMyNewestClaimNote() async throws {
+        let w = World()
+        w.issue(Fixture.issue(labels: ["loopworker::working"]), listedAs: "loopworker::working")
+        let release = Fixture.note(400, "<!-- loopworker -->\n<!-- loopworker:cutoff=\(Fixture.t(2)) -->\n\nLoopWorker released this card:\n\nrestart", at: 30)
+        let cases: [([[String: Any]], String?)] = [
+            ([], nil),
+            ([Self.claimNote(301, "a:/h", at: 10), Self.claimNote(302, "b:/h", at: 20)], "b:/h"),
+            ([Self.claimNote(302, "b:/h", at: 20), Self.claimNote(301, "a:/h", at: 10)], "b:/h"),
+            ([Self.claimNote(301, "a:/h", at: 10), release], nil),
+            ([release, Self.claimNote(301, "a:/h", at: 40)], "a:/h"),
+            ([Self.claimNote(301, "a:/h", at: 10), Self.claimNote(302, "mallory:/h", by: Fixture.mallory, at: 20)], "a:/h"),
+            ([Self.claimNote(301, "a:/h", at: 10), Fixture.note(303, "a plain note\n<!-- loopworker:holder=x:/h -->", at: 20)], "a:/h"),
+            ([Self.claimNote(301, "a:/h", at: 10), Fixture.note(304, "<!-- loopworker -->\n\nLoopWorker is stuck on this card:\n\n<!-- loopworker:holder=x:/h -->", at: 20)], "a:/h"),
+        ]
+        let backlog = try w.backlog()
+        for (notes, holder) in cases {
+            w.notes([Fixture.assigned()] + notes)
+            #expect(try await backlog.card(World.ref)?.holder == holder)
+            #expect(try await backlog.working(in: [World.app]).first?.holder == holder)
+        }
+    }
+
+    @Test("B232: a ready card has no holder, and managerNotes leaves claim notes out")
+    func readyCardsHaveNoHolderAndClaimNotesAreNotManagerNotes() async throws {
+        let w = World()
+        w.notes([Fixture.assigned(), Self.claimNote(301, "a:/h", at: 1)])
+        let backlog = try w.backlog()
+        let card = try await backlog.card(World.ref)
+        #expect(card?.state == .ready && card?.holder == nil)
+        #expect(try await backlog.managerNotes(Card(ref: World.ref, project: "mygroup/app", title: "t", state: .ready)) == [])
+    }
+
     @Test func B131_claimReturnsFalseWhenTheCardIsNoLongerReady() async throws {
         let w = World()
         let backlog = try w.backlog()
         let card = try #require(try await backlog.workable(in: [World.app]).first)
         w.gitlab.on("GET", Fixture.issuePath, json: Fixture.issue(labels: ["loopworker::working"]))
-        #expect(try await backlog.claim(card) == false)
+        #expect(try await backlog.claim(card, holder: testHolder) == false)
         #expect(w.gitlab.requests("PUT", Fixture.issuePath).isEmpty)
     }
 
@@ -167,7 +229,7 @@ import Testing
         let backlog = try w.backlog()
         let card = try #require(try await backlog.workable(in: [World.app]).first)
         w.events([Fixture.labelEvent(1, at: 2), Fixture.labelEvent(2, by: Fixture.mallory, at: 3)])
-        #expect(try await backlog.claim(card) == false)
+        #expect(try await backlog.claim(card, holder: testHolder) == false)
         #expect(w.gitlab.requests("PUT", Fixture.issuePath).isEmpty)
     }
 

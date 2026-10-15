@@ -394,6 +394,18 @@ func temporaryDirectory() throws -> URL {
             """)
     }
 
+    @Test("B230: cards held by other Managers are listed with their holder")
+    func heldCardsAreListed() {
+        var s = status(updated: now)
+        s.log = []
+        s.held = [.init(card: "g/app#3", cardURL: nil, state: "working", holder: "rival.local:/srv/lw")]
+        #expect(StatusReport.render(s, lockHolder: 7, now: now).text.hasSuffix("""
+            held by other Managers (if one is gone for good, move its cards back to ready):
+              g/app#3 (working) held by rival.local:/srv/lw
+
+            """))
+    }
+
     @Test func noLockHolderMeansNotRunning() {
         let r = StatusReport.render(status(updated: now), lockHolder: nil, now: now)
         #expect(!r.running)

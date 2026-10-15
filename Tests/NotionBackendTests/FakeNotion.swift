@@ -288,7 +288,7 @@ func hostConfig(_ keys: String = "priority_property = \"Priority\"\nmodel_proper
 func make(_ fake: FakeNotion, config: HostConfig? = nil, log: LogRecorder = LogRecorder(), clock: TestClock = TestClock()) throws -> NotionBacklog {
     try NotionBackend.makeBacklog(
         config: config ?? hostConfig(), log: log, environment: env, transport: fake.transport,
-        sleep: { clock.sleep($0) }, now: { clock.now }, host: "testhost")
+        sleep: { clock.sleep($0) }, now: { clock.now })
 }
 
 func card(_ page: String, _ state: CardState = .working) -> Card {
@@ -296,11 +296,16 @@ func card(_ page: String, _ state: CardState = .working) -> Card {
 }
 
 extension FakeNotion {
-    /// A claim comment by the integration that records `title` as vouched.
-    func addClaim(_ page: String, title: String = "card 1", host: String = "h") {
-        addComment(page, by: botID, "LoopWorker claimed this card (host \(host), 1234).\n\nVouched title: \(title)")
+    /// A claim comment by `author` that records `title` as vouched and names `holder`, or
+    /// `host` as a LoopWorker without holder ids did.
+    func addClaim(_ page: String, title: String = "card 1", host: String = "h", holder: String? = nil, by author: String = botID) {
+        let who = holder.map { "holder \($0)" } ?? "host \(host)"
+        addComment(page, by: author, "LoopWorker claimed this card (\(who), 1234).\n\nVouched title: \(title)")
     }
 
     /// The id that the fake gives the next comment.
     var nextCommentID: String { id(nextComment, "cc") }
 }
+
+/// The holder id that tests claim as.
+let testHolder = "buildmac.local:/Users/x/.loopworker"

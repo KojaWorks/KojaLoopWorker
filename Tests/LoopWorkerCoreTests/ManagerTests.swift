@@ -86,6 +86,69 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(!FileManager.default.fileExists(atPath: h.stateDir().appending(path: "card.json").path))
     }
 
+    @Test("B229: a claim records this Manager as the holder")
+    func claimRecordsTheHolder() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        h.addCard(1)
+        try await h.boot()
+        await h.cycle()
+        #expect(h.backlog.card(id: "id-1")?.holder == h.manager.holder)
+        #expect(h.tmux.spawned.count == 1)
+    }
+
+    @Test("B229: a claim that a rival's newer claim overtook spawns nothing and leaves the card to the rival")
+    func claimOvertakenByARivalSpawnsNothing() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        h.addCard(1)
+        h.backlog.state { $0.rivalHolder = "rival.local:/srv/lw" }
+        try await h.boot()
+        await h.cycle()
+        #expect(h.tmux.spawned.isEmpty)
+        #expect(h.lifecycle.calls.filter { $0.hasPrefix("acquire") }.isEmpty)
+        #expect(h.backlog.card(id: "id-1")?.state == .working)
+        #expect(!h.backlog.writes.contains { if case .release = $0 { true } else { false } })
+        #expect(!FileManager.default.fileExists(atPath: h.stateDir().appending(path: "card.json").path))
+        #expect(h.log.contains("g/app#1 was claimed by rival.local:/srv/lw too", level: .warning))
+        #expect(try h.status().projects[0].slots[0].state == "idle")
+    }
+
+    @Test("B229: a card that is no longer working right after its claim (a rival's sweep released it) spawns nothing")
+    func claimReleasedRightAwaySpawnsNothing() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        h.addCard(1)
+        h.backlog.state { $0.claimOverride = true }  // reports a win but leaves the card ready
+        try await h.boot()
+        await h.cycle()
+        #expect(h.tmux.spawned.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: h.stateDir().appending(path: "card.json").path))
+        #expect(h.log.contains("g/app#1 is ready right after this Manager claimed it", level: .warning))
+    }
+
+    @Test("B229: a claim whose holder can't be re-read spawns nothing")
+    func claimWithoutAHolderReReadSpawnsNothing() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        h.addCard(1)
+        h.backlog.state { $0.failCard = ["id-1"] }
+        try await h.boot()
+        await h.cycle()
+        #expect(h.tmux.spawned.isEmpty)
+        #expect(h.log.contains("can't re-read g/app#1 after claiming it", level: .error))
+    }
+
+    @Test("B231: a worker whose card another Manager now holds is reaped without a backlog write")
+    func workerOnACardHeldElsewhereIsAbandoned() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        h.addCard(1)
+        try await h.boot()
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 1)
+        h.backlog.state { $0.cards["id-1"]?.holder = "rival.local:/srv/lw" }
+        await h.cycle()
+        #expect(h.tmux.killed.contains("lw_g--app_0"))
+        #expect(h.backlog.writes == [.claim("id-1")])
+        #expect(h.log.contains("abandoning g/app#1: card is held by rival.local:/srv/lw now", level: .warning))
+    }
+
     @Test func aClaimWhoseResponseWasLostButLandedIsKept() async throws {
         let h = try ManagerHarness(projects: oneColdProject)
         h.addCard(1)
@@ -884,6 +947,58 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(slots[0].state == "busy" && slots[0].card == "g/app#1")
     }
 
+    func addCard(_ h: ManagerHarness, _ n: Int, state: CardState, holder: String?) {
+        var card = h.addCard(n, state: state)
+        card.holder = holder
+        h.backlog.add(card)
+    }
+
+    @Test("B230: the sweep releases stranded cards it or nobody holds, and leaves another Manager's, logged once and listed")
+    func sweepLeavesCardsHeldElsewhere() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        addCard(h, 1, state: .working, holder: h.manager.holder)
+        addCard(h, 2, state: .working, holder: nil)
+        addCard(h, 3, state: .working, holder: "rival.local:/srv/lw")
+        try await h.boot()
+        h.clock.advance(Manager.sweepInterval)
+        await h.cycle()
+
+        let releases = h.backlog.writes.compactMap { if case .release(let id, _, _) = $0 { id } else { nil } }
+        #expect(Set(releases) == ["id-1", "id-2"])
+        #expect(h.backlog.card(id: "id-3")?.state == .working)
+        #expect(h.log.lines.get.filter { $0.message.hasPrefix("g/app#3 is held by rival.local:/srv/lw; leaving it.") }.count == 1)
+        #expect(try h.status().held == [.init(card: "g/app#3", cardURL: URL(string: "https://forge.example/g/app/-/issues/3"),
+                                               state: "working", holder: "rival.local:/srv/lw")])
+    }
+
+    @Test("B230: startup clears a slot whose card another Manager holds now, without releasing it")
+    func startupClearsASlotWhoseCardIsHeldElsewhere() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        addCard(h, 1, state: .working, holder: "rival.local:/srv/lw")
+        try FileManager.default.createDirectory(at: h.stateDir(), withIntermediateDirectories: true)
+        try record(1, slot: 0).write(h.stateDir().appending(path: "card.json"))
+        h.tmux.set("lw_g--app_0")
+        try await h.boot()
+        #expect(!h.tmux.exists("lw_g--app_0"))
+        #expect(!FileManager.default.fileExists(atPath: h.stateDir().appending(path: "card.json").path))
+        #expect(h.backlog.writes.isEmpty)
+        #expect(h.log.contains("g/app#1 is held by rival.local:/srv/lw now; clearing the slot"))
+    }
+
+    @Test("B230: a verifying card that another Manager holds is neither watched nor marked stuck")
+    func verifyingCardHeldElsewhereIsLeftAlone() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        addCard(h, 5, state: .verifying, holder: "rival.local:/srv/lw")
+        addCard(h, 6, state: .verifying, holder: nil)
+        try await h.boot()
+        #expect(h.backlog.writes.map { if case .markStuck(let id, _) = $0 { id } else { "" } } == ["id-6"])
+        let status = try h.status()
+        #expect(status.ci?.isEmpty == true)
+        #expect(status.held?.map(\.card) == ["g/app#5"])
+        #expect(status.held?.first?.state == "verifying")
+        #expect(h.log.contains("g/app#5 is held by rival.local:/srv/lw; leaving it", level: .warning))
+    }
+
     @Test func extraSlotBeyondThePoolIsRetiredWhenItsCardMovedOn() async throws {
         let h = try ManagerHarness(projects: "[[project]]\npath = \"g/app\"\nhot = true")
         h.addCard(2, state: .review)
@@ -940,6 +1055,34 @@ func fileMode(_ url: URL) throws -> Int {
         try await h.boot()
         #expect(h.backlog.writes.isEmpty)
         #expect(h.log.contains("stranded-card sweep: can't read working cards", level: .warning))
+    }
+
+    @Test("B228: the holder id is <host>:<home>, logged at startup and kept across restarts")
+    func holderIDIsStableAcrossRestarts() async throws {
+        let h = try ManagerHarness(projects: "")
+        let id = h.manager.holder
+        #expect(id.hasSuffix(":\(h.home.path)") && !id.hasPrefix(":"))
+        try await h.boot()
+        #expect(h.log.contains("holder id \(id)", level: .info))
+
+        let file = h.home.appending(path: "state/holder")
+        try "renamed.local:\(h.home.path)\n".write(to: file, atomically: true, encoding: .utf8)
+        try h.restart()
+        #expect(h.manager.holder == "renamed.local:\(h.home.path)")
+        let other = try ManagerHarness(projects: "")
+        #expect(other.manager.holder != h.manager.holder)
+    }
+
+    @Test("B228: a holder file that exists but can't be read stops startup, naming the file")
+    func unreadableHolderFileStopsStartup() async throws {
+        let h = try ManagerHarness(projects: "")
+        let file = h.home.appending(path: "state/holder")
+        try FileManager.default.removeItem(at: file)
+        try FileManager.default.createDirectory(at: file, withIntermediateDirectories: true)  // exists, but isn't a readable file
+        try h.restart()
+        let error = await #expect(throws: ConfigError.self) { try await h.manager.start() }
+        #expect(error?.description.hasPrefix("can't read \(file.path), which holds this Manager's holder id:") == true)
+        #expect(ManagerLock.holder(at: ManagerLock.file(stateDir: h.home.appending(path: "state"))) == nil)
     }
 
     @Test func secondManagerOnTheSameHomeRefusesToStart() async throws {  // B109

@@ -65,10 +65,14 @@ public struct Card: Sendable, Equatable {
     public var attempts: Int
     /// The card in the backlog's web UI.
     public var url: URL?
+    /// The holder id (`Manager.holder`) of the Manager that holds a `working` or `verifying`
+    /// card: the one named by the card's newest claim. Nil when a release followed that claim,
+    /// when a LoopWorker without holder ids claimed it, and in every other state.
+    public var holder: String?
 
     public init(
         ref: CardRef, project: String, number: String? = nil, title: String, state: CardState,
-        priority: Double = 0, model: String? = nil, attempts: Int = 0, url: URL? = nil
+        priority: Double = 0, model: String? = nil, attempts: Int = 0, url: URL? = nil, holder: String? = nil
     ) {
         self.ref = ref
         self.project = project
@@ -79,6 +83,7 @@ public struct Card: Sendable, Equatable {
         self.model = model
         self.attempts = attempts
         self.url = url
+        self.holder = holder
     }
 }
 
