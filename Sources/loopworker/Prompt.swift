@@ -14,7 +14,7 @@ struct Prompt: ParsableCommand {
             homeFromEnvironment: !(environment["LOOPWORKER_HOME"] ?? "").isEmpty, environment: environment,
             managerPid: ManagerLock.holder(at: ManagerLock.file(stateDir: home.appending(path: "state"))),
             credentialVariables: { try credentialVariables(config: $0) })
-        print(context.render() + Self.instructions(version: loopworkerVersion), terminator: "")
+        print(context.render() + Self.instructions(version: loopworkerVersion, home: home), terminator: "")
     }
 
     /// The repository's file URL prefix for `version`: its release tag, or `main` for a development build.
@@ -24,8 +24,9 @@ struct Prompt: ParsableCommand {
 
     /// The setup instructions that follow the context (B201). They ship in the binary because
     /// the release is one signed executable without a resource bundle.
-    static func instructions(version: String) -> String {
+    static func instructions(version: String, home: URL) -> String {
         let docs = docs(version: version)
+        let secrets = home.appending(path: "secrets.env").path
         return #"""
         # Setting up LoopWorker on this host
 
@@ -154,15 +155,16 @@ struct Prompt: ParsableCommand {
         Create the file, or have the user create it, so that only the user can read it:
 
         ```bash
-        touch "$LOOPWORKER_HOME/secrets.env"   # use the path from the context
-        chmod 600 "$LOOPWORKER_HOME/secrets.env"
+        touch '\#(secrets)' && chmod 600 '\#(secrets)'
         ```
 
-        Then the user adds the lines in an editor, for example:
+        Then the user copies each token and appends it with this command, one variable at a time. The token comes from the clipboard, so it stays out of the shell history, and the append keeps the file's mode. An editor that saves by replacing the file can reset the mode to 644.
 
+        ```bash
+        printf 'LOOPWORKER_GITLAB_TOKEN=%s\n' "$(pbpaste)" >> '\#(secrets)'
         ```
-        LOOPWORKER_GITLAB_TOKEN=<the token>
-        CLAUDE_CODE_OAUTH_TOKEN=<the token>
+
+        To check the result, run `loopworker prompt` again: the context says which variables are set, and which lines lack a `NAME=`, without showing any value. Never print the file or any part of a line from it to check it yourself.
         ```
 
         ## 6. Prepare the backlog
@@ -262,7 +264,13 @@ struct PromptContext {
             lines.append(mode & 0o044 != 0
                 ? "- secrets.env: mode \(octal) (\(file.path)); group or others can read it, so the Manager refuses to start. Run `chmod 600 \(file.path)`."
                 : "- secrets.env: mode \(octal) (\(file.path))")
-            do { inFile = Self.secretNames(try String(contentsOf: file, encoding: .utf8)) }
+            do {
+                let text = try String(contentsOf: file, encoding: .utf8)
+                inFile = Self.secretNames(text)
+                for n in Self.linesWithoutName(text) {
+                    lines.append("  - line \(n) has no `NAME=`, so the Manager refuses to start; a value pasted without its name looks like this")
+                }
+            }
             catch { lines.append("  - can't read it: \(error.localizedDescription)") }
         } else {
             lines.append("- secrets.env: missing (\(file.path))")
@@ -293,6 +301,15 @@ struct PromptContext {
 
     /// Each `NAME=value` line's name in `secrets.env` text, mapped to whether its value is
     /// non-empty, judged the way `Secrets.load` trims it. Values are not kept.
+    /// The 1-based numbers of the lines in `secrets.env` text that `Secrets.load` rejects for
+    /// lacking `=`. Never the content: such a line is often a bare token.
+    static func linesWithoutName(_ text: String) -> [Int] {
+        text.split(separator: "\n", omittingEmptySubsequences: false).enumerated().compactMap { n, raw in
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            return line.isEmpty || line.hasPrefix("#") || line.contains("=") ? nil : n + 1
+        }
+    }
+
     static func secretNames(_ text: String) -> [String: Bool] {
         var names: [String: Bool] = [:]
         for raw in text.split(separator: "\n") {

@@ -80,6 +80,21 @@ import Testing
         #expect(!text.contains("OTHER"))
     }
 
+    @Test("B200: a secrets.env line without NAME= is named by its number, never shown")
+    func bareTokenLine() throws {
+        try write("secrets.env", "LW_GITLAB=x\nntn_fabricatedBareTokenValue\n", mode: 0o600)
+        let text = render()
+        #expect(text.contains("line 2 has no `NAME=`"))
+        #expect(!text.contains("ntn_fabricatedBareTokenValue"))
+    }
+
+    @Test("B201: the secrets commands name the resolved secrets.env path")
+    func secretsPath() {
+        let text = Prompt.instructions(version: "1.2.3", home: URL(filePath: "/tmp/lw-home"))
+        #expect(text.contains("chmod 600 '/tmp/lw-home/secrets.env'"))
+        #expect(!text.contains("$LOOPWORKER_HOME/secrets.env\""))
+    }
+
     @Test func privateSecretsAreNotFlagged() throws {
         try write("secrets.env", "CLAUDE_CODE_OAUTH_TOKEN=fabricated\n")
         let text = render()
@@ -104,7 +119,7 @@ import Testing
 /// B201: the built-in setup instructions.
 @Suite struct PromptInstructionsTests {
     @Test func everySectionIsPrinted() {
-        let text = Prompt.instructions(version: "1.2.3")
+        let text = Prompt.instructions(version: "1.2.3", home: URL(filePath: "/tmp/lw-home"))
         let headings = ["What LoopWorker is", "Rules for you", "Ask the user", "Write config.toml", "Secrets",
                         "Prepare the backlog", "Project contract", "Verify", "Start"]
         for (n, heading) in headings.enumerated() {
@@ -116,6 +131,6 @@ import Testing
     @Test func docLinksPinTheReleaseTag() {
         #expect(Prompt.docs(version: "1.2.3") == "https://github.com/KojaWorks/KojaLoopWorker/blob/v1.2.3/")
         #expect(Prompt.docs(version: "0.0.0-dev") == "https://github.com/KojaWorks/KojaLoopWorker/blob/main/")
-        #expect(Prompt.instructions(version: "1.2.3").contains("blob/v1.2.3/docs/project-contract.md"))
+        #expect(Prompt.instructions(version: "1.2.3", home: URL(filePath: "/tmp/lw-home")).contains("blob/v1.2.3/docs/project-contract.md"))
     }
 }
