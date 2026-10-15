@@ -490,7 +490,7 @@ private let releaseText = "LoopWorker released this card:\n\nrestart"
         #expect(fake.state(page) == "review")
         #expect(fake.writes.map(\.httpMethod) == ["PATCH", "POST", "PATCH", "PATCH", "POST"])
         #expect(Array(fake.commentTexts(page).dropFirst()) == [
-            "LoopWorker is waiting for CI on its review request:\n\ng/app!3: https://gitlab.test/g/app/-/merge_requests/3",
+            "LoopWorker is waiting for CI on its review request:\n\ng/app!3: https://gitlab.test/g/app/-/merge_requests/3\n\nWaiting for CI before review.",
             "LoopWorker opened a review request:\n\ng/app!3: https://gitlab.test/g/app/-/merge_requests/3\n\nCI passed.",
         ])
         let link = fake.comments[page]![2]["rich_text"]!.array[2]["text"]?["link"]?["url"]
@@ -544,5 +544,63 @@ private let releaseText = "LoopWorker released this card:\n\nrestart"
         let text = objects.map { $0["text"]!["content"]!.string! }.joined()
         #expect(objects.count <= 100)
         #expect(text.hasSuffix("[LoopWorker cut this comment here: 13 more characters don't fit in a Notion comment.]"))
+    }
+
+    @Test("B212: markVerifying posts a CI notice per CI plan, and a merging notice for a merge")
+    func markVerifyingPerPlan() async throws {
+        for (plan, text) in [
+            (VerifyingPlan.ciThenReview, "LoopWorker is waiting for CI on its review request:\n\ng/app!3: \(review.url)\n\nWaiting for CI before review."),
+            (.ciThenMerge, "LoopWorker is waiting for CI on its review request:\n\ng/app!3: \(review.url)\n\nWaiting for CI before merging."),
+            (.merge, "LoopWorker is merging its review request:\n\ng/app!3: \(review.url)"),
+        ] {
+            let fake = FakeNotion()
+            fake.addDatabase()
+            let page = fake.addPage(1, state: "working")
+            fake.addClaim(page)
+            try await make(fake).markVerifying(card(page), review: review, plan: plan)
+            #expect(fake.state(page) == "ci")
+            #expect(fake.commentTexts(page).last == text)
+        }
+    }
+
+    @Test("B212: a merging notice keeps a ci card the Manager's, through a rebase round and its release")
+    func mergingKeepsOwnership() async throws {
+        let fake = FakeNotion()
+        fake.addDatabase()
+        let page = fake.addPage(1, state: "working")
+        fake.addClaim(page)
+        let backlog = try make(fake)
+        try await backlog.markVerifying(card(page), review: review, plan: .merge)
+        #expect(try await backlog.verifying(in: [app]).map(\.ref.id) == [page])
+        #expect(try await backlog.resumeFix(card(page, .verifying)))
+        #expect(try await backlog.working(in: [app]).map(\.ref.id) == [page])
+        #expect(ManagerComment.merging.keepsOwnership)
+        #expect(!ManagerComment.merged.keepsOwnership)
+    }
+
+    @Test("B212: markMerged sets merged, then posts the link and note; the option reads as review_merged")
+    func markMerged() async throws {
+        let fake = FakeNotion()
+        fake.addDatabase()
+        let page = fake.addPage(1, state: "ci")
+        fake.addClaim(page)
+        let backlog = try make(fake)
+        try await backlog.markMerged(card(page, .verifying), review: review, note: "Merged into main as abc123.")
+        #expect(fake.writes.map(\.httpMethod) == ["PATCH", "POST"])
+        #expect(fake.state(page) == "merged")
+        #expect(fake.commentTexts(page).last == "LoopWorker merged its review request:\n\ng/app!3: \(review.url)\n\nMerged into main as abc123.")
+        #expect(fake.comments[page]!.last!["rich_text"]!.array[2]["text"]?["link"]?["url"] == .string(review.url.absoluteString))
+        #expect(try await backlog.card(CardRef(id: page, display: "x"))?.state == .reviewMerged)
+        #expect(try await backlog.managerNotes(card(page)).last == "g/app!3: \(review.url)\n\nMerged into main as abc123.")
+    }
+
+    @Test("B212: markMerged needs ci and writes nothing otherwise")
+    func markMergedOnlyFromCI() async throws {
+        let fake = FakeNotion()
+        fake.addDatabase()
+        let page = fake.addPage(1, state: "working")
+        let error = await #expect(throws: NotionError.self) { try await make(fake).markMerged(card(page), review: review, note: nil) }
+        #expect(error == .unexpectedState(card: "markMerged CARD-x", expected: "ci", actual: "working"))
+        #expect(fake.writes.isEmpty)
     }
 }

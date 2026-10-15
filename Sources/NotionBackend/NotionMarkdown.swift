@@ -45,6 +45,8 @@ enum ManagerComment: Equatable {
     case stuck
     case review
     case ci
+    case merging
+    case merged
 
     static let claimPrefix = "LoopWorker claimed this card ("
     static let vouchedTitlePrefix = "Vouched title: "
@@ -57,6 +59,8 @@ enum ManagerComment: Equatable {
         case .stuck: "LoopWorker needs a human to unblock this card:"
         case .review: "LoopWorker opened a review request:"
         case .ci: "LoopWorker is waiting for CI on its review request:"
+        case .merging: "LoopWorker is merging its review request:"
+        case .merged: "LoopWorker merged its review request:"
         }
     }
 
@@ -65,13 +69,13 @@ enum ManagerComment: Equatable {
     static func kind(_ text: String) -> ManagerComment? {
         let first = text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
         if first.hasPrefix(claimPrefix) { return .claim(host: "", nonce: "") }
-        return [.release, .failedRelease, .stuck, .review, .ci].first { $0.header == first }
+        return [.release, .failedRelease, .stuck, .review, .ci, .merging, .merged].first { $0.header == first }
     }
 
     var isClaim: Bool { if case .claim = self { true } else { false } }
     var isRelease: Bool { self == .release || self == .failedRelease }
     /// A comment of this kind as the integration's newest one leaves a `working` or `ci` card the Manager's.
-    var keepsOwnership: Bool { isClaim || isRelease || self == .ci }
+    var keepsOwnership: Bool { isClaim || isRelease || self == .ci || self == .merging }
 
     /// The title that a claim comment records as vouched; nil for any other text.
     static func vouchedTitle(_ text: String) -> String? {
