@@ -12,7 +12,8 @@ struct CardRecord: Codable, Equatable {
     var claimedAt: Date
     /// Set for a CI fix round: its number, from 1.
     var ciRound: Int? = nil
-    /// Set for a CI fix round: the pushed commit whose pipeline failed.
+    /// Set for a CI fix round: the commit that the round started from, the branch tip after
+    /// the failed pipeline's commit; the round's own commits count from it.
     var ciCommit: String? = nil
     /// When a review round read the review feedback; its note's marker carries it.
     var feedbackReadAt: Date? = nil
@@ -270,9 +271,18 @@ extension Manager {
             return
         }
         if fix != nil || resuming {
-            do { try leaseOnTip(spec, card: card, branch: branch, tip: baseCommit) }
-            catch {
-                await abortStart(ref, card: card, contract: contract, why: "recording \(branch) at \(baseCommit.prefix(12)) in \(pushLedger.path) failed: \(error)",
+            do {
+                try leaseOnTip(spec, card: card, branch: branch, tip: baseCommit)
+                if fix != nil {
+                    // The round's own commits count from here, not from the failed commit: someone may have pushed since.
+                    let file = cardRecordFile(spec)
+                    guard var record = CardRecord.read(file) else { throw ConfigError("\(file.path) is missing or unreadable") }
+                    record.ciCommit = baseCommit
+                    try record.write(file)
+                    update(ref) { $0.ciCommit = baseCommit }
+                }
+            } catch {
+                await abortStart(ref, card: card, contract: contract, why: "recording \(branch) at \(baseCommit.prefix(12)) as the round's start failed: \(error)",
                                  broken: nil, fix: fix)
                 return
             }
@@ -677,8 +687,8 @@ extension Manager {
 
     /// - Parameters:
     ///   - ciRound: set for a CI fix round.
-    ///   - ciCommit: set for a CI fix round: the failed commit, which the round's new commits
-    ///     count from. Not `origin/<branch>`, which any later fetch moves to the round's own push.
+    ///   - ciCommit: set for a CI fix round: the commit that the round started from, which its new
+    ///     commits count from. Not `origin/<branch>`, which any later fetch moves to the round's own push.
     func finishDone(
         _ spec: SlotSpec, card: Card, branch: String, base: String, title: String, body: String, guide: String?,
         replies: [String: String] = [:], round: Round, ciRound: Int? = nil, ciCommit: String? = nil, waitForCI: Bool = false
@@ -688,7 +698,7 @@ extension Manager {
             else { try await self.deps.git.commitsAhead(spec.worktree, base: base) }
         }
         guard ahead > 0 else {
-            let blocker = ciRound.map { "The worker reported done for CI fix round \($0), but made no commits on `\(branch)` after the failed pipeline." }
+            let blocker = ciRound.map { "The worker reported done for CI fix round \($0), but made no commits on `\(branch)` after the commit that the round started from." }
                 ?? "The worker reported done, but branch `\(branch)` has no commits ahead of `\(base)`."
             try await stuck(spec, card: card, blocker: blocker)
             return

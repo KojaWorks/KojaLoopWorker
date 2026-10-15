@@ -323,7 +323,7 @@ let reviewURL = URL(string: "https://forge.example/g/app/-/merge_requests/1")!
         #expect(r.sha == "commit-2" && r.round == 1)
     }
 
-    @Test("B202: a fix round leases on the branch tip it started from, which a human may have pushed")
+    @Test("B202, B212: a fix round leases on the branch tip it started from, which a human may have pushed, and counts its commits from there")
     func fixRoundLeasesOnTheTip() async throws {
         let h = try await verifying()
         h.git.state { $0.remoteTips["loopworker-12-fix-it"] = "human-1" }
@@ -337,6 +337,7 @@ let reviewURL = URL(string: "https://forge.example/g/app/-/merge_requests/1")!
         h.tmux.set("lw_g--app_0", alive: false)
         await h.cycle()
         #expect(h.git.state.get.pushes.map(\.expected) == [nil, "human-1"])
+        #expect(h.git.calls.filter { $0.hasPrefix("commitsSince") } == ["commitsSince human-1"])  // the human's commit isn't the worker's
         #expect(h.backlog.card(id: "id-12")?.state == .verifying)
     }
 
@@ -365,7 +366,7 @@ let reviewURL = URL(string: "https://forge.example/g/app/-/merge_requests/1")!
         try h.writeOutcome(#"{"outcome":"done","title":"Fix CI","body":"b"}"#)
         h.tmux.set("lw_g--app_0", alive: false)
         await h.cycle()
-        #expect(stuckBlocker(h) == "The worker reported done for CI fix round 1, but made no commits on `loopworker-12-fix-it` after the failed pipeline.")
+        #expect(stuckBlocker(h) == "The worker reported done for CI fix round 1, but made no commits on `loopworker-12-fix-it` after the commit that the round started from.")
     }
 
     @Test("B169: a pipeline that fails after the last fix round marks the card stuck with the failed jobs")
