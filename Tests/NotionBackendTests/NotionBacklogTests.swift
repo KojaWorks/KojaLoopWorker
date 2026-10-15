@@ -598,6 +598,23 @@ private let releaseText = "LoopWorker released this card:\n\nrestart"
         #expect(try await backlog.lastPush(card(page)) == PushRecord(branch: "lw-1", commit: "bbb"))
     }
 
+    @Test("B240: recordPush posts a push notice once, which keeps the working card the Manager's")
+    func recordPushPostsANoticeOnce() async throws {
+        let fake = FakeNotion()
+        fake.addDatabase()
+        let page = fake.addPage(1, state: "working")
+        fake.addClaim(page, holder: testHolder)
+        let backlog = try make(fake)
+        let pushed = PushRecord(branch: "lw-1", commit: "aaa")
+        try await backlog.recordPush(card(page), pushed: pushed)
+        try await backlog.recordPush(card(page), pushed: pushed)
+        #expect(Array(fake.commentTexts(page).dropFirst()) == ["LoopWorker pushed the card's branch:\nPushed: lw-1@aaa\n\n`lw-1` at `aaa`"])
+        let read = try await backlog.card(CardRef(id: page, display: "x"))
+        #expect(read?.state == .working && read?.holder == testHolder)
+        #expect(try await backlog.lastPush(card(page)) == pushed)
+        #expect(try await backlog.managerNotes(card(page)) == ["`lw-1` at `aaa`"])
+    }
+
     @Test func B197_aCrashBetweenMarkVerifyingsWritesLeavesTheCardOwned() async throws {
         let fake = FakeNotion()
         fake.addDatabase()

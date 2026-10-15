@@ -144,6 +144,11 @@ public actor NotionBacklog: Backlog {
         return try await comments(card.ref.id).reversed().lazy.filter { $0.author == me }.compactMap { ManagerComment.pushed($0.text) }.first
     }
 
+    public func recordPush(_ card: Card, pushed: PushRecord) async throws {
+        guard try await lastPush(card) != pushed else { return }
+        try await post(card.ref.id, .pushed, [("`\(pushed.branch)` at `\(pushed.commit.prefix(12))`", nil)], pushed: pushed)
+    }
+
     // MARK: Writes
 
     public func claim(_ card: Card, holder: String) async throws -> Bool {
@@ -318,8 +323,8 @@ public actor NotionBacklog: Backlog {
 
     /// Maps a page to a card (B190). A `next` card is `ready` when a trusted user edited it
     /// last, or the integration did and its newest comment is a release that follows a claim,
-    /// a CI or merging notice or a release. A `working` or `ci` card is the Manager's only while
-    /// the integration's newest comment is a claim, a CI or merging notice or a release. Anything else is
+    /// a CI, merging or push notice or a release. A `working` or `ci` card is the Manager's only while
+    /// the integration's newest comment is a claim, a CI, merging or push notice or a release. Anything else is
     /// `other`, logged once. Reads the comments unless the state property alone makes it `other`.
     private func evaluate(_ page: Page, project: String) async throws -> Evaluation {
         let me = try await meID()

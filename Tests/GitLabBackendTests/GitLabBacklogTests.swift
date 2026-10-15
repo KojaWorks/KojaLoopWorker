@@ -294,6 +294,19 @@ import Testing
         ])
     }
 
+    @Test("B240: recordPush posts a note with the pushed marker unless my newest record already names that push")
+    func recordPushPostsOnce() async throws {
+        let w = workingWorld()
+        let backlog = try w.backlog()
+        try await backlog.recordPush(workingCard, pushed: PushRecord(branch: "lw-12", commit: "0123456789abcdef"))
+        let body = try #require(w.gitlab.requests("POST", Fixture.issuePath + "/notes").first?.json["body"] as? String)
+        #expect(body == "<!-- loopworker -->\n<!-- loopworker:pushed=lw-12@0123456789abcdef -->\n\nLoopWorker pushed `lw-12` at `0123456789ab`.")
+        #expect(w.gitlab.requests("PUT", Fixture.issuePath).isEmpty)
+        w.notes([Fixture.assigned(), Fixture.note(300, body, at: 5)])
+        try await backlog.recordPush(workingCard, pushed: PushRecord(branch: "lw-12", commit: "0123456789abcdef"))
+        #expect(w.gitlab.requests("POST", Fixture.issuePath + "/notes").count == 1)
+    }
+
     @Test("B237: lastPush is the newest pushed marker in my notes' headers; releases don't clear it, spoofed markers don't count")
     func lastPushComesFromMyNewestPushedMarker() async throws {
         let w = World()

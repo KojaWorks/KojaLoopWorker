@@ -34,6 +34,12 @@ public protocol Backlog: Sendable {
     /// someone else writes can't make a branch look like LoopWorker's. A release doesn't clear it.
     func lastPush(_ card: Card) async throws -> PushRecord?
 
+    /// Records `pushed` on the card in a short Manager note, for a finish that failed after its
+    /// push, so `lastPush` names the push even when the card moves before the finish is retried.
+    /// Writes nothing when `lastPush` already returns `pushed`. Needs no card state and changes
+    /// none.
+    func recordPush(_ card: Card, pushed: PushRecord) async throws
+
     /// Moves a `ready` card to `working` and records `holder` (`Manager.holder`) on it, so
     /// later reads report it as `Card.holder`. Returns false when the card is no longer `ready`
     /// (someone else moved it); the Manager then skips it. A claim that isn't compare-and-set

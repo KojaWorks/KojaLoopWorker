@@ -66,6 +66,7 @@ public protocol Backlog: Sendable {
     func snapshot(_ card: Card) async throws -> CardSnapshot
     func managerNotes(_ card: Card) async throws -> [String]          // background for the next worker
     func lastPush(_ card: Card) async throws -> PushRecord?           // see "Push records and the lease"
+    func recordPush(_ card: Card, pushed: PushRecord) async throws    // a finish failed after its push
     func markReview(_ card: Card, review: ReviewRequest, note: String?, pushed: PushRecord?) async throws
     func markVerifying(_ card: Card, review: ReviewRequest, plan: VerifyingPlan, pushed: PushRecord?) async throws
     func markMerged(_ card: Card, review: ReviewRequest, note: String?) async throws
@@ -164,13 +165,13 @@ Manager's writes would then look like that person's edits.
 A Notion card is `ready` when its state property is `next` and the page's `last_edited_by` is
 a trusted user. It is also `ready` when the integration edited it last and released it: the
 integration's newest comment is a release, and the integration's comment before that is a
-claim, a CI or merging notice, or a release. A release after a stuck, review or merged comment
+claim, a CI, merging or push notice, or a release. A release after a stuck, review or merged comment
 vouches for nothing, because the Manager never releases a card that it doesn't own. Trust follows authorship, not
 time, so there is no cutoff. A `trusted_users` list that holds the integration's own id is
 refused, because every write of the Manager would then vouch.
 
 A `working` or `ci` card is the Manager's only while the integration's newest comment is a
-claim, a CI or merging notice, or a release (a release whose state write failed). Otherwise the
+claim, a CI, merging or push notice, or a release (a release whose state write failed). Otherwise the
 card is `other`: an untrusted editor who sets `working` can't make the stranded-card sweep
 release the card, and its release can't become a vouch. For the same reason `markStuck`,
 `markReview`, `markVerifying` and `markMerged` set the state before they comment, so a crash
@@ -305,6 +306,15 @@ its branch while a worker ran. Two facts decide that, each with one home:
   fix, review or rebase round sets it to the commit that the slot was reset to, and each push
   sets it to its own commit, so a retried finish leases on its own push. It survives a Manager
   restart mid-run.
+
+The happy path writes no extra note: the record rides on the write that moves the card. A finish
+that fails after its push calls `recordPush` before it backs off, which posts a short Manager
+note with the record (on Notion, a push notice) unless the card's newest record already names
+that push, so the card names its branch even when a human moves it, or another Manager claims
+it, before the retried finish lands. A Manager that crashes between the push and that write
+leaves the push unrecorded. After a restart it adopts the slot and leases on `card.json` as
+usual, but if the card moves to another Manager first, that Manager refuses the branch as
+someone else's.
 
 A push that the forge refuses with a lease tip means that someone pushed during the run; without
 one, that the branch is someone else's. Each ends the card `stuck` with a blocker that says so.

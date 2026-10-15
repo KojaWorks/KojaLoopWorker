@@ -47,6 +47,7 @@ enum ManagerComment: Equatable {
     case ci
     case merging
     case merged
+    case pushed
 
     static let claimPrefix = "LoopWorker claimed this card ("
     static let vouchedTitlePrefix = "Vouched title: "
@@ -63,6 +64,7 @@ enum ManagerComment: Equatable {
         case .ci: "LoopWorker is waiting for CI on its review request:"
         case .merging: "LoopWorker is merging its review request:"
         case .merged: "LoopWorker merged its review request:"
+        case .pushed: "LoopWorker pushed the card's branch:"
         }
     }
 
@@ -71,13 +73,14 @@ enum ManagerComment: Equatable {
     static func kind(_ text: String) -> ManagerComment? {
         let first = text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
         if first.hasPrefix(claimPrefix) { return .claim(holder: "", nonce: "") }
-        return [.release, .failedRelease, .stuck, .review, .ci, .merging, .merged].first { $0.header == first }
+        return [.release, .failedRelease, .stuck, .review, .ci, .merging, .merged, .pushed].first { $0.header == first }
     }
 
     var isClaim: Bool { if case .claim = self { true } else { false } }
     var isRelease: Bool { self == .release || self == .failedRelease }
     /// A comment of this kind as the integration's newest one leaves a `working` or `ci` card the Manager's.
-    var keepsOwnership: Bool { isClaim || isRelease || self == .ci || self == .merging }
+    /// A push notice comes only from a finish of a card that the Manager owns.
+    var keepsOwnership: Bool { isClaim || isRelease || self == .ci || self == .merging || self == .pushed }
 
     /// The holder id that a claim comment names; nil for any other text and for a claim
     /// posted by a LoopWorker without holder ids (`host <name>, <nonce>`).

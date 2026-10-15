@@ -221,6 +221,14 @@ public actor GitLabBacklog: Backlog {
         return Trust.lastPush(notes: read.notes, me: try await client.me())
     }
 
+    public func recordPush(_ card: Card, pushed: PushRecord) async throws {
+        guard let read = try await read(card.ref) else {
+            throw GitLabError("recordPush \(card.ref.display): the issue is gone or no longer served")
+        }
+        guard Trust.lastPush(notes: read.notes, me: try await client.me()) != pushed else { return }
+        try await postNote(read, "LoopWorker pushed `\(pushed.branch)` at `\(pushed.commit.prefix(12))`.", markers: Trust.pushedMarker(pushed))
+    }
+
     // MARK: - Writes
 
     /// Posts the claim note that names `holder` before it moves the labels, so the card is

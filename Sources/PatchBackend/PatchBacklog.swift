@@ -126,6 +126,18 @@ public actor PatchBacklog: Backlog {
         return PushRecord(branch: branch, commit: commit)
     }
 
+    public func recordPush(_ card: Card, pushed: PushRecord) async throws {
+        guard try await lastPush(card) != pushed else { return }
+        guard let r = try await row(card.ref.id) else {
+            throw PatchError.unexpectedState(card: card.ref.display, expected: "a card to record a push on", actual: "(deleted)")
+        }
+        try await appendNote(r.id, "LoopWorker pushed `\(pushed.branch)` at `\(pushed.commit.prefix(12))`.", kind: "note", extra: Self.pushedContent(pushed))
+    }
+
+    static func pushedContent(_ pushed: PushRecord?) -> [String: JSON] {
+        pushed.map { ["pushed": .object(["branch": .string($0.branch), "commit": .string($0.commit)])] } ?? [:]
+    }
+
     // MARK: Writes
 
     public func claim(_ card: Card, holder: String) async throws -> Bool {
@@ -220,8 +232,7 @@ public actor PatchBacklog: Backlog {
         guard let status = r.status, from.contains(status) else {
             throw PatchError.unexpectedState(card: card.ref.display, expected: expected, actual: r.status ?? "")
         }
-        let extra: [String: JSON] = pushed.map { ["pushed": .object(["branch": .string($0.branch), "commit": .string($0.commit)])] } ?? [:]
-        try await appendNote(r.id, note, kind: kind, extra: extra)
+        try await appendNote(r.id, note, kind: kind, extra: Self.pushedContent(pushed))
         let changed = try await client.patch(config.roadmapTable, [
             URLQueryItem(name: "id", value: "eq.\(r.id)"),
             URLQueryItem(name: "status", value: "eq.\(status)"),

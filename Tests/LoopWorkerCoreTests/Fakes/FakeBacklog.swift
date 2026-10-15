@@ -12,6 +12,7 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
         case markVerifying(String, url: URL)
         case markMerged(String, url: URL)
         case resumeFix(String)
+        case recordPush(String, PushRecord)
     }
 
     struct State {
@@ -52,6 +53,7 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
         /// Every push that a write recorded, in order; `lastPush` returns the card's last one.
         var pushes: [(card: String, push: PushRecord)] = []
         var failLastPush = false
+        var failRecordPush = false
     }
 
     let state = Guarded(State())
@@ -112,6 +114,15 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
         try state {
             if $0.failLastPush { throw FakeError("lastPush \(card.ref) failed") }
             return $0.pushes.last { $0.card == card.ref.id }?.push
+        }
+    }
+
+    func recordPush(_ card: Card, pushed: PushRecord) async throws {
+        try state {
+            if $0.failRecordPush { throw FakeError("recordPush \(card.ref) failed") }
+            guard $0.pushes.last(where: { $0.card == card.ref.id })?.push != pushed else { return }
+            $0.writes.append(.recordPush(card.ref.id, pushed))
+            $0.pushes.append((card.ref.id, pushed))
         }
     }
 

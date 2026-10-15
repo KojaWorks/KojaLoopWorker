@@ -740,7 +740,9 @@ extension Manager {
                                              rebaseRound: s.rebaseRound, rebases: s.rebases, rebaseTarget: s.rebaseTarget,
                                              plan: Self.verifyingPlan(spec.project, contract: projects[ref.key]?.contract))
                     } catch let rejected as RejectedAfterPush {
-                        try await stuck(spec, card: card, blocker: "Couldn't finish: the forge or backlog refused: \(rejected.rejection)", pushed: rejected.pushed)
+                        try await recordingPush(spec, card: card, pushed: rejected.pushed) {
+                            try await stuck(spec, card: card, blocker: "Couldn't finish: the forge or backlog refused: \(rejected.rejection)", pushed: rejected.pushed)
+                        }
                     } catch let rejection as BackendRejection {
                         try await stuck(spec, card: card, blocker: "Couldn't finish: the forge or backlog refused: \(rejection)")
                     }
@@ -855,6 +857,26 @@ extension Manager {
             log.info("\(label(spec)): \(card.ref) \(waits): \(review.display) \(review.url.absoluteString)")
         } catch let rejection as BackendRejection {
             throw RejectedAfterPush(rejection: rejection, pushed: pushed)
+        } catch {
+            await recordPush(spec, card: card, pushed: pushed)
+            throw error
+        }
+    }
+
+    /// Runs the rest of a finish after its push; when it fails, records the push on the card
+    /// before the finish backs off, so the card names its branch even if it moves meanwhile.
+    func recordingPush(_ spec: SlotSpec, card: Card, pushed: PushRecord?, _ body: () async throws -> Void) async throws {
+        do { try await body() }
+        catch {
+            if let pushed { await recordPush(spec, card: card, pushed: pushed) }
+            throw error
+        }
+    }
+
+    func recordPush(_ spec: SlotSpec, card: Card, pushed: PushRecord) async {
+        do { try await deps.backlog.recordPush(card, pushed: pushed) }
+        catch {
+            log.error("\(label(spec)): finishing \(card.ref) failed after pushing \(pushed.branch) at \(pushed.commit.prefix(12)), and recording that push on the card failed too: \(error); if the card moves before the retried finish lands, the next claim refuses the branch")
         }
     }
 
@@ -944,7 +966,7 @@ extension Manager {
             pushed = PushRecord(branch: branch, commit: try await pushBranch(spec, card: card, branch: branch))
             text += "\n\nThe worker's commits are on branch `\(branch)`."
         }
-        try await stuck(spec, card: card, blocker: text, pushed: pushed)
+        try await recordingPush(spec, card: card, pushed: pushed) { try await stuck(spec, card: card, blocker: text, pushed: pushed) }
     }
 
     /// `pushed`: the push that this finish made, which the card records.

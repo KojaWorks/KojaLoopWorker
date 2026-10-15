@@ -535,6 +535,24 @@ private func make(_ fake: FakePatch, _ patchKeys: String = "", log: LogRecorder 
         await #expect(throws: PatchError.malformed(#"~1: block block-x has an unreadable content.pushed: "lw-1""#)) { try await backlog.lastPush(c) }
     }
 
+    @Test("B240: recordPush appends a note block with the push unless the card's last record already names it; the status stays")
+    func recordPushAppendsOnce() async throws {
+        let fake = FakePatch()
+        fake.rows["roadmap"] = [card(1, status: "In progress")]
+        let backlog = try make(fake)
+        let c = try #require(try await backlog.card(CardRef(id: "u1", display: "~1")))
+        let pushed = PushRecord(branch: "lw-1", commit: "aaa")
+        try await backlog.recordPush(c, pushed: pushed)
+        try await backlog.recordPush(c, pushed: pushed)
+        #expect(fake.rows["patch_blocks"]!.count == 1)
+        #expect(fake.rows["patch_blocks"]![0]["content"] == .object([
+            "text": .string("LoopWorker pushed `lw-1` at `aaa`."), "loopworker": .string("note"),
+            "pushed": .object(["branch": .string("lw-1"), "commit": .string("aaa")]),
+        ]))
+        #expect(fake.rows["roadmap"]![0]["status"] == .string("In progress"))
+        #expect(try await backlog.lastPush(c) == pushed)
+    }
+
     @Test func markReviewLinksTheReviewRequest() async throws {
         let fake = FakePatch()
         fake.rows["roadmap"] = [card(1, status: "In progress")]

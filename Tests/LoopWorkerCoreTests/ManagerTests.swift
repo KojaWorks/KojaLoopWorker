@@ -1002,6 +1002,43 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.backlog.pushes("id-12").last == PushRecord(branch: "loopworker-12-fix-it", commit: "head-1"))
     }
 
+    @Test("B240: a finish that fails after its push records the push on the card once, so another install resumes the branch after the card moved")
+    func aFailedFinishRecordsItsPush() async throws {
+        let a = try await spawned()
+        a.git.state { $0.head = "head-1" }
+        a.backlog.state { $0.failMarkReview = FakeError("502 Bad Gateway") }
+        try a.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        a.tmux.set("lw_g--app_0", alive: false)
+        await a.cycle()
+        let pushed = PushRecord(branch: "loopworker-12-fix-it", commit: "head-1")
+        #expect(a.backlog.writes.last == .recordPush("id-12", pushed))
+        a.clock.advance(31)
+        await a.cycle()  // the retry fails again; the card already records the push
+        #expect(a.backlog.writes.filter { $0 == .recordPush("id-12", pushed) }.count == 1)
+        #expect(a.git.state.get.pushes.count == 2)
+
+        a.backlog.setState("id-12", .ready)  // a human moves it while the finish backs off
+        a.backlog.state { $0.failMarkReview = nil }
+        let b = try ManagerHarness(projects: oneColdProject, sharing: a)
+        try await b.boot()
+        await b.cycle()
+        #expect(b.lifecycle.state.get.acquiredBases == ["loopworker-12-fix-it"])
+    }
+
+    @Test("B240: a stuck finish whose markStuck fails after the push records the push; a failed record is logged")
+    func aFailedStuckRecordsItsPush() async throws {
+        let h = try await spawned()
+        h.backlog.state { $0.failMarkStuckOnce = FakeError("503"); $0.failRecordPush = true }
+        try h.writeOutcome(#"{"outcome":"stuck","blocker":"Which endpoint?"}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.log.contains("finishing g/app#12 failed after pushing loopworker-12-fix-it at commit-1, and recording that push on the card failed too: recordPush g/app#12 failed", level: .error))
+        h.backlog.state { $0.failRecordPush = false; $0.failMarkStuckOnce = FakeError("503") }
+        h.clock.advance(31)
+        await h.cycle()
+        #expect(h.backlog.writes.last == .recordPush("id-12", PushRecord(branch: "loopworker-12-fix-it", commit: "commit-2")))
+    }
+
     @Test func crashReleasesWithTheRedactedPaneTail() async throws {  // B57
         let h = try await spawned()
         h.tmux.set("lw_g--app_0", pane: "working on it\nSECRET=abc leaked\n")
