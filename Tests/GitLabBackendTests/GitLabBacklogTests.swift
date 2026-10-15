@@ -277,6 +277,24 @@ import Testing
             "comment 305 by @mallory at \(Fixture.t(10))",
             "comment 310 by @me at \(Fixture.t(20)): posted by LoopWorker",
         ])
+        #expect(snapshot.vouchedAt == Fixture.date(2))  // B203: the release keeps the human's cutoff
+    }
+
+    @Test("B209: an issue note's lastEditedAt without lastEditedBy is no edit, so a later resolve doesn't withhold it")
+    func snapshotIgnoresEditTimesWithoutAnEditor() async throws {
+        let w = World()
+        var bumped = Fixture.gqlNote(5, "said before the label", by: Fixture.mallory, at: 1)
+        bumped["lastEditedAt"] = Fixture.t(30)
+        var mine = Fixture.gqlNote(6, "mine, resolved later", by: Fixture.me, at: 1)
+        mine["lastEditedAt"] = Fixture.t(30)
+        w.gitlab.on("POST", "/api/graphql", bodyContains: "issue(iid", json: Fixture.gqlIssue(notes: [
+            bumped, mine, Fixture.gqlNote(7, "edited late", by: Fixture.mallory, at: 1, editedBy: Fixture.mallory, editedAt: 30),
+        ]))
+        let backlog = try w.backlog()
+        let card = try #require(try await backlog.workable(in: [World.app]).first)
+        let snapshot = try await backlog.snapshot(card)
+        #expect(snapshot.markdown.contains("said before the label") && snapshot.markdown.contains("mine, resolved later"))
+        #expect(snapshot.excluded == ["comment 7 by @mallory at \(Fixture.t(1)), edited by @mallory at \(Fixture.t(30))"])
     }
 
     @Test func snapshotFollowsNotePagesAndSendsTheIssueCoordinates() async throws {

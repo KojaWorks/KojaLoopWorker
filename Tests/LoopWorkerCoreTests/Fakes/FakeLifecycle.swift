@@ -11,6 +11,8 @@ final class FakeLifecycle: SlotLifecycle, @unchecked Sendable {
         var acquiredBases: [String] = []
         /// When set, `prepare` waits on it after recording the call.
         var prepareGate: Gate?
+        /// The commit that `acquire` resets to for a base; nil or a nil answer: `base123`.
+        var tip: (@Sendable (String) -> String?)?
         /// The teardown script name of the contract each `recycle` got.
         var recycledWithTeardown: [String] = []
     }
@@ -30,14 +32,14 @@ final class FakeLifecycle: SlotLifecycle, @unchecked Sendable {
     }
 
     func acquire(_ slot: SlotSpec, contract: ProjectContract, base: String, branch: String) async throws(SlotFailure) -> String {
-        let failure: SlotFailure? = state {
+        let (failure, tip): (SlotFailure?, String?) = state {
             $0.calls.append("acquire \(id(slot))")
             $0.acquiredBranches.append(branch)
             $0.acquiredBases.append(base)
-            return $0.acquireFailure
+            return ($0.acquireFailure, $0.tip?(base))
         }
         if let failure { throw failure }
-        return "base123"
+        return tip ?? "base123"
     }
 
     func recycle(_ slot: SlotSpec, contract: ProjectContract) async {

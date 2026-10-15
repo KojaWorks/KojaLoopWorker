@@ -161,6 +161,16 @@ labels are `loopworker:next`, `loopworker:priority:<n>` and so on.
 A card that crashes `max_attempts` times becomes stuck. Closing an issue or removing its
 `loopworker::*` label while a worker runs stops that worker; nothing is written back.
 
+To have a worker address review comments, add `loopworker::next` to a card in
+`loopworker::review` while its merge request is open. That runs a review round: the next worker
+continues on the same branch and gets every unresolved thread, plus the plain comments made since
+the previous review round read them. Resolve the threads that you don't want addressed
+first. Adding the label vouches for the merge request's comments as they are then: anything a
+colleague writes or edits afterwards is withheld and named in the log. When it finishes,
+LoopWorker pushes to the same merge request, replies in each thread, and posts what it changed
+as a note. It never resolves a thread; that stays your call. Commits that you push to the branch
+before the round starts are kept: the worker starts from them.
+
 ## Notion cards
 
 A Notion backlog keeps each project's cards in its own database. Notion is only a backlog: the
@@ -223,6 +233,10 @@ A stuck card stays `stuck` until a trusted user answers in a comment and sets `L
 to `next`; the next worker continues from the pushed branch. A card that crashes `max_attempts`
 times becomes stuck. Clearing the `LoopWorker` property, or moving the page to the trash, while
 a worker runs stops that worker; nothing is written back.
+
+Setting a card in `review` back to `next` while its review request is open runs a review round,
+as on GitLab. Notion records no time when a card was vouched for, so only the comments that the
+forge token's user wrote on the review request reach the worker; everyone else's are withheld.
 
 ## Running
 

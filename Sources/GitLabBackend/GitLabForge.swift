@@ -30,9 +30,17 @@ public struct GitLabForge: Forge {
         return branch
     }
 
+    public func openReviewRequest(for project: ProjectSpec, sourceBranch: String) async throws -> ReviewRequest? {
+        try await openMergeRequests(project, sourceBranch).first.map { try review($0, project) }
+    }
+
+    private func openMergeRequests(_ project: ProjectSpec, _ sourceBranch: String) async throws -> [GLMergeRequest] {
+        try await client.getAll(projectPath(project) + "/merge_requests", query: [("state", "opened"), ("source_branch", sourceBranch)])
+    }
+
     public func openReviewRequest(_ draft: ReviewRequestDraft) async throws -> ReviewRequest {
         let path = projectPath(draft.project) + "/merge_requests"
-        let open: [GLMergeRequest] = try await client.getAll(path, query: [("state", "opened"), ("source_branch", draft.sourceBranch)])
+        let open = try await openMergeRequests(draft.project, draft.sourceBranch)
         var assignee: [String: String] = [:]
         if draft.assignToOwner {
             // GitLab coerces the string to the integer that assignee_id takes.
@@ -52,11 +60,119 @@ public struct GitLabForge: Forge {
             "source_branch": draft.sourceBranch,
             "target_branch": draft.targetBranch,
             "title": draft.draft ? "Draft: \(title)" : title,
-            "description": Trust.neutralizeQuickActions(draft.body),
+            "description": Trust.neutralizeQuickActions(draft.body) + (draft.marker.map { "\n\n" + $0 } ?? ""),
             "remove_source_branch": "true",
         ].merging(assignee) { a, _ in a }, idempotent: false)
         return try review(created, draft.project)
     }
+
+    /// Reads `GET .../merge_requests/:iid/discussions` for the threads and the merge request's
+    /// notes over GraphQL for who last edited each one. A null `lastEditedBy` means no content
+    /// edit, whatever `lastEditedAt` says; a note that GraphQL doesn't return is withheld as unknown.
+    public func reviewFeedback(for review: ReviewRequest, project: ProjectSpec, vouchedAt: Date?) async throws -> ReviewFeedback {
+        let path = try mergeRequestPath(review, project)
+        let me = try await client.me()
+        let mr: GLMergeRequest = try await client.get(path)
+        guard let opened = mr.createdAt else { throw GitLabError("GET \(path): \(review.display) has no created_at") }
+        let discussions: [GLDiscussion] = try await client.getAll(path + "/discussions")
+        let edits = try await noteEdits(review, project)
+        let threads = discussions.map { d in
+            let resolvable = d.notes.filter { $0.resolvable == true }
+            return ReviewFeedback.RawThread(
+                id: d.id, position: d.notes.first?.position.flatMap(Self.position), resolvable: !resolvable.isEmpty,
+                resolved: !resolvable.isEmpty && resolvable.allSatisfy { $0.resolved == true },
+                notes: d.notes.map { n in
+                    let edit: ReviewFeedback.Edit
+                    switch edits[n.id] {
+                    case nil: edit = .unknown
+                    case let e?:
+                        if let by = e.lastEditedBy, let at = e.lastEditedAt {
+                            edit = .edited(by: by.username, owner: by.numericID == me.id, at: at)
+                        } else { edit = .never }
+                    }
+                    return ReviewFeedback.RawNote(id: String(n.id), author: n.author.username, byOwner: n.author.id == me.id,
+                                                  createdAt: n.createdAt, body: n.body, edit: edit, system: n.system)
+                })
+        }
+        return ReviewFeedback.build(threads, owner: me.username, openedAt: opened, vouchedAt: vouchedAt)
+    }
+
+    public func postReviewNote(_ text: String, marker: String, on review: ReviewRequest, project: ProjectSpec) async throws -> Bool {
+        let path = try mergeRequestPath(review, project)
+        let mr: GLMergeRequest = try await client.get(path)
+        if mr.description?.contains(marker) == true { return false }
+        let me = try await client.me()
+        let notes: [GLNote] = try await client.getAll(path + "/notes")
+        if notes.contains(where: { $0.author.id == me.id && ReviewMarker.has(marker, $0.body) }) { return false }
+        let _: GLNote = try await client.send("POST", path + "/notes", body: [
+            "body": ReviewMarker.note(Trust.neutralizeQuickActions(text), markers: [marker]),
+        ], idempotent: false)
+        return true
+    }
+
+    /// A thread gets `POST .../discussions/:id/notes`. A single comment gets a new merge
+    /// request note that links it instead, because replying would turn it into a resolvable
+    /// thread that comes back every round.
+    public func replyToThread(_ thread: String, text: String, marker: String, on review: ReviewRequest, project: ProjectSpec) async throws -> ThreadReply {
+        let mr = try mergeRequestPath(review, project)
+        let path = mr + "/discussions/\(GitLabPath.encode(thread))"
+        guard let discussion: GLDiscussion = try await client.getIfFound(path) else { return .noSuchThread }
+        let me = try await client.me()
+        let mine = { (notes: [(author: GLUser, body: String)]) in notes.contains { $0.author.id == me.id && ReviewMarker.has(marker, $0.body) } }
+        let neutral = Trust.neutralizeQuickActions(text)
+        if discussion.individualNote, let comment = discussion.notes.first {
+            let notes: [GLNote] = try await client.getAll(mr + "/notes")
+            if mine(notes.map { ($0.author, $0.body) }) { return .alreadyPosted }
+            let link = "[@\(comment.author.username)'s comment](\(review.url.absoluteString)#note_\(comment.id))"
+            let _: GLNote = try await client.send("POST", mr + "/notes", body: [
+                "body": ReviewMarker.note("In reply to \(link):\n\n\(neutral)", markers: [marker]),
+            ], idempotent: false)
+            return .posted
+        }
+        if mine(discussion.notes.map { ($0.author, $0.body) }) { return .alreadyPosted }
+        let _: GLNote = try await client.send("POST", path + "/notes", body: [
+            "body": ReviewMarker.note(neutral, markers: [marker]),
+        ], idempotent: false)
+        return .posted
+    }
+
+    static func position(_ p: GLDiscussion.Position) -> ReviewFeedback.Position? {
+        if let path = p.newPath ?? p.oldPath, let line = p.newLine {
+            return .init(path: path, line: line, side: .new, commit: p.headSha)
+        }
+        guard let path = p.oldPath ?? p.newPath else { return nil }
+        return .init(path: path, line: p.oldLine, side: .old, commit: p.headSha)
+    }
+
+    /// Every note of the merge request with its last edit, by note id.
+    private func noteEdits(_ review: ReviewRequest, _ project: ProjectSpec) async throws -> [Int: GQLMergeRequestNotesPage.Edit] {
+        var edits: [Int: GQLMergeRequestNotesPage.Edit] = [:]
+        var after: String?
+        repeat {
+            var variables = ["path": project.path, "iid": String(try iid(review))]
+            if let after { variables["after"] = after }
+            let page: GQLMergeRequestNotesPage = try await client.graphQL("merge request notes \(review.display)", Self.notesQuery, variables: variables)
+            guard let notes = page.project?.mergeRequest?.notes else {
+                throw GitLabError("\(review.display): GraphQL returned no merge request notes")
+            }
+            for e in notes.nodes { if let id = e.numericID { edits[id] = e } }
+            after = notes.pageInfo.hasNextPage ? notes.pageInfo.endCursor : nil
+        } while after != nil
+        return edits
+    }
+
+    static let notesQuery = """
+        query($path: ID!, $iid: String!, $after: String) {
+          project(fullPath: $path) {
+            mergeRequest(iid: $iid) {
+              notes(first: 100, after: $after) {
+                pageInfo { hasNextPage endCursor }
+                nodes { id lastEditedAt lastEditedBy { id username } }
+              }
+            }
+          }
+        }
+        """
 
     public func attach(_ file: URL, to project: ProjectSpec) async throws -> URL? {
         let upload = try await client.upload(projectPath(project) + "/uploads", file: file)
@@ -164,6 +280,18 @@ public struct GitLabForge: Forge {
             throw GitLabError("merge request \(project.path)!\(mr.iid) has an unusable web_url: \(mr.webUrl)")
         }
         return ReviewRequest(url: url, display: "\(project.path)!\(mr.iid)")
+    }
+
+    /// The iid in a display that `review(_:_:)` made, `<path>!<iid>`.
+    private func iid(_ review: ReviewRequest) throws -> Int {
+        guard let iid = review.display.split(separator: "!").last.flatMap({ Int($0) }) else {
+            throw GitLabError("\(review.display) (\(review.url.absoluteString)) doesn't name a merge request as <path>!<iid>")
+        }
+        return iid
+    }
+
+    private func mergeRequestPath(_ review: ReviewRequest, _ project: ProjectSpec) throws -> String {
+        "\(projectPath(project))/merge_requests/\(try iid(review))"
     }
 
     private func projectPath(_ project: ProjectSpec) -> String { "/projects/\(GitLabPath.encode(project.path))" }

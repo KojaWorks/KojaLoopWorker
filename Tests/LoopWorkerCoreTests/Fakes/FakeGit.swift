@@ -20,8 +20,11 @@ final class FakeGit: GitDriving, @unchecked Sendable {
         var failPushOnce = false
         var usesLFS = false
         var failLFSPushOnce = false
-        /// Branches on the forge; a push adds its branch.
-        var remoteBranches: Set<String> = []
+        /// Branches on the forge and their tips. A push must lease on the tip (nil: no branch)
+        /// and moves it.
+        var remoteTips: [String: String] = [:]
+        /// When set, every push pushes this commit, as when HEAD didn't move between pushes.
+        var head: String?
         var failHasRemoteBranch = false
     }
 
@@ -59,7 +62,7 @@ final class FakeGit: GitDriving, @unchecked Sendable {
         try state {
             $0.calls.append("hasRemoteBranch \(branch)")
             if $0.failHasRemoteBranch { throw FakeError("git rev-parse origin/\(branch) failed") }
-            return $0.remoteBranches.contains(branch)
+            return $0.remoteTips[branch] != nil
         }
     }
 
@@ -77,15 +80,18 @@ final class FakeGit: GitDriving, @unchecked Sendable {
         }
     }
 
-    /// Returns `commit-<n>` for the n-th successful push.
+    /// Returns `commit-<n>` for the n-th successful push. Throws `PushRejected` when `expected`
+    /// isn't the branch's tip in `remoteTips`.
     func push(_ worktree: URL, to url: String, branch: String, expected: String?, environment: [String: String]) async throws -> String {
         try state {
             if $0.failPushOnce { $0.failPushOnce = false; throw FakeError("git push \(branch) failed") }
             if let e = $0.pushFailure { $0.pushFailure = nil; throw e }
+            guard $0.remoteTips[branch] == expected else { throw PushRejected(branch: branch, url: url) }
             $0.pushes.append((worktree, url, branch, expected, environment))
             $0.calls.append("push \(branch)")
-            $0.remoteBranches.insert(branch)
-            return "commit-\($0.pushes.count)"
+            let commit = $0.head ?? "commit-\($0.pushes.count)"
+            $0.remoteTips[branch] = commit
+            return commit
         }
     }
 

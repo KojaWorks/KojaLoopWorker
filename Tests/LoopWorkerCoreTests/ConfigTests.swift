@@ -59,6 +59,8 @@ import Testing
     @Test func parsesDone() {
         let o = Outcome.parse(Data(#"{"outcome":"done","title":"T","body":"B","guide":"g.html"}"#.utf8))
         #expect(o == .done(title: "T", body: "B", guide: "g.html"))
+        let replies = Outcome.parse(Data(#"{"outcome":"done","title":"T","body":"B","replies":{"d1":"Renamed."}}"#.utf8))
+        #expect(replies == .done(title: "T", body: "B", guide: nil, replies: ["d1": "Renamed."]))  // B207
     }
 
     @Test func parsesStuck() {
@@ -151,7 +153,7 @@ import Testing
 
     @Test func outcomeTitleIsOneBoundedLine() {
         let long = String(repeating: "x", count: 500)
-        guard case .done(let title, _, _) = Outcome.parse(Data(#"{"outcome":"done","title":"\#(long)\nsecond"}"#.utf8)) else {
+        guard case .done(let title, _, _, _) = Outcome.parse(Data(#"{"outcome":"done","title":"\#(long)\nsecond"}"#.utf8)) else {
             Issue.record("not done"); return
         }
         #expect(title.count == Outcome.maxTitleLength)

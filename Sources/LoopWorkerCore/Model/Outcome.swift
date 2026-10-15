@@ -3,15 +3,18 @@ import Foundation
 /// What a worker reports as its last act, by writing JSON to `$LOOPWORKER_OUTCOME`.
 ///
 /// ```json
-/// {"outcome": "done", "title": "Add retry to sync", "body": "markdown", "guide": "guide.html"}
+/// {"outcome": "done", "title": "Add retry to sync", "body": "markdown", "guide": "guide.html",
+///  "replies": {"<thread id>": "markdown"}}
 /// {"outcome": "stuck", "blocker": "The card doesn't say which endpoint to call."}
 /// ```
 public enum Outcome: Sendable, Equatable {
     /// The worker committed an implementation on its branch.
     /// - title: the review request title: the first line only, at most `maxTitleLength` characters.
-    /// - body: the review request description, markdown.
+    /// - body: the review request description, markdown. When the review request is already
+    ///   open, the Manager posts it as a note on it instead.
     /// - guide: an optional file to attach (a review guide), relative to the slot's state directory.
-    case done(title: String, body: String, guide: String?)
+    /// - replies: for a review round, the reply to post in each review thread, by thread id.
+    case done(title: String, body: String, guide: String?, replies: [String: String] = [:])
     /// The worker can't proceed without a human. `blocker` is posted on the card.
     case stuck(blocker: String)
 
@@ -28,6 +31,7 @@ public enum Outcome: Sendable, Equatable {
             var body: String?
             var guide: String?
             var blocker: String?
+            var replies: [String: String]?
         }
         let raw: Raw
         do {
@@ -42,7 +46,7 @@ public enum Outcome: Sendable, Equatable {
             guard !title.isEmpty else {
                 return .stuck(blocker: "The worker reported done without a review request title.")
             }
-            return .done(title: title, body: raw.body ?? "", guide: raw.guide)
+            return .done(title: title, body: raw.body ?? "", guide: raw.guide, replies: raw.replies ?? [:])
         case "stuck":
             return .stuck(blocker: raw.blocker ?? "The worker reported stuck without saying why.")
         default:

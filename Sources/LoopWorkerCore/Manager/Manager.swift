@@ -93,7 +93,7 @@ public actor Manager {
         var base: String?
         /// Set for a round that fixes the card's failed CI: that round's number, from 1.
         var ciRound: Int?
-        /// For a CI fix round: the pushed commit whose pipeline failed, where the round started.
+        /// For a CI fix round: the commit that the round started from; its own commits count from it.
         var ciCommit: String?
         var spawnedAt: Date?
         var lastError: String?
@@ -165,6 +165,8 @@ public actor Manager {
     var lastStatusError: String?
     /// `verifying` cards whose CI the Manager watches, by card id.
     var ciWatches: [String: CIWatch] = [:]
+    /// Cards whose start failed before acquiring a slot, by card id: not claimed again until `until`.
+    var claimBackoff: [String: (until: Date, failures: Int)] = [:]
 
     public init(config: HostConfig, dependencies: ManagerDependencies, clock: any ManagerClock = SystemClock()) {
         self.config = config
