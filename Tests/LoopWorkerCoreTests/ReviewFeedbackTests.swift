@@ -65,22 +65,26 @@ import Testing
         #expect(f.withheld.count == 1)
     }
 
-    @Test("B203: plain comments count only after the Manager's latest note, whose own notes stay labelled in their threads")
-    func plainCommentsAfterTheManagersLatestNote() {
-        let summary = ReviewMarker.note("LoopWorker pushed abc:\n\nDid it.", markers: [ReviewMarker.round("abc")])
-        let reply = ReviewMarker.note("Renamed it.", markers: [ReviewMarker.reply("abc", thread: "T")])
+    @Test("B203: plain comments count only after the newest read time in LoopWorker's round notes; its own notes stay labelled in their threads")
+    func plainCommentsAfterTheLastRead() {
+        let summary = ReviewMarker.note("LoopWorker pushed abc.\n\nDid it.", markers: [ReviewMarker.round("r1", commit: "abc", read: Self.at(3))])
+        let fixRound = ReviewMarker.note("LoopWorker pushed def.\n\nFixed CI.", markers: [ReviewMarker.round("r2", commit: "def", read: nil)])
+        let reply = ReviewMarker.note("Renamed it.", markers: [ReviewMarker.reply("r1", thread: "T")])
         let f = build([
             thread("T", [note("1", at: 1), note("2", by: "me", at: 4, body: reply)]),
             thread("P1", resolvable: false, [note("3", at: 2)]),
-            thread("S", resolvable: false, [note("4", by: "me", at: 5, body: summary)]),
-            thread("P2", resolvable: false, [note("5", by: "me", at: 6, body: "Also the docs.")]),
+            thread("P3", resolvable: false, [note("4", at: 4)]),  // during the run: after the read, before the note
+            thread("S", resolvable: false, [note("5", by: "me", at: 5, body: summary)]),
+            thread("P2", resolvable: false, [note("6", by: "me", at: 6, body: "Also the docs.")]),
+            thread("F", resolvable: false, [note("7", by: "me", at: 7, body: fixRound)]),
         ])
-        #expect(f.threads.map(\.id) == ["T", "P2"])
+        #expect(f.threads.map(\.id) == ["T", "P3", "P2"])
         #expect(f.threads[0].notes[1] == ReviewFeedback.Note(author: "me", createdAt: Self.at(4), body: "Renamed it.", byLoopWorker: true))
-        #expect(!f.threads[1].notes[0].byLoopWorker)
+        #expect(!f.threads[2].notes[0].byLoopWorker)
 
-        let first = build([thread("P1", resolvable: false, [note("3", by: "me", at: 2)])])
-        #expect(first.threads.map(\.id) == ["P1"])  // no Manager note yet: since the review request opened
+        let first = build([thread("P1", resolvable: false, [note("3", by: "me", at: 2)]), thread("F", resolvable: false, [note("7", by: "me", at: 7, body: fixRound)])])
+        #expect(first.threads.map(\.id) == ["P1"])  // no read yet: since the review request opened
+        #expect(ReviewMarker.readTime(summary) == Self.at(3) && ReviewMarker.readTime(fixRound) == nil)
     }
 
     @Test("B203: caps keep 50 threads and cut each redacted note to 4000 characters, saying so")

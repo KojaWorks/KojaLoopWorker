@@ -321,9 +321,11 @@ card back to `ready` (on GitLab, by adding `loopworker::next` again). The card r
 pushed branch as usual. Before spawning, the Manager reads the feedback with `reviewFeedback`;
 a failed read releases the card without counting an attempt.
 
-The feedback holds every unresolved thread, and the plain comments created after the
-Manager's latest note on the review request (or after it opened), so a plain comment reaches
-one round only. A resolved thread means "don't do this", so the owner resolves the threads
+The feedback holds every unresolved thread, and the plain comments created after the last
+round read the feedback (or after the review request opened), so a plain comment reaches one
+round only, even one posted while a worker runs or while the card waits for CI. The Manager
+records the read time in the slot's `card.json` and puts it in the round's note marker
+(`read=`); fix rounds read no feedback and their notes carry none. A resolved thread means "don't do this", so the owner resolves the threads
 that the worker should leave alone. The Manager's own replies stay in their threads, marked as
 LoopWorker's from an earlier round, so the worker sees what it already claimed.
 
@@ -349,9 +351,10 @@ the code or explaining why not, and writes a reply per thread in the outcome's `
 
 At finish, when the branch has an open review request, the Manager posts each reply into its
 thread, then the outcome body as a note on the review request. It never resolves a thread.
-Every post carries a hidden marker with the pushed commit, and a new review request's
-description carries one too, so a retried finish finds what it already posted and posts it
-only once. A reply that fails, or names a thread that doesn't exist, is logged and listed under
+Every post carries a hidden marker that names the round by its claim time (kept in
+`card.json`, so it survives a restart), and a new review request's description carries one
+too, so a retried finish finds what it already posted and posts it only once, while a later
+round that only replies, without a new commit, still posts. A reply that fails, or names a thread that doesn't exist, is logged and listed under
 the note; a failed note fails the finish, which is retried. The card then moves to `review`, or
 to `verifying`, as for any finish. CI fix rounds post their body as a note the same way.
 

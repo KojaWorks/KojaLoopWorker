@@ -164,7 +164,7 @@ A card that crashes `max_attempts` times becomes stuck. Closing an issue or remo
 To have a worker address review comments, add `loopworker::next` to a card in
 `loopworker::review` while its merge request is open. That runs a review round: the next worker
 continues on the same branch and gets every unresolved thread, plus the plain comments made since
-LoopWorker's last note on the merge request. Resolve the threads that you don't want addressed
+the previous review round read them. Resolve the threads that you don't want addressed
 first. Adding the label vouches for the merge request's comments as they are then: anything a
 colleague writes or edits afterwards is withheld and named in the log. When it finishes,
 LoopWorker pushes to the same merge request, replies in each thread, and posts what it changed

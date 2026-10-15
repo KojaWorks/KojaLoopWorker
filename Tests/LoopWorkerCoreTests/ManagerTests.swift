@@ -411,11 +411,12 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.forge.state.get.openCalls.count == 1)  // still backing off
         h.clock.advance(31)
         await h.cycle()
-        // The retry finds the review request open, and its description already marks this commit.
+        // The retry finds the review request open, and its description already marks this round.
         #expect(h.forge.state.get.openCalls.count == 1)
-        #expect(h.forge.state.get.opened.map(\.commit) == ["commit-1"])
+        let marker = try #require(h.forge.state.get.opened.first?.marker)
+        #expect(marker.hasPrefix("<!-- loopworker:round=") && marker.hasSuffix(" commit=commit-1 -->"))
         #expect(h.forge.state.get.notes.isEmpty)
-        #expect(h.log.contains("g/app!1 already has the note for commit-1; not posting it again", level: .info))
+        #expect(h.log.contains("g/app!1 already has this round's note; not posting it again", level: .info))
         #expect(h.git.state.get.pushes.map(\.expected) == [nil, "commit-1"])  // the retry leases on its own push
         #expect(h.backlog.card(id: "id-12")?.state == .review)
         #expect(try h.status().projects[0].slots[0].state == "idle")
@@ -573,7 +574,8 @@ func fileMode(_ url: URL) throws -> Int {
         await h.cycle()
         let f = h.forge.state.get, host = await h.manager.hostName
         #expect(f.opened.count == 1 && f.openCalls.count == 1)
-        #expect(f.replies == [FakeForge.Posted(review: review.url, thread: "d1", commit: "commit-2", text: "Renamed it.")])
+        #expect(f.replies.map { [$0.review.absoluteString, $0.thread, $0.text] } == [[review.url.absoluteString, "d1", "Renamed it."]])
+        #expect(f.notes.first?.marker.contains(" commit=commit-2 read=") == true)
         #expect(f.notes.map(\.text) == ["""
             LoopWorker pushed `commit-2` to this branch.
 
@@ -613,7 +615,31 @@ func fileMode(_ url: URL) throws -> Int {
         h.clock.advance(61)
         await h.cycle()
         #expect(h.forge.state.get.replies.count == 1 && h.forge.state.get.notes.count == 1)
-        #expect(h.log.contains("g/app!1 already has the note for head-2; not posting it again", level: .info))
+        #expect(h.log.contains("g/app!1 already has this round's note; not posting it again", level: .info))
+        #expect(h.backlog.card(id: "id-12")?.state == .review)
+    }
+
+    @Test("B207: a replies-only round after an earlier one posts its note and its reply in an already answered thread")
+    func aRepliesOnlyRoundStillPosts() async throws {
+        let (h, _) = try await reviewRound()
+        h.git.state { $0.head = "head-1" }
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"Renamed things.","replies":{"d1":"Renamed it."}}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.backlog.card(id: "id-12")?.state == .review)
+
+        h.backlog.setState("id-12", .ready)
+        h.clock.advance(60)
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 3)
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"Explained why not.","replies":{"d1":"Kept the old name: it is public API."}}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.git.state.get.pushes.suffix(2).map(\.expected) == ["commit-1", "head-1"])
+        #expect(h.forge.state.get.replies.map(\.text) == ["Renamed it.", "Kept the old name: it is public API."])
+        #expect(h.forge.state.get.notes.map(\.text) == [
+            "LoopWorker pushed `head-1` to this branch.\n\nRenamed things.", "LoopWorker pushed `head-1` to this branch.\n\nExplained why not.",
+        ])
         #expect(h.backlog.card(id: "id-12")?.state == .review)
     }
 

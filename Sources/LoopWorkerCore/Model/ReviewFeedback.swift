@@ -157,8 +157,9 @@ extension ReviewFeedback {
     ///
     /// - A resolvable thread counts while it is unresolved, with all its notes; a resolved one
     ///   means "don't do this" and is skipped.
-    /// - A thread that isn't resolvable counts only with its notes created after the Manager's
-    ///   latest note on the review request, or after `openedAt` when there is none.
+    /// - A thread that isn't resolvable counts only with its notes created after the newest
+    ///   `read` time in the Manager's round notes (the last round that read feedback), or after
+    ///   `openedAt` when there is none.
     /// - A note by the owner is trusted unless someone else edited it (after `vouchedAt`, when
     ///   set). Anyone else's note is trusted only when created at or before `vouchedAt` and not
     ///   edited after it by someone other than the owner. A nil `vouchedAt` trusts only the
@@ -172,7 +173,7 @@ extension ReviewFeedback {
     ///   - openedAt: When the review request was opened.
     public static func build(_ threads: [RawThread], owner: String, openedAt: Date, vouchedAt: Date?) -> ReviewFeedback {
         let isManager = { (n: RawNote) in n.byOwner && ReviewMarker.isManagerNote(n.body) }
-        let since = threads.flatMap(\.notes).filter { !$0.system && isManager($0) }.map(\.createdAt).max() ?? openedAt
+        let since = threads.flatMap(\.notes).filter { !$0.system && isManager($0) }.compactMap { ReviewMarker.readTime($0.body) }.max() ?? openedAt
         var out = ReviewFeedback()
         for thread in threads {
             if thread.resolvable && thread.resolved { continue }
@@ -228,13 +229,34 @@ public enum ThreadReply: Sendable, Equatable {
 public enum ReviewMarker {
     public static let manager = "<!-- loopworker -->"
 
-    /// Marks the note that the Manager posts for a round that pushed `commit`.
-    public static func round(_ commit: String) -> String { "<!-- loopworker:round=\(commit) -->" }
-
-    /// Marks the Manager's reply in `thread` for a round that pushed `commit`.
-    public static func reply(_ commit: String, thread: String) -> String {
-        "<!-- loopworker:reply=\(commit) thread=\(thread.filter { $0.isLetter || $0.isNumber || "_-".contains($0) }) -->"
+    /// Marks a round's note, or the description of the review request it opened.
+    /// - Parameters:
+    ///   - round: The round's identity, unique per claim and stable across a Manager restart
+    ///     (`roundID(claimedAt:)`), so a retried finish recognizes its own posts.
+    ///   - commit: The commit that the round pushed; informational.
+    ///   - read: When the round read the review feedback; nil when it didn't. `ReviewFeedback.build`
+    ///     takes plain comments only from after the newest one.
+    public static func round(_ round: String, commit: String, read: Date?) -> String {
+        "<!-- loopworker:round=\(round) commit=\(commit)" + (read.map { " read=\(format($0))" } ?? "") + " -->"
     }
+
+    /// Marks the Manager's reply in `thread` for round `round`.
+    public static func reply(_ round: String, thread: String) -> String {
+        "<!-- loopworker:reply=\(round) thread=\(thread.filter { $0.isLetter || $0.isNumber || "_-".contains($0) }) -->"
+    }
+
+    /// A round's identity from its claim time, at whole seconds as `card.json` keeps it.
+    public static func roundID(claimedAt: Date) -> String { format(claimedAt) }
+
+    /// The newest `read` time in the round markers of `body`'s header; nil when there is none.
+    public static func readTime(_ body: String) -> Date? {
+        header(body).compactMap { line -> Date? in
+            guard line.hasPrefix("<!-- loopworker:round="), let r = line.range(of: " read=") else { return nil }
+            return try? Date(String(line[r.upperBound...].prefix { $0 != " " }), strategy: .iso8601)
+        }.max()
+    }
+
+    private static func format(_ date: Date) -> String { date.formatted(.iso8601) }
 
     /// `text` under a header of `manager` and `markers`.
     public static func note(_ text: String, markers: [String] = []) -> String {

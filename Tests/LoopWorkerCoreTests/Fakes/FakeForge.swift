@@ -33,8 +33,8 @@ final class FakeForge: Forge, @unchecked Sendable {
         /// The `vouchedAt` of each `reviewFeedback` call.
         var feedbackCalls: [Date?] = []
         var failFeedback: (any Error)?
-        /// The commit each review request opened with, by URL: its description's round marker.
-        var openedAt: [URL: String] = [:]
+        /// The round marker of each review request's description, by URL.
+        var descriptionMarkers: [URL: String] = [:]
         /// Every note that `postReviewNote` posted.
         var notes: [Posted] = []
         /// Makes the next `postReviewNote` throw once.
@@ -50,7 +50,7 @@ final class FakeForge: Forge, @unchecked Sendable {
     struct Posted: Equatable {
         var review: URL
         var thread: String?
-        var commit: String
+        var marker: String
         var text: String
     }
 
@@ -71,7 +71,7 @@ final class FakeForge: Forge, @unchecked Sendable {
                                    display: "\(draft.project.path)!\(n)")
             $0.opened.append(draft)
             $0.byBranch[draft.sourceBranch] = rr
-            $0.openedAt[rr.url] = draft.commit
+            $0.descriptionMarkers[rr.url] = draft.marker
             return rr
         }
     }
@@ -88,21 +88,21 @@ final class FakeForge: Forge, @unchecked Sendable {
         }
     }
 
-    func postReviewNote(_ text: String, commit: String, on review: ReviewRequest, project: ProjectSpec) async throws -> Bool {
+    func postReviewNote(_ text: String, marker: String, on review: ReviewRequest, project: ProjectSpec) async throws -> Bool {
         try state {
             if let e = $0.failNextNote { $0.failNextNote = nil; throw e }
-            if $0.openedAt[review.url] == commit || $0.notes.contains(where: { $0.review == review.url && $0.commit == commit }) { return false }
-            $0.notes.append(Posted(review: review.url, commit: commit, text: text))
+            if $0.descriptionMarkers[review.url] == marker || $0.notes.contains(where: { $0.review == review.url && $0.marker == marker }) { return false }
+            $0.notes.append(Posted(review: review.url, marker: marker, text: text))
             return true
         }
     }
 
-    func replyToThread(_ thread: String, text: String, commit: String, on review: ReviewRequest, project: ProjectSpec) async throws -> ThreadReply {
+    func replyToThread(_ thread: String, text: String, marker: String, on review: ReviewRequest, project: ProjectSpec) async throws -> ThreadReply {
         try state {
             guard $0.threads[review.url]?.contains(thread) == true else { return .noSuchThread }
             if $0.failReplies.contains(thread) { throw FakeError("reply in \(thread) failed") }
-            if $0.replies.contains(where: { $0.review == review.url && $0.thread == thread && $0.commit == commit }) { return .alreadyPosted }
-            $0.replies.append(Posted(review: review.url, thread: thread, commit: commit, text: text))
+            if $0.replies.contains(where: { $0.review == review.url && $0.marker == marker }) { return .alreadyPosted }
+            $0.replies.append(Posted(review: review.url, thread: thread, marker: marker, text: text))
             return .posted
         }
     }

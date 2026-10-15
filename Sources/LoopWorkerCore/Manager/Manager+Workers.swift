@@ -14,6 +14,8 @@ struct CardRecord: Codable, Equatable {
     var ciRound: Int? = nil
     /// Set for a CI fix round: the pushed commit whose pipeline failed.
     var ciCommit: String? = nil
+    /// When a review round read the review feedback; its note's marker carries it.
+    var feedbackReadAt: Date? = nil
 
     static func read(_ file: URL) -> CardRecord? {
         guard let data = try? Data(contentsOf: file) else { return nil }
@@ -60,6 +62,13 @@ struct LastOutcome: Codable, Equatable {
 struct PushRecord: Codable, Equatable {
     var branch: String
     var commit: String
+}
+
+/// A worker run's identity on the review request, from its `card.json`: `id` is
+/// `ReviewMarker.roundID` of the claim time, `readAt` when it read the review feedback.
+struct Round: Sendable, Equatable {
+    var id: String
+    var readAt: Date?
 }
 
 /// A start or finish step failed; `step` says which, for the log.
@@ -342,15 +351,23 @@ extension Manager {
     }
 
     /// The open review request of `branch` and its capped, redacted feedback; nil when none is
-    /// open or it has no feedback. Logs what was withheld or cut.
+    /// open or it has no feedback. Records the read time in `card.json` and logs what was
+    /// withheld or cut.
     func reviewRound(_ spec: SlotSpec, card: Card, branch: String, vouchedAt: Date?) async throws -> WorkerBrief.ReviewRound? {
         let forge = deps.forge, project = spec.project
         guard let review = try await step("looking for an open review request of \(branch)", {
             try await forge.openReviewRequest(for: project, sourceBranch: branch)
         }) else { return nil }
+        let readAt = clock.now()
         let feedback = try await step("reading the review feedback on \(review.display)") {
             try await forge.reviewFeedback(for: review, project: project, vouchedAt: vouchedAt)
         }.capped(redact: deps.redact)
+        let file = cardRecordFile(spec)
+        do {
+            guard var record = CardRecord.read(file) else { throw ConfigError("\(file.path) is missing or unreadable") }
+            record.feedbackReadAt = readAt
+            try record.write(file)
+        } catch { throw StepError(step: "recording when the review feedback was read", error: error) }
         for line in feedback.withheld { log.info("\(label(spec)): withheld from \(card.ref)'s review round: \(line)") }
         for line in feedback.cut { log.info("\(label(spec)): cut from \(card.ref)'s review round: \(line)") }
         guard !feedback.isEmpty else { return nil }
@@ -591,13 +608,18 @@ extension Manager {
             update(ref) { $0.task = nil }
             return
         }
+        let record = CardRecord.read(cardRecordFile(spec))
+        if record == nil {
+            log.error("\(label(spec)): can't read \(cardRecordFile(spec).path); finishing \(card.ref) with the round named by its spawn time")
+        }
+        let round = Round(id: ReviewMarker.roundID(claimedAt: record?.claimedAt ?? s.spawnedAt ?? clock.now()), readAt: record?.feedbackReadAt)
         do {
             do {
                 switch Outcome.parse(data) {
                 case .done(let title, let body, let guide, let replies):
                     do {
                         try await finishDone(spec, card: card, branch: branch, base: base, title: title, body: body, guide: guide,
-                                             replies: replies, ciRound: s.ciRound, ciCommit: s.ciCommit,
+                                             replies: replies, round: round, ciRound: s.ciRound, ciCommit: s.ciCommit,
                                              waitForCI: projects[ref.key]?.contract?.ci.waitForCI ?? false)
                     } catch let rejection as BackendRejection {
                         try await stuck(spec, card: card, blocker: "Couldn't finish: the forge or backlog refused: \(rejection)")
@@ -622,7 +644,7 @@ extension Manager {
     ///     count from. Not `origin/<branch>`, which any later fetch moves to the round's own push.
     func finishDone(
         _ spec: SlotSpec, card: Card, branch: String, base: String, title: String, body: String, guide: String?,
-        replies: [String: String] = [:], ciRound: Int? = nil, ciCommit: String? = nil, waitForCI: Bool = false
+        replies: [String: String] = [:], round: Round, ciRound: Int? = nil, ciCommit: String? = nil, waitForCI: Bool = false
     ) async throws {
         let ahead = try await step("counting commits on \(branch)") {
             if let ciCommit { try await self.deps.git.commitsSince(spec.worktree, commit: ciCommit) }
@@ -658,7 +680,8 @@ extension Manager {
         let review: ReviewRequest
         if let existing {
             review = existing
-            try await postRound(spec, card: card, review: review, commit: commit, text: text + (guideLine.isEmpty ? "" : "\n" + guideLine), replies: replies)
+            try await postRound(spec, card: card, review: review, round: round, commit: commit,
+                                text: text + (guideLine.isEmpty ? "" : "\n" + guideLine), replies: replies)
         } else {
             if !replies.isEmpty {
                 let ids = replies.keys.sorted()
@@ -670,7 +693,7 @@ extension Manager {
             let draft = ReviewRequestDraft(
                 project: spec.project, card: card, sourceBranch: branch, targetBranch: base, title: title,
                 body: "\(text)\n\n---\n\(cardLine)\(guideLine)\n", draft: spec.project.draftReviewRequests, assignToOwner: true,
-                commit: commit)
+                marker: ReviewMarker.round(round.id, commit: commit, read: round.readAt))
             review = try await step("opening the review request") { try await forge.openReviewRequest(draft) }
         }
         guard waitForCI else {
@@ -693,12 +716,12 @@ extension Manager {
     /// Posts a round's replies into their threads, then `text` as a note on `review` under a
     /// line naming `commit`. A reply that fails or names an unknown thread is logged and listed
     /// under the note; a failed note throws, and a retry finds what was already posted.
-    func postRound(_ spec: SlotSpec, card: Card, review: ReviewRequest, commit: String, text: String, replies: [String: String]) async throws {
+    func postRound(_ spec: SlotSpec, card: Card, review: ReviewRequest, round: Round, commit: String, text: String, replies: [String: String]) async throws {
         let forge = deps.forge, project = spec.project
         var problems: [String] = []
         for (thread, reply) in replies.sorted(by: { $0.key < $1.key }) {
             do {
-                switch try await forge.replyToThread(thread, text: reply, commit: commit, on: review, project: project) {
+                switch try await forge.replyToThread(thread, text: reply, marker: ReviewMarker.reply(round.id, thread: thread), on: review, project: project) {
                 case .posted: log.info("\(label(spec)): replied in thread \(thread) of \(review.display)")
                 case .alreadyPosted: log.info("\(label(spec)): thread \(thread) of \(review.display) already has this round's reply")
                 case .noSuchThread:
@@ -712,9 +735,9 @@ extension Manager {
         }
         let note = "LoopWorker pushed `\(commit.prefix(12))` to this branch.\n\n\(text)" + problems.map { "\n\n" + $0 }.joined()
         let posted = try await step("posting this round's note on \(review.display)") {
-            try await forge.postReviewNote(note, commit: commit, on: review, project: project)
+            try await forge.postReviewNote(note, marker: ReviewMarker.round(round.id, commit: commit, read: round.readAt), on: review, project: project)
         }
-        if !posted { log.info("\(label(spec)): \(review.display) already has the note for \(commit.prefix(12)); not posting it again") }
+        if !posted { log.info("\(label(spec)): \(review.display) already has this round's note; not posting it again") }
     }
 
     /// `text` as inline code on one line.

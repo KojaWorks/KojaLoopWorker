@@ -18,8 +18,7 @@ public protocol Forge: Sendable {
     /// never opens a duplicate; the only change made to it is the assignee that
     /// `draft.assignToOwner` asks for when it has none. A failed assignment is logged and
     /// leaves the review request unassigned; it never fails the call. A new review request's
-    /// description ends with `ReviewMarker.round(draft.commit)`, so `postReviewNote` for that
-    /// commit posts nothing.
+    /// description ends with `draft.marker`, so `postReviewNote` with that marker posts nothing.
     func openReviewRequest(_ draft: ReviewRequestDraft) async throws -> ReviewRequest
 
     /// The open review request whose source branch is `sourceBranch`, or nil when none is open.
@@ -32,18 +31,18 @@ public protocol Forge: Sendable {
     /// - Throws: when any part can't be read; never returns partial feedback.
     func reviewFeedback(for review: ReviewRequest, project: ProjectSpec, vouchedAt: Date?) async throws -> ReviewFeedback
 
-    /// Posts `text` (markdown) as a note on `review`, under the Manager's header with
-    /// `ReviewMarker.round(commit)`, for a round that pushed `commit` to an open review request.
+    /// Posts `text` (markdown) as a note on `review`, under the Manager's header with `marker`
+    /// (`ReviewMarker.round`).
     /// - Returns: false, posting nothing, when the description or a note by the forge token's
-    ///   user already carries that marker, so a retried finish doesn't post twice.
-    func postReviewNote(_ text: String, commit: String, on review: ReviewRequest, project: ProjectSpec) async throws -> Bool
+    ///   user already carries `marker`, so a retried finish doesn't post twice.
+    func postReviewNote(_ text: String, marker: String, on review: ReviewRequest, project: ProjectSpec) async throws -> Bool
 
     /// Replies `text` (markdown) in thread `thread` of `review` (an id from `reviewFeedback`),
-    /// under the Manager's header with `ReviewMarker.reply(commit, thread:)`. Never resolves the
+    /// under the Manager's header with `marker` (`ReviewMarker.reply`). Never resolves the
     /// thread: that is the reviewer's call.
-    /// - Returns: `.alreadyPosted`, posting nothing, when the thread has a note by the forge
-    ///   token's user with that marker; `.noSuchThread` when `review` has no such thread.
-    func replyToThread(_ thread: String, text: String, commit: String, on review: ReviewRequest, project: ProjectSpec) async throws -> ThreadReply
+    /// - Returns: `.alreadyPosted`, posting nothing, when a note by the forge token's user
+    ///   already carries `marker`; `.noSuchThread` when `review` has no such thread.
+    func replyToThread(_ thread: String, text: String, marker: String, on review: ReviewRequest, project: ProjectSpec) async throws -> ThreadReply
 
     /// The latest CI pipeline for `commit` in `project`, whatever triggered it (a push of the
     /// branch or the review request), or nil when none exists yet. A re-run or a newer

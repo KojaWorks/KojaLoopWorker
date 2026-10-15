@@ -345,7 +345,7 @@ private func graphQLBody(_ req: URLRequest) -> [String: Any] {
 
     @Test("B205: review threads and conversation comments over GraphQL, trust-checked against the vouch")
     func reviewFeedback() async throws {
-        let summary = "<!-- loopworker -->\n<!-- loopworker:round=abc -->\n\nLoopWorker pushed abc"
+        let summary = ReviewMarker.note("LoopWorker pushed abc", markers: [ReviewMarker.round("r1", commit: "abc", read: try Date(Self.t(3), strategy: .iso8601))])
         let stub = StubGitHub { [self] req, _ in
             if req.url?.path == "/user" { return (200, [:], #"{"login": "Me"}"#) }
             #expect(req.url?.absoluteString == "https://api.github.com/graphql")
@@ -405,12 +405,12 @@ private func graphQLBody(_ req: URLRequest) -> [String: Any] {
             }
         }
         let f = try forge(stub)
-        #expect(try await !f.postReviewNote("again", commit: "c1", on: Self.review, project: project))
-        #expect(try await f.postReviewNote("Pushed.", commit: "c2", on: Self.review, project: project))
+        #expect(try await !f.postReviewNote("again", marker: "<!-- loopworker:round=c1 -->", on: Self.review, project: project))
+        #expect(try await f.postReviewNote("Pushed.", marker: "<!-- loopworker:round=c2 -->", on: Self.review, project: project))
         let posts = stub.requests.filter { $0.httpMethod == "POST" }
         #expect(posts.map { graphQLBody($0)["body"] as? String } == ["<!-- loopworker -->\n\(marker)\n\nPushed."])
         mine = json([["body": "<!-- loopworker -->\n\(marker)\n\nPushed.", "user": ["login": "Octo"]]])
-        #expect(try await !f.postReviewNote("Pushed.", commit: "c2", on: Self.review, project: project))
+        #expect(try await !f.postReviewNote("Pushed.", marker: "<!-- loopworker:round=c2 -->", on: Self.review, project: project))
     }
 
     @Test("B208: a review thread reply answers its first comment; a conversation comment gets a linked new comment; unknown ids are reported")
@@ -443,10 +443,10 @@ private func graphQLBody(_ req: URLRequest) -> [String: Any] {
             }
         }
         let f = try forge(stub)
-        #expect(try await f.replyToThread("PRRT_1", text: "Renamed.", commit: "c2", on: Self.review, project: project) == .posted)
-        #expect(try await f.replyToThread("IC_1", text: "Added.", commit: "c2", on: Self.review, project: project) == .posted)
-        #expect(try await f.replyToThread("garbage", text: "x", commit: "c2", on: Self.review, project: project) == .noSuchThread)
-        #expect(try await f.replyToThread("PRRT_other", text: "x", commit: "c2", on: Self.review, project: project) == .noSuchThread)
+        #expect(try await f.replyToThread("PRRT_1", text: "Renamed.", marker: ReviewMarker.reply("c2", thread: "PRRT_1"), on: Self.review, project: project) == .posted)
+        #expect(try await f.replyToThread("IC_1", text: "Added.", marker: ReviewMarker.reply("c2", thread: "IC_1"), on: Self.review, project: project) == .posted)
+        #expect(try await f.replyToThread("garbage", text: "x", marker: ReviewMarker.reply("c2", thread: "garbage"), on: Self.review, project: project) == .noSuchThread)
+        #expect(try await f.replyToThread("PRRT_other", text: "x", marker: ReviewMarker.reply("c2", thread: "PRRT_other"), on: Self.review, project: project) == .noSuchThread)
         let posts = stub.requests.filter { $0.httpMethod == "POST" && $0.url?.path != "/graphql" }
         #expect(posts.map { $0.url!.path } == ["/repos/owner/app/pulls/7/comments/111/replies", "/repos/owner/app/issues/7/comments"])
         #expect(graphQLBody(posts[0])["body"] as? String == "<!-- loopworker -->\n<!-- loopworker:reply=c2 thread=PRRT_1 -->\n\nRenamed.")
