@@ -318,9 +318,15 @@ private let pullJSON = #"{"number": 7, "html_url": "https://github.com/owner/app
     let review = ReviewRequest(url: URL(string: "https://github.com/owner/app/pull/34")!, display: "owner/app#34")
     let head = "0123456789abcdef0123456789abcdef01234567"
 
-    /// Answers the merge PUT with `put` and the pull request GET with `pull`.
-    fileprivate func stub(_ put: (Int, String), pull: String = "{}") -> StubGitHub {
-        StubGitHub { req, _ in req.httpMethod == "PUT" ? (put.0, [:], put.1) : (200, [:], pull) }
+    static let noChecks = #"{"total_count": 0, "check_runs": []}"#
+    static let runningCheck = #"{"total_count": 1, "check_runs": [{"name": "build", "status": "in_progress", "conclusion": null, "html_url": "https://github.com/owner/app/runs/1", "output": {"summary": "", "text": null}}]}"#
+
+    /// Answers the merge PUT with `put`, the head's check runs with `checks` and the pull request GET with `pull`.
+    fileprivate func stub(_ put: (Int, String), pull: String = "{}", checks: String = noChecks) -> StubGitHub {
+        StubGitHub { req, _ in
+            if req.httpMethod == "PUT" { return (put.0, [:], put.1) }
+            return (200, [:], req.url?.path.hasSuffix("/check-runs") == true ? checks : pull)
+        }
     }
 
     func pull(state: String = "open", merged: Bool = false, draft: Bool = false, mergeable: Bool? = true, mergeableState: String = "clean") -> String {
@@ -349,12 +355,36 @@ private let pullJSON = #"{"number": 7, "html_url": "https://github.com/owner/app
         #expect(s.requests.last?.url?.path == "/repos/owner/app/pulls/34")
     }
 
-    @Test("B226: a 409 is a moved head, without re-reading")
+    @Test("B226: a 409 is a moved head, unless the pull request already merged")
     func headMoved() async throws {
-        let s = stub((409, #"{"message": "Head branch was modified. Review and try the merge again."}"#))
-        #expect(try await merge(s) == .blocked(
+        let refused = (409, #"{"message": "Head branch was modified. Review and try the merge again."}"#)
+        #expect(try await merge(stub(refused, pull: pull())) == .blocked(
             "GitHub: the source branch's head moved past 0123456789ab (Head branch was modified. Review and try the merge again.)"))
-        #expect(s.requests.count == 1)
+        #expect(try await merge(stub(refused, pull: pull(state: "closed", merged: true))) == .merged(commit: "feed"))
+    }
+
+    @Test("B226: a 403 with a token that still reads the pull request is a missing merge right")
+    func forbidden() async throws {
+        let s = stub((403, #"{"message": "Resource not accessible by personal access token"}"#), pull: pull())
+        #expect(try await merge(s) == .blocked(
+            "GitHub: the token's user may not merge this pull request (the merge answered 403 Resource not accessible by personal access token)"))
+    }
+
+    @Test("B226: blocked is pending while the head's checks run")
+    func blockedWhileChecksRun() async throws {
+        let refused = (405, #"{"message": "Required status check \"build\" is expected."}"#)
+        let s = stub(refused, pull: pull(mergeable: false, mergeableState: "blocked"), checks: Self.runningCheck)
+        guard case .pending(let why) = try await merge(s) else { Issue.record("not pending"); return }
+        #expect(why.hasPrefix("GitHub: blocked while the head's checks run"))
+    }
+
+    @Test("B226: a refused merge of a mergeable pull request is blocked, unless the base just moved")
+    func refusedWhileClean() async throws {
+        let rule = (405, #"{"message": "Merge commits are not allowed on this repository."}"#)
+        #expect(try await merge(stub(rule, pull: pull())) == .blocked(
+            "GitHub: clean (the merge answered 405 Merge commits are not allowed on this repository.)"))
+        let moved = (405, #"{"message": "Base branch was modified. Review and try the merge again."}"#)
+        guard case .pending = try await merge(stub(moved, pull: pull())) else { Issue.record("not pending"); return }
     }
 
     @Test("B226: closed and draft pull requests are blocked; a null mergeable is pending")
@@ -367,8 +397,8 @@ private let pullJSON = #"{"number": 7, "html_url": "https://github.com/owner/app
     }
 
     @Test("B226: mergeable_state decides outdated, blocked or pending, naming the value", arguments: [
-        ("dirty", "outdated"), ("behind", "outdated"), ("blocked", "blocked"), ("unknown", "pending"),
-        ("unstable", "pending"), ("clean", "pending"), ("has_hooks", "pending"), ("some_future_state", "blocked"),
+        ("dirty", "outdated"), ("behind", "outdated"), ("blocked", "blocked"), ("unknown", "blocked"),
+        ("unstable", "blocked"), ("clean", "blocked"), ("has_hooks", "blocked"), ("some_future_state", "blocked"),
     ])
     func refusalClasses(_ state: String, _ kind: String) async throws {
         let s = stub((405, #"{"message": "At least 1 approving review is required"}"#), pull: pull(mergeable: false, mergeableState: state))

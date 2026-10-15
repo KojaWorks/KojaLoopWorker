@@ -65,10 +65,11 @@ public protocol Forge: Sendable {
     /// - Throws: when the forge refuses or can't be reached.
     func retryJobs(project: ProjectSpec, jobs: [CIJob]) async throws -> Bool
 
-    /// Merges an open review request into its target branch with a merge commit, but only
-    /// while the head of its source branch is `head`, so commits that someone else pushed are
-    /// never merged unseen. GitLab merges with the project's merge method; GitHub with
-    /// `merge_method = merge`. The source branch is kept. Idempotent: a review request that is
+    /// Merges an open review request into its target branch, but only while the head of its
+    /// source branch is `head`, so commits that someone else pushed are never merged unseen.
+    /// GitLab merges with the project's merge method and deletes the source branch when the
+    /// merge request asks for that; GitHub merges with a merge commit and keeps the branch.
+    /// A merge that waits only on running checks is `.pending`. Idempotent: a review request that is
     /// already merged returns `.merged`, so a merge retried after a lost response or a Manager
     /// restart succeeds. The forge finds the review request by the number at the end of
     /// `review.url`.

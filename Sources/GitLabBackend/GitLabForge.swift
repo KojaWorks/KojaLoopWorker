@@ -69,8 +69,10 @@ public struct GitLabForge: Forge {
     /// `PUT .../merge_requests/:iid/merge` with `sha`, and nothing that would squash, delete the
     /// branch or wait for a pipeline. A refusal (405, 406, 409, 422) or an answer that isn't
     /// merged re-reads the merge request: `merged` is merged, `locked` (merging) pending, any
-    /// other state but `opened` blocked; a 409 is a moved head; otherwise
-    /// `detailed_merge_status` decides. GitLab answers 401 both for a bad token and for a user
+    /// other state but `opened` blocked; a merge request that hasn't processed `head` yet is
+    /// pending while the branch tip is `head`, and blocked once someone pushed past it (a 409
+    /// too); otherwise `detailed_merge_status` decides, `ci_must_pass` being pending while the
+    /// head's pipeline is missing or running. GitLab answers 401 both for a bad token and for a user
     /// that may not merge, so a 401 or 403 re-reads `/user`: a token that GitLab accepts makes
     /// it a missing merge permission, `blocked`; a rejected one throws the token error.
     public func merge(_ review: ReviewRequest, project: ProjectSpec, head: String) async throws -> MergeResult {
@@ -95,6 +97,11 @@ public struct GitLabForge: Forge {
         case "opened": break
         default: return .blocked("GitLab: \(mr.state ?? "no state") (the merge request isn't open)")
         }
+        if let seen = mr.sha, seen != head, let branch = mr.sourceBranch {
+            let tip: GLBranch? = try await client.getIfFound(projectPath(project) + "/repository/branches/" + GitLabPath.encode(branch))
+            if tip?.commit.id == head { return .pending("GitLab: the merge request doesn't show the push of \(head.prefix(12)) yet") }
+            return .blocked("GitLab: the source branch's head moved past \(head.prefix(12))")
+        }
         if refusal?.status == 409 { return .blocked("GitLab: the source branch's head moved past \(head.prefix(12))") }
         if let user = forbiddenTo, let refusal {
             return .blocked(await mergeForbidden(user, refusal, into: mr.targetBranch, project))
@@ -104,6 +111,12 @@ public struct GitLabForge: Forge {
         switch status {
         case "mergeable": return .pending(reason + (refusal.map { ", but the merge answered \($0)" } ?? ""))
         case "checking", "unchecked", "preparing", "ci_still_running", "approvals_syncing": return .pending(reason)
+        case "ci_must_pass":
+            // GitLab says so before the head's pipeline exists too.
+            switch try await pipeline(for: project, commit: head)?.state {
+            case nil, .running?: return .pending(reason)
+            default: return .blocked(reason)
+            }
         case "conflict", "need_rebase": return .outdated(reason)
         default: return .blocked(reason)
         }

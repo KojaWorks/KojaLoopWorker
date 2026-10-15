@@ -514,9 +514,10 @@ public struct GitHubForge: Forge {
         return true
     }
 
-    /// `PUT .../pulls/:n/merge` with `merge_method` `merge` and `sha`. A 409 is a moved head. A 405
-    /// or 422 re-reads the pull request: merged is merged; closed or a draft is blocked; a null
-    /// `mergeable` is pending; otherwise `mergeable_state` decides.
+    /// `PUT .../pulls/:n/merge` with `merge_method` `merge` and `sha`. A refusal (403, 405, 409,
+    /// 422) re-reads the pull request: merged is merged; closed, a moved head (409), a missing
+    /// merge right (403) or a draft is blocked; a null `mergeable` is pending; otherwise
+    /// `mergeable_state` decides, `blocked` being pending while the head's checks run.
     public func merge(_ review: ReviewRequest, project: ProjectSpec, head: String) async throws -> MergeResult {
         guard let number = Int(review.url.lastPathComponent), number > 0 else {
             throw BackendRejection("can't merge \(review.display): \(review.url.absoluteString) doesn't end in a pull request number")
@@ -526,12 +527,9 @@ public struct GitHubForge: Forge {
         let path = "repos/\(project.path)/pulls/\(number)"
         var refusal: Refusal?
         do {
-            let answer = try await request("PUT", path + "/merge", body: Merge(sha: head), refusals: [405, 409, 422], as: Merged.self)
+            let answer = try await request("PUT", path + "/merge", body: Merge(sha: head), refusals: [403, 405, 409, 422], as: Merged.self)
             if answer.merged == true { return .merged(commit: answer.sha) }
-        } catch let r as Refusal {
-            if r.status == 409 { return .blocked("GitHub: the source branch's head moved past \(head.prefix(12)) (\(r.message))") }
-            refusal = r
-        }
+        } catch let r as Refusal { refusal = r }
         struct State: Decodable {
             var merged: Bool?
             var merge_commit_sha: String?
@@ -543,14 +541,25 @@ public struct GitHubForge: Forge {
         let pull = try await request("GET", path, as: State.self)
         if pull.merged == true { return .merged(commit: pull.merge_commit_sha) }
         if pull.state != "open" { return .blocked("GitHub: \(pull.state) (the pull request isn't open)") }
+        if let r = refusal, r.status == 409 { return .blocked("GitHub: the source branch's head moved past \(head.prefix(12)) (\(r.message))") }
+        // The GET with the same token worked, so a 403 is the token's user lacking merge rights, not a bad token.
+        if let r = refusal, r.status == 403 { return .blocked("GitHub: the token's user may not merge this pull request (the merge answered 403 \(r.message))") }
         if pull.draft == true { return .blocked("GitHub: draft (the pull request is a draft)") }
         guard pull.mergeable != nil else { return .pending("GitHub: mergeable unknown (GitHub is still computing it)") }
         let answered = "the merge answered " + (refusal.map { "\($0.status) \($0.message)" } ?? "unmerged")
         switch pull.mergeable_state ?? "no mergeable_state" {
         case "dirty": return .outdated("GitHub: dirty (it conflicts with the base branch)")
         case "behind": return .outdated("GitHub: behind (branch protection requires it to be up to date with the base branch)")
-        case "blocked": return .blocked("GitHub: blocked (required reviews, checks or branch protection; \(answered))")
-        case let s where ["unknown", "unstable", "clean", "has_hooks"].contains(s): return .pending("GitHub: \(s) (\(answered))")
+        case "blocked":
+            // GitHub also says blocked while required checks still run.
+            if try await pipeline(for: project, commit: head)?.state == .running {
+                return .pending("GitHub: blocked while the head's checks run (\(answered))")
+            }
+            return .blocked("GitHub: blocked (required reviews, checks or branch protection; \(answered))")
+        case let s where ["unknown", "unstable", "clean", "has_hooks"].contains(s):
+            // A refusal on a mergeable pull request is a repository rule (no merge commits, say), unless the base just moved.
+            if let r = refusal, !r.message.contains("Base branch was modified") { return .blocked("GitHub: \(s) (\(answered))") }
+            return .pending("GitHub: \(s) (\(answered))")
         case let s: return .blocked("GitHub: \(s) (\(answered))")
         }
     }
@@ -685,8 +694,8 @@ public struct GitHubForge: Forge {
                 attempt += 1
                 continue
             }
-            if refusals.contains(status) { throw Refusal(status: status, message: message) }
             if transient { throw GitHubError.unavailable(request: label, status: status, message: message) }
+            if refusals.contains(status) { throw Refusal(status: status, message: message) }
             if status == 401 || status == 403 {
                 throw GitHubError.unauthorized(tokenEnv: tokenEnv, request: label, status: status, message: message)
             }

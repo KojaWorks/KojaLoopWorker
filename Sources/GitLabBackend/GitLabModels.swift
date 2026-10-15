@@ -59,8 +59,16 @@ struct GLMergeRequest: Decodable, Sendable {
     /// Why it can or can't merge now: `mergeable`, `not_approved`, `need_rebase`, ...
     var detailedMergeStatus: String?
     var targetBranch: String?
+    var sourceBranch: String?
+    /// The source branch head that GitLab last processed; it lags a push by a few seconds.
+    var sha: String?
     var createdAt: Date?
     var description: String?
+}
+
+struct GLBranch: Decodable, Sendable {
+    struct Commit: Decodable, Sendable { var id: String }
+    var commit: Commit
 }
 
 struct GLProtectedBranch: Decodable, Sendable {

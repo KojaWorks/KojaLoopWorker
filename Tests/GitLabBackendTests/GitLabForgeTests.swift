@@ -318,7 +318,7 @@ import Testing
     @Test("B225: detailed_merge_status decides pending, outdated or blocked, naming the value", arguments: [
         ("checking", "pending"), ("unchecked", "pending"), ("preparing", "pending"), ("ci_still_running", "pending"),
         ("approvals_syncing", "pending"), ("mergeable", "pending"), ("conflict", "outdated"), ("need_rebase", "outdated"),
-        ("not_approved", "blocked"), ("blocked_status", "blocked"), ("ci_must_pass", "blocked"), ("draft_status", "blocked"),
+        ("not_approved", "blocked"), ("blocked_status", "blocked"), ("draft_status", "blocked"),
         ("discussions_not_resolved", "blocked"), ("requested_changes", "blocked"), ("not_open", "blocked"),
         ("some_future_rule", "blocked"),
     ])
@@ -334,6 +334,35 @@ import Testing
         case let other: Issue.record("\(status): \(other), expected \(kind)"); return
         }
         #expect(reason.hasPrefix("GitLab: \(status)"))
+    }
+
+    @Test("B225: ci_must_pass is pending while the head's pipeline is missing or running, blocked once it ended")
+    func ciMustPass() async throws {
+        let w = World()
+        let pipelines = "/api/v4/projects/mygroup%2Fapp/pipelines"
+        w.gitlab.on("PUT", mr + "/merge", status: 405, json: ["message": "405 Method Not Allowed"])
+        w.gitlab.on("GET", mr, json: state("opened", "ci_must_pass"))
+        w.gitlab.on("GET", pipelines, json: [Any]())
+        #expect(try await merge(w) == .pending("GitLab: ci_must_pass (a pipeline must pass first)"))
+        w.gitlab.on("GET", pipelines, json: [["id": 7, "status": "running", "web_url": "https://gitlab.example.com/p/7", "source": "push"]])
+        #expect(try await merge(w) == .pending("GitLab: ci_must_pass (a pipeline must pass first)"))
+        w.gitlab.on("GET", pipelines, json: [["id": 7, "status": "canceled", "web_url": "https://gitlab.example.com/p/7", "source": "push"]])
+        #expect(try await merge(w) == .blocked("GitLab: ci_must_pass (a pipeline must pass first)"))
+    }
+
+    @Test("B225: a merge request that hasn't caught up with the push is pending; one whose branch moved on is blocked")
+    func lagsThePush() async throws {
+        let w = World()
+        var lagging = state("opened", "need_rebase")
+        lagging["sha"] = "0ld"
+        lagging["source_branch"] = "loopworker-12"
+        w.gitlab.on("PUT", mr + "/merge", status: 409, json: ["message": "SHA does not match HEAD of source branch"])
+        w.gitlab.on("GET", mr, json: lagging)
+        let branch = "/api/v4/projects/mygroup%2Fapp/repository/branches/loopworker-12"
+        w.gitlab.on("GET", branch, json: ["commit": ["id": head]])
+        #expect(try await merge(w) == .pending("GitLab: the merge request doesn't show the push of 0123456789ab yet"))
+        w.gitlab.on("GET", branch, json: ["commit": ["id": "n3w"]])
+        #expect(try await merge(w) == .blocked("GitLab: the source branch's head moved past 0123456789ab"))
     }
 
     @Test("B225: reasons gloss known values and pass unknown ones through raw")
