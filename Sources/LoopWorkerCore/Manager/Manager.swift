@@ -95,6 +95,10 @@ public actor Manager {
         var ciRound: Int?
         /// For a CI fix round: the pushed commit whose pipeline failed, where the round started.
         var ciCommit: String?
+        /// For a fix round: it is a rebase round.
+        var rebaseRound = false
+        /// For a fix round: the watch's rebase rounds, this one included.
+        var rebases = 0
         var spawnedAt: Date?
         var lastError: String?
         var lastAttemptFinished: Date?

@@ -23,6 +23,8 @@ final class FakeGit: GitDriving, @unchecked Sendable {
         /// Branches on the forge; a push adds its branch.
         var remoteBranches: Set<String> = []
         var failHasRemoteBranch = false
+        /// `isAncestor` per ancestor ref; else true.
+        var ancestors: [String: Bool] = [:]
     }
 
     let state = Guarded(State())
@@ -74,6 +76,13 @@ final class FakeGit: GitDriving, @unchecked Sendable {
         state {
             $0.calls.append("commitsSince \(commit)")
             return $0.commitsSince[commit] ?? $0.defaultCommitsAhead
+        }
+    }
+
+    func isAncestor(_ worktree: URL, ancestor: String) async throws -> Bool {
+        state {
+            $0.calls.append("isAncestor \(ancestor)")
+            return $0.ancestors[ancestor] ?? true
         }
     }
 

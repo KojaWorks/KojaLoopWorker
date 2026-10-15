@@ -168,6 +168,109 @@ import Testing
             Review request: [g/app!1](\(reviewURL.absoluteString))
             """)
     }
+
+    /// Card 12 of a `finish` project: the forge refused its merge as outdated, and its rebase
+    /// round runs.
+    func rebasing(_ finish: String = "merge", manifest: String = "", results: [MergeResult] = [.outdated("need_rebase")]) async throws -> ManagerHarness {
+        let h = try await finished(finish, manifest: manifest)
+        h.forge.state { $0.mergeResults = results }
+        if finish == "ci_then_merge" {
+            h.forge.state { $0.pipelines["commit-1"] = PipelineStatus(state: .passed, url: pipelineURL) }
+            h.clock.advance(121)
+        }
+        await h.cycle()
+        await h.cycle()
+        return h
+    }
+
+    func finishRound(_ h: ManagerHarness) async throws {
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"Rebased."}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+    }
+
+    @Test("B208: outdated runs a rebase round on the card branch, which pushes under the lease, returns to verifying and merges")
+    func rebaseRound() async throws {
+        let h = try await rebasing()
+        #expect(h.backlog.writes.contains(.resumeFix("id-12")))
+        #expect(h.tmux.spawned.count == 2)
+        #expect(h.lifecycle.state.get.acquiredBases.last == "loopworker-12-fix-it")
+        let card = try #require(CardRecord.read(h.stateDir().appending(path: "card.json")))
+        #expect(card.ciRound == 1 && card.ciCommit == "commit-1" && card.rebaseRound == true && card.rebases == 1)
+        #expect(!FileManager.default.fileExists(atPath: h.stateDir().appending(path: "ci.md").path))
+        let brief = try String(contentsOf: h.stateDir().appending(path: "brief.md"), encoding: .utf8)
+        #expect(brief.contains("## Rebase"))
+        #expect(brief.contains("because `main` moved since commit `commit-1` was pushed. The forge's reason: need_rebase"))
+        #expect(brief.contains("`git rebase origin/main`"))
+        #expect(brief.contains("pushed as `commit-1`"))
+        #expect(!brief.contains("## CI failed"))
+        #expect(h.log.contains("spawned worker for rebase round 1 for g/app#12", level: .info))
+
+        try await finishRound(h)
+        #expect(h.git.calls.contains("isAncestor origin/main"))
+        #expect(h.git.state.get.pushes.map(\.expected) == [nil, "commit-1"])
+        #expect(h.forge.state.get.opened.count == 1)
+        let r = try #require(try record(h))
+        #expect(r.sha == "commit-2" && r.round == 1 && r.rebases == 1)
+        #expect(h.backlog.state.get.verifyingPlans["id-12"] == .merge)
+        await h.cycle()
+        #expect(h.forge.state.get.mergeCalls.last == "\(reviewURL.absoluteString) @ commit-2")
+        #expect(h.backlog.card(id: "id-12")?.state == .reviewMerged)
+    }
+
+    @Test("B208: outdated again after a rebase round marks the card stuck")
+    func outdatedTwice() async throws {
+        let h = try await rebasing(results: [.outdated("need_rebase"), .outdated("conflict")])
+        try await finishRound(h)
+        await h.cycle()
+        #expect(blocker(h)?.hasPrefix("The forge still can't merge g/app!1 after a rebase round, because `main` moved: conflict.") == true)
+        #expect(h.backlog.writes.filter { $0 == .resumeFix("id-12") }.count == 1)
+    }
+
+    @Test("B208: a rebase round whose branch isn't based on origin/<base> is stuck and pushes nothing")
+    func rebaseNotBased() async throws {
+        let h = try await rebasing()
+        h.git.state { $0.ancestors["origin/main"] = false }
+        try await finishRound(h)
+        #expect(blocker(h) == "The worker reported done for rebase round 1, but `loopworker-12-fix-it` isn't based on the current `main`.")
+        #expect(h.git.state.get.pushes.count == 1)
+    }
+
+    @Test("B208: rebase rounds don't use up ci_fix_attempts")
+    func rebaseIsNotACIFix() async throws {
+        let h = try await rebasing("ci_then_merge", manifest: ciManifest)
+        try await finishRound(h)
+        #expect(h.backlog.state.get.verifyingPlans["id-12"] == .ciThenMerge)
+        h.forge.state {
+            $0.pipelines["commit-2"] = PipelineStatus(state: .failed, url: pipelineURL, failedJobs: [CIJob(name: "test", stage: "", url: nil, logTail: "")])
+        }
+        h.clock.advance(121)
+        await h.cycle()
+        await h.cycle()
+        #expect(blocker(h) == nil)
+        #expect(h.backlog.writes.filter { $0 == .resumeFix("id-12") }.count == 2)
+        let brief = try String(contentsOf: h.stateDir().appending(path: "brief.md"), encoding: .utf8)
+        #expect(brief.contains("CI fix round 1 of 1"))
+        #expect(CardRecord.read(h.stateDir().appending(path: "card.json"))?.ciRound == 2)
+    }
+
+    @Test("B208: watch and card records without the rebase fields still decode")
+    func oldRecordsDecode() throws {
+        let d = JSONDecoder()
+        d.dateDecodingStrategy = .iso8601
+        let watch = """
+            {"base":"main","branch":"b","card":{"display":"g/app#12","id":"id-12"},"project":"g/app",
+             "pushedAt":"2026-10-01T00:00:00Z","review":{"display":"g/app!1","url":"\(reviewURL.absoluteString)"},"round":1,"sha":"abc"}
+            """
+        let r = try d.decode(CIWatchRecord.self, from: Data(watch.utf8))
+        #expect(r.rebases == nil && r.ciRounds == 1)
+        let card = """
+            {"base":"main","branch":"b","claimedAt":"2026-10-01T00:00:00Z","project":"g/app","ref":{"display":"g/app#12","id":"id-12"},
+             "slot":0,"ciRound":1,"ciCommit":"abc"}
+            """
+        let c = try d.decode(CardRecord.self, from: Data(card.utf8))
+        #expect(c.rebaseRound == nil && c.rebases == nil && c.ciRound == 1)
+    }
 }
 
 @Suite struct MergeDecisionTests {

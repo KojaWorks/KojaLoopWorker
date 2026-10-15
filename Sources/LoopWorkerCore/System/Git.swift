@@ -65,6 +65,9 @@ public protocol GitDriving: Sendable {
     /// doesn't change when a fetch moves a tracking ref.
     func commitsSince(_ worktree: URL, commit: String) async throws -> Int
 
+    /// True when `ancestor` (a commit or ref, such as `origin/main`) is HEAD or an ancestor of it.
+    func isAncestor(_ worktree: URL, ancestor: String) async throws -> Bool
+
     /// Pushes HEAD to `branch` at `url` without running hooks, and returns the pushed commit.
     /// - Parameter expected: the commit that `branch` must be at on the forge, the one the
     ///   Manager last pushed for this card; nil means the branch must not exist yet. A branch
@@ -193,6 +196,14 @@ public struct Git: GitDriving {
 
     public func commitsSince(_ worktree: URL, commit: String) async throws -> Int {
         try await countCommits(worktree, "\(commit)..HEAD")
+    }
+
+    public func isAncestor(_ worktree: URL, ancestor: String) async throws -> Bool {
+        let arguments = ["-C", worktree.path, "merge-base", "--is-ancestor", ancestor, "HEAD"]
+        let result = try await runner.run(Self.spec(arguments, Self.localTimeout, [:]))
+        if result.succeeded { return true }
+        if result.status == 1 && !result.timedOut { return false }  // not an ancestor; other codes are errors
+        throw GitError(command: arguments.joined(separator: " "), result: result)
     }
 
     private func countCommits(_ worktree: URL, _ range: String) async throws -> Int {

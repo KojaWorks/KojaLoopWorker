@@ -19,6 +19,11 @@ struct CIWatchRecord: Codable, Equatable {
     var pushedAt: Date
     /// The commit whose failed jobs the Manager re-ran; it does so at most once per commit.
     var retriedCommit: String? = nil
+    /// Rebase rounds among the `round` fix rounds; nil is 0.
+    var rebases: Int? = nil
+
+    /// Fix rounds that fixed failed CI, which `ci_fix_attempts` limits.
+    var ciRounds: Int { round - (rebases ?? 0) }
 
     static func directory(stateDir: URL) -> URL { stateDir.appending(path: "ci") }
 
@@ -46,12 +51,23 @@ struct CIWatchRecord: Codable, Equatable {
     }
 }
 
-/// A fix round about to start: the watch it came from, the failed pipeline and how its failed
-/// jobs did on the base branch.
+/// What a fix round fixes.
+enum FixKind: Sendable {
+    /// A failed pipeline, and how its failed jobs did on the base branch.
+    case ci(PipelineStatus, baselines: [String: CIJobBaseline])
+    /// The forge refused to merge because the base branch moved; its reason.
+    case rebase(reason: String)
+}
+
+/// A fix round about to start: the watch it came from and what it fixes.
 struct FixRound: Sendable {
     var record: CIWatchRecord
-    var pipeline: PipelineStatus
-    var baselines: [String: CIJobBaseline] = [:]
+    var kind: FixKind
+
+    var isRebase: Bool { if case .rebase = kind { true } else { false } }
+
+    /// "CI fix round 2" or "rebase round 1", for the log.
+    var name: String { isRebase ? "rebase round \((record.rebases ?? 0) + 1)" : "CI fix round \(record.ciRounds + 1)" }
 }
 
 extension Manager {
@@ -64,9 +80,8 @@ extension Manager {
         var lastPoll: Date?
         var polling = false
         var pipeline: PipelineStatus?
-        /// A failed pipeline that waits for a fix round, and since when.
-        var fix: PipelineStatus?
-        var fixBaselines: [String: CIJobBaseline] = [:]
+        /// What a queued fix round fixes, and since when it waits.
+        var fix: FixKind?
         var fixQueuedAt: Date?
         /// A slot is starting the fix round.
         var fixStarting = false
@@ -148,7 +163,14 @@ extension Manager {
 
     /// Why the queued fix round of `w` can't start, or nil while it still may.
     func queuedFixProblem(_ w: CIWatch, _ now: Date) -> String? {
-        let failed = "CI failed on `\(w.record.sha.prefix(12))`: \((w.fix?.url ?? w.record.review.url).absoluteString)."
+        let failed = switch w.fix {
+        case .rebase(let reason)?:
+            "The forge can't merge \(w.record.review.display) because `\(w.record.base)` moved: \(Self.inlineMarkdown(reason))."
+        case .ci(let p, _)?:
+            "CI failed on `\(w.record.sha.prefix(12))`: \((p.url ?? w.record.review.url).absoluteString)."
+        case nil:
+            "CI failed on `\(w.record.sha.prefix(12))`: \(w.record.review.url.absoluteString)."
+        }
         guard let p = projects[ProjectSpec(path: w.record.project).key], !p.removing else {
             return "\(failed) \(w.record.project) is no longer served by this Manager, so no fix round can run."
         }
@@ -206,7 +228,7 @@ extension Manager {
         ciWatches[id]!.pipeline = pipeline
         let decide = { (retried: Bool) in
             Reconciler.decideCI(
-                observation, sincePush: self.clock.now().timeIntervalSince(r.pushedAt), round: r.round,
+                observation, sincePush: self.clock.now().timeIntervalSince(r.pushedAt), round: r.ciRounds,
                 policy: CIPolicy(timeout: ci.timeoutMinutes * 60, fixAttempts: ci.fixAttempts),
                 baselines: baselines, retried: retried)
         }
@@ -225,15 +247,14 @@ extension Manager {
         case .preexisting:
             await ciPreexisting(id, fresh, r, pipeline!, baselines)
         case .fix:
-            ciWatches[id]!.fix = pipeline
-            ciWatches[id]!.fixBaselines = baselines
+            ciWatches[id]!.fix = .ci(pipeline!, baselines: baselines)
             ciWatches[id]!.fixQueuedAt = clock.now()
             if let why = queuedFixProblem(ciWatches[id]!, clock.now()) {
                 await ciStuck(id, fresh, r, why)
                 return
             }
             fillSoon = true
-            log.warning("\(r.card): CI failed on \(r.sha.prefix(12)); queued fix round \(r.round + 1) of \(ci.fixAttempts)")
+            log.warning("\(r.card): CI failed on \(r.sha.prefix(12)); queued CI fix round \(r.ciRounds + 1) of \(ci.fixAttempts)")
         case .stuck(let reason):
             await ciStuck(id, fresh, r, ciBlocker(reason, r, pipeline: pipeline, ci: ci))
         }
@@ -316,11 +337,12 @@ extension Manager {
         unwatch(id)
     }
 
-    /// Reads the pipeline again right before a fix round, since a human may have re-run it.
+    /// Reads the pipeline again right before a CI fix round, since a human may have re-run it.
     /// Returns the round to run, with the newest failure, or nil when no round should run: the
     /// pipeline passed (the card moves to review) or runs again (the watch waits for it).
     func recheckPipeline(_ fix: FixRound, card: Card) async -> FixRound? {
         let r = fix.record, id = r.card.id
+        guard case .ci(_, let baselines) = fix.kind else { return fix }
         let spec = projects[ProjectSpec(path: r.project).key]?.spec ?? ProjectSpec(path: r.project)
         let current: PipelineStatus?
         do { current = try await deps.forge.pipeline(for: spec, commit: r.sha) }
@@ -330,7 +352,7 @@ extension Manager {
         }
         switch current?.state {
         case .failed?:
-            return FixRound(record: r, pipeline: current!, baselines: fix.baselines)
+            return FixRound(record: r, kind: .ci(current!, baselines: baselines))
         case .passed?, .running?:
             ciWatches[id]?.fix = nil
             ciWatches[id]?.fixQueuedAt = nil
@@ -407,7 +429,7 @@ extension Manager {
                 let stage = job.stage.isEmpty ? "" : " (stage \(Self.inlineMarkdown(job.stage)))"
                 return job.url.map { "- [\(name)](\($0.absoluteString))\(stage)" } ?? "- \(name)\(stage)"
             }
-            let rounds = r.round == 1 ? "1 fix round" : "\(r.round) fix rounds"
+            let rounds = r.ciRounds == 1 ? "1 fix round" : "\(r.ciRounds) fix rounds"
             return "CI still fails on \(sha) after \(rounds) (ci_fix_attempts is \(ci.fixAttempts)): \(link)"
                 + (jobs.isEmpty ? "" : "\n\nFailed jobs:\n" + jobs.joined(separator: "\n"))
         }
@@ -441,7 +463,7 @@ extension Manager {
         }
         guard let w = ciWatches[id] else { return }
         let pendingFor = w.pendingSince.map { clock.now().timeIntervalSince($0) }
-        switch Reconciler.decideMerge(result, pendingFor: pendingFor, rebases: 0, timeout: ci.timeoutMinutes * 60) {
+        switch Reconciler.decideMerge(result, pendingFor: pendingFor, rebases: r.rebases ?? 0, timeout: ci.timeoutMinutes * 60) {
         case .merged(let commit):
             await merged(id, card, r, commit: commit, passed: passed)
         case .wait(let why):
@@ -451,7 +473,14 @@ extension Manager {
             }
             ciWatches[id]?.pendingReason = why
         case .rebase(let why):
-            await ciStuck(id, card, r, "The forge can't merge \(r.review.display) because `\(r.base)` moved: \(Self.inlineMarkdown(why)). Rebase `\(r.branch)` onto `\(r.base)` and merge it by hand, then move the card on.")
+            ciWatches[id]?.fix = .rebase(reason: why)
+            ciWatches[id]?.fixQueuedAt = clock.now()
+            if let w = ciWatches[id], let problem = queuedFixProblem(w, clock.now()) {
+                await ciStuck(id, card, r, problem)
+                return
+            }
+            fillSoon = true
+            log.warning("\(r.card): the forge can't merge \(r.review.display) because \(r.base) moved: \(why); queued a rebase round")
         case .stuck(let reason):
             await ciStuck(id, card, r, mergeBlocker(reason, r, ci: ci))
         }
@@ -584,8 +613,9 @@ extension Manager {
     }
 
     func startFixRound(_ id: String, on ref: SlotRef) {
-        guard let w = ciWatches[id], let pipeline = w.fix, let contract = projects[ref.key]?.contract else { return }
+        guard let w = ciWatches[id], let kind = w.fix, let contract = projects[ref.key]?.contract else { return }
         let r = w.record
+        let fix = FixRound(record: r, kind: kind)
         ciWatches[id]!.fixStarting = true
         update(ref) {
             $0.phase = .busy
@@ -595,6 +625,8 @@ extension Manager {
             $0.base = r.base
             $0.ciRound = r.round + 1
             $0.ciCommit = r.sha
+            $0.rebaseRound = fix.isRebase
+            $0.rebases = (r.rebases ?? 0) + (fix.isRebase ? 1 : 0)
             $0.spawnedAt = nil
             $0.pane = []
             $0.finishFailures = 0
@@ -602,7 +634,6 @@ extension Manager {
             $0.finishError = nil
         }
         fillSoon = true
-        let fix = FixRound(record: r, pipeline: pipeline, baselines: w.fixBaselines)
         track { await self.startTask(ref, card: w.card, contract: contract, base: r.base, branch: r.branch, fix: fix) }
     }
 
@@ -623,7 +654,7 @@ extension Manager {
             }
         }
         guard resumed else {
-            log.warning("\(label(spec)): dropped CI fix round \(fix.record.round + 1) for \(card.ref): it is no longer verifying, so a human moved it")
+            log.warning("\(label(spec)): dropped \(fix.name) for \(card.ref): it is no longer verifying, so a human moved it")
             unwatch(id)
             return false
         }
@@ -653,12 +684,12 @@ extension Manager {
         w.fixRetryAt = clock.now().addingTimeInterval(delay)
         ciWatches[id] = w
         let next = w.fixFailures >= Self.fixStartAttempts ? "marking it stuck" : "retrying in \(Int(delay)) s"
-        log.error("\(w.record.card): CI fix round \(w.record.round + 1) failed to start (\(w.fixFailures) in a row): \(why); \(next)")
+        let name = w.fix.map { FixRound(record: w.record, kind: $0).name } ?? "fix round"
+        log.error("\(w.record.card): \(name) failed to start (\(w.fixFailures) in a row): \(why); \(next)")
     }
 
-    /// `ci.md` for a fix round: the failed jobs with their redacted log tails, framed as data.
-    func ciReport(_ fix: FixRound, card: Card) -> String {
-        let p = fix.pipeline, r = fix.record
+    /// `ci.md` for a CI fix round: the failed jobs with their redacted log tails, framed as data.
+    func ciReport(_ r: CIWatchRecord, _ p: PipelineStatus, baselines: [String: CIJobBaseline], card: Card) -> String {
         var out = """
             # CI output for \(card.ref) (untrusted)
 
@@ -681,7 +712,7 @@ extension Manager {
             let stage = job.stage.isEmpty ? "" : ", stage \(deps.redact(job.stage.replacingOccurrences(of: "\n", with: " ")))"
             out += "\n## Job: \(name)\(stage)\n\n"
             if let url = job.url { out += "\(url.absoluteString)\n\n" }
-            out += Self.baselineLine(fix.baselines[job.name] ?? .unknown, base: r.base) + "\n\n"
+            out += Self.baselineLine(baselines[job.name] ?? .unknown, base: r.base) + "\n\n"
             out += "Last \(CIJob.tailLines) lines of its log:\n\n\(fence)text\n\(tail)\n\(fence)\n"
         }
         return out

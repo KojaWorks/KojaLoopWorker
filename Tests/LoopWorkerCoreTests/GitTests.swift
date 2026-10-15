@@ -121,6 +121,22 @@ struct GitFixture {
         #expect(f.exists(slot.appending(path: ".build/cache")))
     }
 
+    @Test("B208: isAncestor tells whether the branch is based on origin/<base>")
+    func isAncestor() async throws {
+        let f = try await GitFixture()
+        defer { f.cleanUp() }
+        let slot = try await f.slotOnBranch("loopworker-1-card")
+        try await f.commit(in: slot, file: "feature", "x\n")
+        #expect(try await f.git.isAncestor(slot, ancestor: "origin/main"))
+        try await f.commit(in: f.seed, file: "README", "two\n")
+        try await f.run(["-C", f.seed.path, "push", "origin", "main"])
+        try await f.git.cloneOrFetch(url: f.origin.path, into: f.clone, environment: [:])
+        #expect(try await !f.git.isAncestor(slot, ancestor: "origin/main"))
+        try await f.run(["-C", slot.path, "rebase", "origin/main"])
+        #expect(try await f.git.isAncestor(slot, ancestor: "origin/main"))
+        await #expect(throws: GitError.self) { try await f.git.isAncestor(slot, ancestor: "origin/no-such-branch") }
+    }
+
     @Test("B26, B27: commitsAhead counts the card's commits, push creates and force-updates the branch")
     func commitsAheadAndPush() async throws {
         let f = try await GitFixture()

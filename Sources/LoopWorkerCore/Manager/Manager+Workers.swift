@@ -14,6 +14,10 @@ struct CardRecord: Codable, Equatable {
     var ciRound: Int? = nil
     /// Set for a CI fix round: the pushed commit whose pipeline failed.
     var ciCommit: String? = nil
+    /// Set for a fix round that rebases the card branch.
+    var rebaseRound: Bool? = nil
+    /// Set for a fix round: the watch's rebase rounds, this one included.
+    var rebases: Int? = nil
 
     static func read(_ file: URL) -> CardRecord? {
         guard let data = try? Data(contentsOf: file) else { return nil }
@@ -133,6 +137,8 @@ extension Manager {
             $0.base = base
             $0.ciRound = nil
             $0.ciCommit = nil
+            $0.rebaseRound = false
+            $0.rebases = 0
             $0.spawnedAt = nil
             $0.pane = []
             $0.finishFailures = 0
@@ -164,7 +170,9 @@ extension Manager {
             }
             try CardRecord(ref: card.ref, project: spec.project.path, number: card.number, slot: spec.index,
                            branch: branch, base: base, claimedAt: clock.now(),
-                           ciRound: fix.map { $0.record.round + 1 }, ciCommit: fix?.record.sha).write(cardRecordFile(spec))
+                           ciRound: fix.map { $0.record.round + 1 }, ciCommit: fix?.record.sha,
+                           rebaseRound: fix.map(\.isRebase), rebases: fix.map { ($0.record.rebases ?? 0) + ($0.isRebase ? 1 : 0) }
+            ).write(cardRecordFile(spec))
         } catch {
             if fix != nil { fixStartFailed(card.ref.id, "can't write \(dir.path): \(error)") }
             else { log.error("\(label(spec)): can't write \(dir.path): \(error); not claiming \(card.ref)") }
@@ -266,7 +274,7 @@ extension Manager {
             $0.spawnedAt = clock.now()
         }
         if fix != nil { unwatch(card.ref.id) }
-        let round = fix.map { " for CI fix round \($0.record.round + 1)" } ?? (resuming ? " resuming its pushed branch" : "")
+        let round = fix.map { " for \($0.name)" } ?? (resuming ? " resuming its pushed branch" : "")
         log.info("\(label(spec)): spawned worker\(round) for \(card.ref) on \(branch) at \(baseCommit.prefix(12)), base \(base), model \(model ?? "default")")
         watchFolderTrust(spec.session)
     }
@@ -284,13 +292,20 @@ extension Manager {
         }
         let snapshotFile = dir.appending(path: "card.md")
         let ciFile = dir.appending(path: "ci.md")
-        let ciFix = fix.map {
-            WorkerBrief.CIFix(review: $0.record.review, commit: $0.record.sha, ciFile: ciFile,
-                              round: $0.record.round + 1, rounds: contract.ci.fixAttempts)
+        var ciFix: WorkerBrief.CIFix?, rebase: WorkerBrief.Rebase?, report: String?
+        switch fix?.kind {
+        case .ci(let pipeline, let baselines)?:
+            ciFix = WorkerBrief.CIFix(review: fix!.record.review, commit: fix!.record.sha, ciFile: ciFile,
+                                      round: fix!.record.ciRounds + 1, rounds: contract.ci.fixAttempts)
+            report = ciReport(fix!.record, pipeline, baselines: baselines, card: card)
+        case .rebase(let reason)?:
+            rebase = WorkerBrief.Rebase(review: fix!.record.review, commit: fix!.record.sha, reason: Self.inlineMarkdown(reason))
+        case nil:
+            break
         }
         let brief = WorkerBrief(card: card, project: spec.project, slot: spec, baseBranch: base, branch: branch,
                                 snapshotFile: snapshotFile, excluded: snapshot.excluded, contract: contract, ciFix: ciFix,
-                                resuming: resuming, previousAttempt: await previousAttempt(spec, card: card)).render()
+                                rebase: rebase, resuming: resuming, previousAttempt: await previousAttempt(spec, card: card)).render()
 
         var env: [(name: String, value: String)] = []
         for name in ["CLAUDE_CODE_OAUTH_TOKEN"] + spec.project.workerEnv where !env.contains(where: { $0.name == name }) {
@@ -312,7 +327,7 @@ extension Manager {
         let fm = FileManager.default
         do {
             try Data(markdown.utf8).write(to: snapshotFile)
-            if let fix { try Data(ciReport(fix, card: card).utf8).write(to: ciFile) }
+            if let report { try Data(report.utf8).write(to: ciFile) }
             try Data(brief.utf8).write(to: dir.appending(path: "brief.md"))
             try mcp.write(to: dir.appending(path: "mcp.json"))
             let envFile = dir.appending(path: "worker.env")
@@ -403,6 +418,8 @@ extension Manager {
             $0.base = nil
             $0.ciRound = nil
             $0.ciCommit = nil
+            $0.rebaseRound = false
+            $0.rebases = 0
             $0.spawnedAt = nil
             $0.finishFailures = 0
             $0.finishRetryAt = nil
@@ -570,7 +587,7 @@ extension Manager {
                 case .done(let title, let body, let guide):
                     do {
                         try await finishDone(spec, card: card, branch: branch, base: base, title: title, body: body, guide: guide,
-                                             ciRound: s.ciRound, ciCommit: s.ciCommit,
+                                             ciRound: s.ciRound, ciCommit: s.ciCommit, rebaseRound: s.rebaseRound, rebases: s.rebases,
                                              plan: Self.verifyingPlan(spec.project, contract: projects[ref.key]?.contract))
                     } catch let rejection as BackendRejection {
                         try await stuck(spec, card: card, blocker: "Couldn't finish: the forge or backlog refused: \(rejection)")
@@ -590,23 +607,36 @@ extension Manager {
     }
 
     /// - Parameters:
-    ///   - ciRound: set for a CI fix round.
+    ///   - ciRound: set for a fix round: the watch's round after it.
     ///   - ciCommit: set for a CI fix round: the failed commit, which the round's new commits
     ///     count from. Not `origin/<branch>`, which any later fetch moves to the round's own push.
+    ///   - rebaseRound: the fix round rebases the branch, so `origin/<base>` must be an ancestor of HEAD.
+    ///   - rebases: the watch's rebase rounds after this round.
     ///   - plan: what the card waits for in `verifying`; nil moves it straight to `review`.
     func finishDone(
         _ spec: SlotSpec, card: Card, branch: String, base: String, title: String, body: String, guide: String?,
-        ciRound: Int? = nil, ciCommit: String? = nil, plan: VerifyingPlan? = nil
+        ciRound: Int? = nil, ciCommit: String? = nil, rebaseRound: Bool = false, rebases: Int = 0, plan: VerifyingPlan? = nil
     ) async throws {
         let ahead = try await step("counting commits on \(branch)") {
             if let ciCommit { try await self.deps.git.commitsSince(spec.worktree, commit: ciCommit) }
             else { try await self.deps.git.commitsAhead(spec.worktree, base: base) }
         }
         guard ahead > 0 else {
-            let blocker = ciRound.map { "The worker reported done for CI fix round \($0), but made no commits on `\(branch)` after the failed pipeline." }
-                ?? "The worker reported done, but branch `\(branch)` has no commits ahead of `\(base)`."
+            let blocker = rebaseRound
+                ? "The worker reported done for rebase round \(rebases), but `\(branch)` has no commits after `\(ciCommit?.prefix(12) ?? "")`."
+                : ciRound.map { "The worker reported done for CI fix round \($0 - rebases), but made no commits on `\(branch)` after the failed pipeline." }
+                    ?? "The worker reported done, but branch `\(branch)` has no commits ahead of `\(base)`."
             try await stuck(spec, card: card, blocker: blocker)
             return
+        }
+        if rebaseRound {
+            let based = try await step("checking that \(branch) is based on origin/\(base)") {
+                try await self.deps.git.isAncestor(spec.worktree, ancestor: "origin/\(base)")
+            }
+            guard based else {
+                try await stuck(spec, card: card, blocker: "The worker reported done for rebase round \(rebases), but `\(branch)` isn't based on the current `\(base)`.")
+                return
+            }
         }
         let commit = try await pushBranch(spec, card: card, branch: branch)
         let forge = deps.forge, project = spec.project
@@ -638,7 +668,8 @@ extension Manager {
         }
         // Written before the move, so a verifying card always has its record.
         let record = CIWatchRecord(card: card.ref, project: spec.project.path, number: card.number, branch: branch, base: base,
-                                   sha: commit, review: review, round: ciRound ?? 0, pushedAt: clock.now())
+                                   sha: commit, review: review, round: ciRound ?? 0, pushedAt: clock.now(),
+                                   rebases: rebases == 0 ? nil : rebases)
         do { try record.write(stateDir: stateDir) }
         catch { throw StepError(step: "writing the CI watch record", error: error) }
         try await step("moving \(card.ref) to verifying") { try await self.deps.backlog.markVerifying(card, review: review, plan: plan) }
