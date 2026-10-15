@@ -55,6 +55,7 @@ max_slots              = 4                    # host budget in weighted slot uni
 max_concurrent_workers = 2                    # claude sessions at once; default ceil(max_slots)
 max_attempts           = 3                    # crashes per card before it is marked stuck
 # notify_command = "..."                      # receives alerts on stdin; empty disables them
+# upload_command = '/usr/local/bin/upload "$LOOPWORKER_UPLOAD_PATH" "$LOOPWORKER_UPLOAD_NAME"'  # see below
 
 [engine]                                      # restarts a container engine that went down
 recover       = true
@@ -108,6 +109,13 @@ repo can't opt itself into a merge. The Manager reads `finish` again before each
 project switched to `draft` or `ready` moves its waiting cards to review instead. `draft = true`
 and `draft = false` still work as deprecated aliases for `finish = "draft"` and `"ready"`; the
 Manager logs a warning and doctor shows it.
+
+`upload_command` publishes attachments (a review guide, `attachment:` images) on a forge that
+has none, such as GitHub. The Manager runs it with the file in `$LOOPWORKER_UPLOAD_PATH` and a
+name in `$LOOPWORKER_UPLOAD_NAME`, and uses the last line that it prints, which must be an https
+URL. Anyone who has that URL can read the file, and a review guide contains the change's code,
+so set `upload_command` only on a host whose code may be shared that way. Name the program by
+its absolute path: a launchd service has a minimal `PATH`.
 
 `worker_env` refuses the backlog and forge token variables: workers never get those.
 
