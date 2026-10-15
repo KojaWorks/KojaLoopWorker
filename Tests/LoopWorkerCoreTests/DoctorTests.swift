@@ -222,6 +222,11 @@ private final class DiagnosableForge: Forge, Diagnosable, @unchecked Sendable {
         #expect(text == "ok   a   fine\nFAIL bb  broken\n     -> fix it\n")
     }
 
+    @Test func renderIndentsEveryLineOfARemedy() {
+        let text = Doctor.render([DoctorCheck("a", .fail, "broken", remedy: "pick one:\nx: 1\ny: 2")])
+        #expect(text == "FAIL a  broken\n     -> pick one:\n        x: 1\n        y: 2\n")
+    }
+
     @Test func aMissingHomeFails() async throws {
         let d = Doctor(
             home: home.appending(path: "nope"), environment: ["PATH": bin.path], runner: ScriptedRunner(), git: FakeGit(), servicePath: [bin.path],
