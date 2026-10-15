@@ -110,14 +110,28 @@ public struct GitLabForge: Forge {
         return true
     }
 
-    /// `POST .../discussions/:id/notes`, which also turns a single comment into a thread.
+    /// A thread gets `POST .../discussions/:id/notes`. A single comment gets a new merge
+    /// request note that links it instead, because replying would turn it into a resolvable
+    /// thread that comes back every round.
     public func replyToThread(_ thread: String, text: String, marker: String, on review: ReviewRequest, project: ProjectSpec) async throws -> ThreadReply {
-        let path = try mergeRequestPath(review, project) + "/discussions/\(GitLabPath.encode(thread))"
+        let mr = try mergeRequestPath(review, project)
+        let path = mr + "/discussions/\(GitLabPath.encode(thread))"
         guard let discussion: GLDiscussion = try await client.getIfFound(path) else { return .noSuchThread }
         let me = try await client.me()
-        if discussion.notes.contains(where: { $0.author.id == me.id && ReviewMarker.has(marker, $0.body) }) { return .alreadyPosted }
+        let mine = { (notes: [(author: GLUser, body: String)]) in notes.contains { $0.author.id == me.id && ReviewMarker.has(marker, $0.body) } }
+        let neutral = Trust.neutralizeQuickActions(text)
+        if discussion.individualNote, let comment = discussion.notes.first {
+            let notes: [GLNote] = try await client.getAll(mr + "/notes")
+            if mine(notes.map { ($0.author, $0.body) }) { return .alreadyPosted }
+            let link = "[@\(comment.author.username)'s comment](\(review.url.absoluteString)#note_\(comment.id))"
+            let _: GLNote = try await client.send("POST", mr + "/notes", body: [
+                "body": ReviewMarker.note("In reply to \(link):\n\n\(neutral)", markers: [marker]),
+            ], idempotent: false)
+            return .posted
+        }
+        if mine(discussion.notes.map { ($0.author, $0.body) }) { return .alreadyPosted }
         let _: GLNote = try await client.send("POST", path + "/notes", body: [
-            "body": ReviewMarker.note(Trust.neutralizeQuickActions(text), markers: [marker]),
+            "body": ReviewMarker.note(neutral, markers: [marker]),
         ], idempotent: false)
         return .posted
     }

@@ -333,6 +333,25 @@ import Testing
         #expect(w.gitlab.requests("POST", "/api/graphql").count == 2)
     }
 
+    @Test("B208: a reply to a single comment is a new merge request note that links it, posted once")
+    func singleCommentReply() async throws {
+        let w = World()
+        let marker = ReviewMarker.reply("r1", thread: "d5")
+        w.gitlab.on("GET", mrs + "/4/discussions/d5", json: discussion("d5", [mrNote(51, "Also the docs.", at: 4)]))
+        w.gitlab.on("GET", mrs + "/4/notes", json: [] as [Any])
+        w.gitlab.on("POST", mrs + "/4/notes", status: 201, json: Fixture.note(52, "x", at: 5))
+        let forge = try w.make().forge
+        #expect(try await forge.replyToThread("d5", text: "/close\nAdded.", marker: marker, on: Self.review, project: World.app) == .posted)
+        #expect(w.gitlab.requests("POST", mrs + "/4/notes").map { $0.json["body"] as? String } == [
+            "<!-- loopworker -->\n\(marker)\n\nIn reply to [@mallory's comment](\(Self.review.url.absoluteString)#note_51):\n\n\\/close\nAdded.",
+        ])
+        #expect(w.gitlab.requests("POST", mrs + "/4/discussions/d5/notes").isEmpty)
+
+        w.gitlab.on("GET", mrs + "/4/notes", json: [Fixture.note(52, "<!-- loopworker -->\n\(marker)\n\nIn reply", by: Fixture.me, at: 5)])
+        #expect(try await forge.replyToThread("d5", text: "Added.", marker: marker, on: Self.review, project: World.app) == .alreadyPosted)
+        #expect(w.gitlab.requests("POST", mrs + "/4/notes").count == 1)
+    }
+
     @Test("B204: GraphQL's lastEditedAt without lastEditedBy (unedited, or a thread resolved later) is no edit; DiffNote ids match REST")
     func liveEditShapes() async throws {
         let w = World()
