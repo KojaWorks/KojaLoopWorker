@@ -1073,6 +1073,18 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(other.manager.holder != h.manager.holder)
     }
 
+    @Test("B213: a holder file that exists but can't be read stops startup, naming the file")
+    func unreadableHolderFileStopsStartup() async throws {
+        let h = try ManagerHarness(projects: "")
+        let file = h.home.appending(path: "state/holder")
+        try FileManager.default.removeItem(at: file)
+        try FileManager.default.createDirectory(at: file, withIntermediateDirectories: true)  // exists, but isn't a readable file
+        try h.restart()
+        let error = await #expect(throws: ConfigError.self) { try await h.manager.start() }
+        #expect(error?.description.hasPrefix("can't read \(file.path), which holds this Manager's holder id:") == true)
+        #expect(ManagerLock.holder(at: ManagerLock.file(stateDir: h.home.appending(path: "state"))) == nil)
+    }
+
     @Test func secondManagerOnTheSameHomeRefusesToStart() async throws {  // B109
         let h = try ManagerHarness(projects: oneColdProject)
         try await h.boot()

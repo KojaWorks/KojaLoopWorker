@@ -392,7 +392,8 @@ attempt). `verifying` cards hold no slot and are never released; see "Waiting fo
 One Manager serves each project of a backlog. Two that overlap (two hosts configured for one
 project by mistake, or two test runs against one sandbox) are kept from fighting by the
 **holder**: `claim` records the Manager's holder id, `<host name>:<LOOPWORKER_HOME>`, which a
-Manager saves in `state/holder` on its first start so a renamed host keeps it. A `working` or
+Manager saves in `state/holder` on its first start so a renamed host keeps it. A Manager whose
+`state/holder` exists but can't be read refuses to start. A `working` or
 `verifying` card's holder is the one in its newest claim; a release after that claim clears it.
 
 | Backlog | Where the holder lives |

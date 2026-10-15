@@ -142,6 +142,8 @@ public actor Manager {
     let hostName: String
     /// This install's holder id, `<host name>:<LOOPWORKER_HOME>`, which `claim` records on cards.
     public nonisolated let holder: String
+    /// Why `state/holder` exists but can't be read; `start()` refuses to run then.
+    let holderError: ConfigError?
     /// Slots per port band, fixed at startup so a live `max_slots` change never moves a band.
     let bandSize: Int
     /// The Manager's lock, for a signal handler that must release it without awaiting the actor.
@@ -182,7 +184,7 @@ public actor Manager {
                                  now: { clock.now() })
         let host = Self.currentHostName()
         self.hostName = host
-        self.holder = Self.holderID(stateDir: config.stateDir, home: config.home, hostName: host, log: dependencies.log)
+        (self.holder, self.holderError) = Self.holderID(stateDir: config.stateDir, home: config.home, hostName: host, log: dependencies.log)
         self.bandSize = Budget.bandSize(maxSlots: config.maxSlots)
         self.started = clock.now()
     }
@@ -195,8 +197,10 @@ public actor Manager {
 
     /// Takes the lock, adopts or cleans up the previous Manager's workers, and starts the
     /// project refreshes, the stranded-card sweep and the notifier self-test.
-    /// - Throws: `ManagerLock.Held` when another Manager runs for this home.
+    /// - Throws: `ManagerLock.Held` when another Manager runs for this home; `ConfigError` when
+    ///   `state/holder` exists but can't be read.
     public func start() async throws {
+        if let holderError { throw holderError }
         heldLock.set(try ManagerLock.acquire(at: ManagerLock.file(stateDir: stateDir), log: log))
         started = clock.now()
         configModified = modificationDate(configFile)
@@ -399,17 +403,17 @@ public actor Manager {
     }
 
     /// The id saved in `state/holder`, or `<host name>:<home>` saved there on first start, so a
-    /// renamed host still recognizes the cards that it holds.
-    static func holderID(stateDir: URL, home: URL, hostName: String, log: any LogSink) -> String {
+    /// renamed host still recognizes the cards that it holds. A file that exists but can't be
+    /// read is an error: a fresh id would make this Manager leave its own cards alone.
+    static func holderID(stateDir: URL, home: URL, hostName: String, log: any LogSink) -> (String, ConfigError?) {
         let file = stateDir.appending(path: "holder")
         let id = "\(hostName):\(home.path)"
         if FileManager.default.fileExists(atPath: file.path) {
             do {
                 let saved = try String(contentsOf: file, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
-                if !saved.isEmpty { return saved }
+                if !saved.isEmpty { return (saved, nil) }
             } catch {
-                log.error("can't read \(file.path): \(error); using the holder id \(id), so cards claimed under the saved one count as another Manager's")
-                return id
+                return (id, ConfigError("can't read \(file.path), which holds this Manager's holder id: \(error). Make it readable for this Manager's user; don't replace it, because cards that this Manager claimed name the id in it"))
             }
         }
         do {
@@ -418,7 +422,7 @@ public actor Manager {
         } catch {
             log.error("can't write \(file.path): \(error); the holder id \(id) changes if this host is renamed")
         }
-        return id
+        return (id, nil)
     }
 
     private static func currentHostName() -> String {
