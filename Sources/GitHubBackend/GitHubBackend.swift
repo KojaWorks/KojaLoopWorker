@@ -229,11 +229,48 @@ public struct GitHubForge: Forge {
         return true
     }
 
-    /// Always nil: GitHub's API has no way to attach a file to a pull request.
+    /// `PUT .../pulls/:n/merge` with `merge_method` `merge` and `sha`. A 409 is a moved head. A 405
+    /// or 422 re-reads the pull request: merged is merged; closed or a draft is blocked; a null
+    /// `mergeable` is pending; otherwise `mergeable_state` decides.
     public func merge(_ review: ReviewRequest, project: ProjectSpec, head: String) async throws -> MergeResult {
-        throw BackendRejection("merging \(review.display): not implemented yet")
+        guard let number = Int(review.url.lastPathComponent), number > 0 else {
+            throw BackendRejection("can't merge \(review.display): \(review.url.absoluteString) doesn't end in a pull request number")
+        }
+        struct Merge: Encodable { var merge_method = "merge"; var sha: String }
+        struct Merged: Decodable { var merged: Bool?; var sha: String? }
+        let path = "repos/\(project.path)/pulls/\(number)"
+        var refusal: Refusal?
+        do {
+            let answer = try await request("PUT", path + "/merge", body: Merge(sha: head), refusals: [405, 409, 422], as: Merged.self)
+            if answer.merged == true { return .merged(commit: answer.sha) }
+        } catch let r as Refusal {
+            if r.status == 409 { return .blocked("GitHub: the source branch's head moved past \(head.prefix(12)) (\(r.message))") }
+            refusal = r
+        }
+        struct State: Decodable {
+            var merged: Bool?
+            var merge_commit_sha: String?
+            var state: String
+            var draft: Bool?
+            var mergeable: Bool?
+            var mergeable_state: String?
+        }
+        let pull = try await request("GET", path, as: State.self)
+        if pull.merged == true { return .merged(commit: pull.merge_commit_sha) }
+        if pull.state != "open" { return .blocked("GitHub: \(pull.state) (the pull request isn't open)") }
+        if pull.draft == true { return .blocked("GitHub: draft (the pull request is a draft)") }
+        guard pull.mergeable != nil else { return .pending("GitHub: mergeable unknown (GitHub is still computing it)") }
+        let answered = "the merge answered " + (refusal.map { "\($0.status) \($0.message)" } ?? "unmerged")
+        switch pull.mergeable_state ?? "no mergeable_state" {
+        case "dirty": return .outdated("GitHub: dirty (it conflicts with the base branch)")
+        case "behind": return .outdated("GitHub: behind (branch protection requires it to be up to date with the base branch)")
+        case "blocked": return .blocked("GitHub: blocked (required reviews, checks or branch protection; \(answered))")
+        case let s where ["unknown", "unstable", "clean", "has_hooks"].contains(s): return .pending("GitHub: \(s) (\(answered))")
+        case let s: return .blocked("GitHub: \(s) (\(answered))")
+        }
     }
 
+    /// Always nil: GitHub's API has no way to attach a file to a pull request.
     public func attach(_ file: URL, to project: ProjectSpec) async throws -> URL? { nil }
 
     // MARK: HTTP
@@ -291,13 +328,20 @@ public struct GitHubForge: Forge {
 
     private struct NoBody: Codable {}
 
+    /// A status that the caller listed in `refusals`, thrown instead of a `BackendRejection`.
+    private struct Refusal: Error {
+        var status: Int
+        var message: String
+    }
+
     private func request<T: Decodable>(_ method: String, _ path: String, query: [URLQueryItem] = [], as: T.Type) async throws -> T {
         try await request(method, path, query: query, body: Optional<NoBody>.none, as: T.self)
     }
 
-    /// Sends one API request, retrying 408, 429, 5xx and rate-limit 403s up to three times.
+    /// Sends one API request, retrying 408, 429, 5xx and rate-limit 403s up to three times. A
+    /// status in `refusals` throws `Refusal`.
     private func request<B: Encodable, T: Decodable>(
-        _ method: String, _ path: String, query: [URLQueryItem] = [], body: B?, as: T.Type
+        _ method: String, _ path: String, query: [URLQueryItem] = [], body: B?, refusals: Set<Int> = [], as: T.Type
     ) async throws -> T {
         let label = "\(method) /\(path)"
         var comps = URLComponents(url: apiBase.appending(path: path), resolvingAgainstBaseURL: false)!
@@ -335,6 +379,7 @@ public struct GitHubForge: Forge {
                 attempt += 1
                 continue
             }
+            if refusals.contains(status) { throw Refusal(status: status, message: message) }
             if transient { throw GitHubError.unavailable(request: label, status: status, message: message) }
             if status == 401 || status == 403 {
                 throw GitHubError.unauthorized(tokenEnv: tokenEnv, request: label, status: status, message: message)
