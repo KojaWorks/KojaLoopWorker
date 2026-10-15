@@ -58,9 +58,62 @@ public struct GitLabForge: Forge {
         return try review(created, draft.project)
     }
 
+    /// `PUT .../merge_requests/:iid/merge` with `sha`, and nothing that would squash, delete the
+    /// branch or wait for a pipeline. A refusal (405, 406, 409, 422) or an answer that isn't
+    /// merged re-reads the merge request: `merged` is merged, `locked` (merging) pending, any
+    /// other state but `opened` blocked; a 409 is a moved head; otherwise
+    /// `detailed_merge_status` decides.
     public func merge(_ review: ReviewRequest, project: ProjectSpec, head: String) async throws -> MergeResult {
-        throw BackendRejection("merging \(review.display): not implemented yet")
+        guard let iid = Int(review.url.lastPathComponent), iid > 0 else {
+            throw BackendRejection("can't merge \(review.display): \(review.url.absoluteString) doesn't end in a merge request number")
+        }
+        let path = projectPath(project) + "/merge_requests/\(iid)"
+        var refusal: GitLabRefusal?
+        do {
+            let mr: GLMergeRequest = try await client.send(
+                "PUT", path + "/merge", body: ["sha": head], idempotent: true, refusals: [405, 406, 409, 422])
+            if mr.state == "merged" { return .merged(commit: mr.mergeCommitSha) }
+        } catch let r as GitLabRefusal { refusal = r }
+        let mr: GLMergeRequest = try await client.get(path)
+        switch mr.state {
+        case "merged": return .merged(commit: mr.mergeCommitSha)
+        case "locked": return .pending("GitLab: locked (the merge is in progress)")
+        case "opened": break
+        default: return .blocked("GitLab: \(mr.state ?? "no state") (the merge request isn't open)")
+        }
+        if refusal?.status == 409 { return .blocked("GitLab: the source branch's head moved past \(head.prefix(12))") }
+        let status = mr.detailedMergeStatus ?? "no detailed_merge_status"
+        let reason = "GitLab: \(status)" + (Self.mergeStatusGloss[status].map { " (\($0))" } ?? "")
+        switch status {
+        case "mergeable": return .pending(reason + (refusal.map { ", but the merge answered \($0)" } ?? ""))
+        case "checking", "unchecked", "preparing", "ci_still_running", "approvals_syncing": return .pending(reason)
+        case "conflict", "need_rebase": return .outdated(reason)
+        default: return .blocked(reason)
+        }
     }
+
+    static let mergeStatusGloss = [
+        "approvals_syncing": "approvals are syncing",
+        "checking": "GitLab is checking whether it can merge",
+        "unchecked": "GitLab hasn't checked whether it can merge yet",
+        "preparing": "GitLab is preparing the diff",
+        "ci_still_running": "a pipeline still runs",
+        "mergeable": "it can merge",
+        "conflict": "it conflicts with the target branch",
+        "need_rebase": "it must be rebased onto the target branch",
+        "not_approved": "the merge request needs approvals",
+        "ci_must_pass": "a pipeline must pass first",
+        "discussions_not_resolved": "threads must be resolved first",
+        "draft_status": "the merge request is a draft",
+        "requested_changes": "a reviewer requested changes",
+        "merge_request_blocked": "another merge request blocks it",
+        "blocked_status": "another merge request blocks it",
+        "status_checks_must_pass": "external status checks must pass",
+        "external_status_checks": "external status checks must pass",
+        "commits_status": "the source branch is missing or has no commits",
+        "merge_time": "it may not merge before a set time",
+        "not_open": "the merge request isn't open",
+    ]
 
     public func attach(_ file: URL, to project: ProjectSpec) async throws -> URL? {
         let upload = try await client.upload(projectPath(project) + "/uploads", file: file)
