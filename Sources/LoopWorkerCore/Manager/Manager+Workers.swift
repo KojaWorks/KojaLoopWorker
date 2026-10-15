@@ -24,6 +24,15 @@ struct CardRecord: Codable, Equatable {
     var rebaseTarget: String? = nil
     /// When a review round read the review feedback; its note's marker carries it.
     var feedbackReadAt: Date? = nil
+    /// What the card branch's next push expects on the forge. Nil in a `card.json` that an
+    /// older version wrote, whose lease is in the legacy push ledger.
+    var lease: Lease? = nil
+
+    struct Lease: Codable, Equatable {
+        /// The commit that the branch's next push expects: the tip that a resumed card or a
+        /// fix round started from, then each push's own commit. Nil: the branch must not exist.
+        var tip: String?
+    }
 
     static func read(_ file: URL) -> CardRecord? {
         guard let data = try? Data(contentsOf: file) else { return nil }
@@ -178,7 +187,8 @@ extension Manager {
             try CardRecord(ref: card.ref, project: spec.project.path, number: card.number, slot: spec.index,
                            branch: branch, base: base, claimedAt: clock.now(),
                            ciRound: fix.map { $0.record.round + 1 }, ciCommit: fix?.record.sha,
-                           rebaseRound: fix.map(\.isRebase), rebases: fix.map { ($0.record.rebases ?? 0) + ($0.isRebase ? 1 : 0) }
+                           rebaseRound: fix.map(\.isRebase), rebases: fix.map { ($0.record.rebases ?? 0) + ($0.isRebase ? 1 : 0) },
+                           lease: CardRecord.Lease(tip: nil)
             ).write(cardRecordFile(spec))
         } catch {
             if fix != nil { fixStartFailed(card.ref.id, "can't write \(dir.path): \(error)") }
@@ -239,15 +249,15 @@ extension Manager {
             return
         }
 
-        let resuming: Bool
-        do { resuming = try await resumesPushedBranch(spec, card: card, base: base, branch: branch) }
+        let resumed: PushRecord?
+        do { resumed = try await resumesPushedBranch(spec, card: card, base: base, branch: branch) }
         catch {
             await abortStart(ref, card: card, contract: contract, why: "\(error)", broken: nil)
             return
         }
         // Read before acquiring, so a read that keeps failing doesn't provision a slot every time.
         var snapshot: CardSnapshot?, reviewRound: WorkerBrief.ReviewRound?
-        if resuming {
+        if resumed != nil {
             do {
                 let read = try await self.snapshot(spec, card: card)
                 reviewRound = try await self.reviewRound(spec, card: card, branch: branch, vouchedAt: read.vouchedAt)
@@ -257,39 +267,38 @@ extension Manager {
                 return
             }
         }
-        await acquireAndSpawn(ref, spec: spec, card: card, contract: contract, base: base, branch: branch, fix: nil, resuming: resuming,
+        await acquireAndSpawn(ref, spec: spec, card: card, contract: contract, base: base, branch: branch, fix: nil, resumed: resumed,
                               snapshot: snapshot, reviewRound: reviewRound)
     }
 
-    /// True when an earlier attempt of this card pushed `branch` and it is still on the forge,
-    /// so the worker continues from it instead of overwriting it. When the push ledger names
-    /// the branch but the forge no longer has it, drops the ledger entry so the fresh start's
-    /// push expects no branch.
-    func resumesPushedBranch(_ spec: SlotSpec, card: Card, base: String, branch: String) async throws -> Bool {
-        var pushes = readPushes()
-        guard let pushed = pushes[card.ref.id], pushed.branch == branch else { return false }
+    /// The push that the card records (`Backlog.lastPush`, or the legacy push ledger for a card
+    /// without one) when it names `branch` and the forge still has that branch, so the worker
+    /// continues from it instead of overwriting it; nil for a fresh start.
+    func resumesPushedBranch(_ spec: SlotSpec, card: Card, base: String, branch: String) async throws -> PushRecord? {
+        let recorded = try await step("reading \(card.ref)'s last push") { try await self.deps.backlog.lastPush(card) }
+        let legacy = recorded == nil ? readLegacyPushes()[card.ref.id] : nil
+        guard let pushed = recorded ?? legacy, pushed.branch == branch else { return nil }
         let exists = try await step("checking whether \(branch) is still on the forge") {
             try await self.deps.git.cloneOrFetch(url: self.deps.forge.cloneURL(for: spec.project), into: spec.clone,
                                                  environment: self.deps.forge.gitEnvironment())
             return try await self.deps.git.hasRemoteBranch(spec.clone, branch: branch)
         }
-        if exists {
-            log.info("\(label(spec)): resuming \(card.ref) from origin/\(branch), which an earlier attempt pushed at \(pushed.commit.prefix(12))")
-            return true
+        let source = legacy == nil ? "" : " (as \(legacyPushLedger.path) records)"
+        guard exists else {
+            log.warning("\(label(spec)): origin/\(branch), which an earlier attempt of \(card.ref) pushed\(source), is gone from the forge; starting over from origin/\(base)")
+            return nil
         }
-        pushes[card.ref.id] = nil
-        do { try writePushes(pushes) }
-        catch { throw StepError(step: "dropping \(card.ref)'s entry from \(pushLedger.path)", error: error) }
-        log.warning("\(label(spec)): origin/\(branch), which an earlier attempt of \(card.ref) pushed, is gone from the forge; starting over from origin/\(base)")
-        return false
+        log.info("\(label(spec)): resuming \(card.ref) from origin/\(branch), which an earlier attempt pushed at \(pushed.commit.prefix(12))\(source)")
+        return pushed
     }
 
     /// A fix round or a resumed card resets the slot to the pushed card branch instead of the
-    /// base branch.
+    /// base branch. `resumed`: the push that a resumed card continues from.
     func acquireAndSpawn(_ ref: SlotRef, spec: SlotSpec, card: Card, contract: ProjectContract, base: String, branch: String,
-                         fix: FixRound?, resuming: Bool = false, snapshot: CardSnapshot? = nil,
+                         fix: FixRound?, resumed: PushRecord? = nil, snapshot: CardSnapshot? = nil,
                          reviewRound: WorkerBrief.ReviewRound? = nil) async {
         let dir = spec.stateDir
+        let resuming = resumed != nil
         let baseCommit: String
         do { baseCommit = try await deps.lifecycle.acquire(spec, contract: contract, base: fix == nil && !resuming ? base : branch, branch: branch) }
         catch {
@@ -297,16 +306,18 @@ extension Manager {
             return
         }
         if fix != nil || resuming {
+            if let last = fix?.record.sha ?? resumed?.commit, last != baseCommit {
+                log.info("\(label(spec)): continuing \(card.ref) from \(baseCommit.prefix(12)), which includes commits pushed after LoopWorker's last push \(last.prefix(12))")
+            }
             do {
-                try leaseOnTip(spec, card: card, branch: branch, tip: baseCommit)
-                if fix != nil {
-                    // The round's own commits count from here, not from the failed commit: someone may have pushed since.
-                    let file = cardRecordFile(spec)
-                    guard var record = CardRecord.read(file) else { throw ConfigError("\(file.path) is missing or unreadable") }
-                    record.ciCommit = baseCommit
-                    try record.write(file)
-                    update(ref) { $0.ciCommit = baseCommit }
-                }
+                // The finish leases on the tip, even when someone else pushed to the branch since the last push.
+                let file = cardRecordFile(spec)
+                guard var record = CardRecord.read(file) else { throw ConfigError("\(file.path) is missing or unreadable") }
+                record.lease = CardRecord.Lease(tip: baseCommit)
+                // The round's own commits count from here, not from the failed commit: someone may have pushed since.
+                if fix != nil { record.ciCommit = baseCommit }
+                try record.write(file)
+                if fix != nil { update(ref) { $0.ciCommit = baseCommit } }
             } catch {
                 await abortStart(ref, card: card, contract: contract, why: "recording \(branch) at \(baseCommit.prefix(12)) as the round's start failed: \(error)",
                                  broken: nil, fix: fix)
@@ -728,7 +739,7 @@ extension Manager {
                 case .stuck(let blocker):
                     try await finishStuck(spec, card: card, branch: branch, base: base, blocker: blocker)
                 }
-            } catch is PushRejected where readPushes()[card.ref.id]?.branch == branch {
+            } catch is PushRejected where (try? leaseTip(spec, card: card, branch: branch)) != nil {
                 try await stuck(spec, card: card, blocker: "Someone pushed to `\(branch)` while the worker ran, so LoopWorker didn't overwrite those commits and didn't push the worker's. Move the card back to ready to redo this round on top of them.")
             } catch is PushRejected {
                 try await stuck(spec, card: card, blocker: "Branch `\(branch)` already exists on the forge and wasn't created by LoopWorker for this card, so LoopWorker didn't overwrite it. Rename or delete that branch (or change the project's branch template), then move the card back to ready.")
@@ -869,12 +880,13 @@ extension Manager {
     /// `text` as inline code on one line.
     static func inlineCode(_ text: String) -> String { "`" + text.filter { $0 != "`" && !$0.isNewline } + "`" }
 
-    /// Pushes the card branch with a lease on the card's commit in the push ledger (the
-    /// Manager's last push, or the tip that a resumed card or fix round started from; none: the
-    /// branch must not exist yet), so a branch that someone else made, or a commit that someone
-    /// pushed while the worker ran, is never overwritten, then records the new commit. Uploads the branch's LFS objects first.
+    /// Pushes the card branch with a lease on `card.json`'s lease tip (the slot's last push, or
+    /// the tip that a resumed card or fix round started from; none: the branch must not exist
+    /// yet), so a branch that someone else made, or a commit that someone pushed while the worker
+    /// ran, is never overwritten, then records the new commit as the tip. Uploads the branch's
+    /// LFS objects first.
     func pushBranch(_ spec: SlotSpec, card: Card, branch: String) async throws -> String {
-        let last = readPushes()[card.ref.id].flatMap { $0.branch == branch ? $0.commit : nil }
+        let last = try leaseTip(spec, card: card, branch: branch)
         let url = deps.forge.cloneURL(for: spec.project), env = deps.forge.gitEnvironment(), git = deps.git
         do {
             if try await git.usesLFS(spec.worktree) { try await git.lfsPush(spec.worktree, url: url, environment: env) }
@@ -883,37 +895,37 @@ extension Manager {
         do { commit = try await git.push(spec.worktree, to: url, branch: branch, expected: last, environment: env) }
         catch let rejected as PushRejected { throw rejected }
         catch { throw StepError(step: "pushing \(branch)", error: error) }
-        var pushes = readPushes()  // re-read: other cards' finishes may have written it during the push
-        pushes[card.ref.id] = PushRecord(branch: branch, commit: commit)
+        let file = cardRecordFile(spec)
         // Failing the finish here would retry the push against a stale lease.
-        do { try writePushes(pushes) }
-        catch { log.error("\(label(spec)): pushed \(branch) at \(commit.prefix(12)) but can't record it in \(pushLedger.path): \(error); the card's next push will be refused as someone else's branch") }
+        do {
+            guard var record = CardRecord.read(file) else { throw ConfigError("\(file.path) is missing or unreadable") }
+            record.lease = CardRecord.Lease(tip: commit)
+            try record.write(file)
+        } catch {
+            log.error("\(label(spec)): pushed \(branch) at \(commit.prefix(12)) but can't record it in \(file.path): \(error); a retried finish will be refused as someone else's push")
+        }
         return commit
     }
 
-    /// Records `tip`, the forge's commit that a resumed card or a fix round starts from, as the
-    /// card's last push, so the finish's lease expects it even when someone else pushed to the
-    /// branch after the Manager did.
-    func leaseOnTip(_ spec: SlotSpec, card: Card, branch: String, tip: String) throws {
-        var pushes = readPushes()
-        let last = pushes[card.ref.id]
-        guard last != PushRecord(branch: branch, commit: tip) else { return }
-        if let last, last.branch == branch {
-            log.info("\(label(spec)): continuing \(card.ref) from \(tip.prefix(12)), which includes commits pushed after LoopWorker's last push \(last.commit.prefix(12))")
+    /// The commit that the next push of `branch` expects on the forge, from `card.json`; for a
+    /// `card.json` that an older version wrote, from the legacy push ledger. Nil: the branch
+    /// must not exist yet.
+    func leaseTip(_ spec: SlotSpec, card: Card, branch: String) throws -> String? {
+        let file = cardRecordFile(spec)
+        guard let record = CardRecord.read(file) else {
+            throw StepError(step: "reading the push lease of \(branch)", error: ConfigError("\(file.path) is missing or unreadable"))
         }
-        pushes[card.ref.id] = PushRecord(branch: branch, commit: tip)
-        try writePushes(pushes)
+        if let lease = record.lease { return lease.tip }
+        return readLegacyPushes()[card.ref.id].flatMap { $0.branch == branch ? $0.commit : nil }
     }
 
-    var pushLedger: URL { stateDir.appending(path: "pushes.json") }
+    /// Where versions before the push record on the card kept each card's last push. Read only
+    /// for cards and slots that those versions left behind; see DESIGN.md "State on disk".
+    var legacyPushLedger: URL { stateDir.appending(path: "pushes.json") }
 
-    /// The push ledger, keyed by card id; empty when the file is missing or unreadable.
-    func readPushes() -> [String: PushRecord] {
-        (try? JSONDecoder().decode([String: PushRecord].self, from: Data(contentsOf: pushLedger))) ?? [:]
-    }
-
-    func writePushes(_ pushes: [String: PushRecord]) throws {
-        try JSONEncoder().encode(pushes).write(to: pushLedger, options: .atomic)
+    /// The legacy push ledger, keyed by card id; empty when the file is missing or unreadable.
+    func readLegacyPushes() -> [String: PushRecord] {
+        (try? JSONDecoder().decode([String: PushRecord].self, from: Data(contentsOf: legacyPushLedger))) ?? [:]
     }
 
     func finishStuck(_ spec: SlotSpec, card: Card, branch: String, base: String, blocker: String) async throws {

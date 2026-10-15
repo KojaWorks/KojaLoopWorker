@@ -557,8 +557,7 @@ func fileMode(_ url: URL) throws -> Int {
         await h.cycle()
         #expect(h.tmux.spawned.count == 2)
         #expect(h.log.contains("continuing g/app#12 from human-1, which includes commits pushed after LoopWorker's last push commit-1", level: .info))
-        let ledger = try Data(contentsOf: h.home.appending(path: "state/pushes.json"))
-        #expect(try JSONDecoder().decode([String: PushRecord].self, from: ledger)["id-12"] == PushRecord(branch: "loopworker-12-fix-it", commit: "human-1"))
+        #expect(CardRecord.read(h.stateDir().appending(path: "card.json"))?.lease == CardRecord.Lease(tip: "human-1"))
 
         try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
         h.tmux.set("lw_g--app_0", alive: false)
@@ -781,7 +780,7 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(!(try String(contentsOf: h.stateDir().appending(path: "brief.md"), encoding: .utf8)).contains("## Previous attempt"))
     }
 
-    @Test func aRequeuedCardWhoseBranchIsGoneStartsOverAndDropsItsLedgerEntry() async throws {  // B178
+    @Test func aRequeuedCardWhoseBranchIsGoneStartsOver() async throws {  // B178
         let h = try await spawned()
         try await requeuedAfterStuck(h)
         h.git.state { $0.remoteTips = [:] }  // a human deleted the branch on the forge
@@ -790,8 +789,7 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.lifecycle.state.get.acquiredBases == ["main", "main"])
         #expect(h.log.contains("origin/loopworker-12-fix-it, which an earlier attempt of g/app#12 pushed, is gone from the forge; starting over from origin/main", level: .warning))
         #expect(!(try String(contentsOf: h.stateDir().appending(path: "brief.md"), encoding: .utf8)).contains("## Resuming"))
-        let ledger = try Data(contentsOf: h.home.appending(path: "state/pushes.json"))
-        #expect(try JSONDecoder().decode([String: PushRecord].self, from: ledger)["id-12"] == nil)
+        #expect(CardRecord.read(h.stateDir().appending(path: "card.json"))?.lease == CardRecord.Lease(tip: nil))
 
         try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
         h.tmux.set("lw_g--app_0", alive: false)
@@ -813,8 +811,117 @@ func fileMode(_ url: URL) throws -> Int {
         await h.cycle()
         #expect(h.tmux.spawned.count == 1)
         #expect(h.backlog.writes.last == .release("id-12", reason: "Couldn't start a worker: checking whether loopworker-12-fix-it is still on the forge: git rev-parse origin/loopworker-12-fix-it failed", countsAsAttempt: false))
-        let ledger = try Data(contentsOf: h.home.appending(path: "state/pushes.json"))
-        #expect(try JSONDecoder().decode([String: PushRecord].self, from: ledger)["id-12"] == PushRecord(branch: "loopworker-12-fix-it", commit: "commit-1"))
+        #expect(h.git.state.get.pushes.count == 1)
+    }
+
+    @Test("B178, B235: a failed read of the card's last push releases the card without starting it")
+    func aFailedLastPushReadReleasesTheCard() async throws {
+        let h = try await spawned()
+        try await requeuedAfterStuck(h)
+        h.backlog.state { $0.failLastPush = true }
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 1)
+        #expect(h.backlog.writes.last == .release("id-12", reason: "Couldn't start a worker: reading g/app#12's last push: lastPush g/app#12 failed", countsAsAttempt: false))
+    }
+
+    @Test("B235: a card that one install pushed, then went stuck and was re-queued, resumes on another install and pushes under the lease")
+    func anotherInstallResumesThePushedBranch() async throws {
+        let a = try await spawned()
+        try await requeuedAfterStuck(a)
+        let b = try ManagerHarness(projects: oneColdProject, sharing: a)
+        try await b.boot()
+        await b.cycle()
+        #expect(b.tmux.spawned.count == 1)
+        #expect(b.lifecycle.state.get.acquiredBases == ["loopworker-12-fix-it"])
+        #expect(b.log.contains("resuming g/app#12 from origin/loopworker-12-fix-it, which an earlier attempt pushed at commit-1", level: .info))
+        try b.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        b.tmux.set("lw_g--app_0", alive: false)
+        await b.cycle()
+        #expect(b.git.state.get.pushes.map(\.expected) == [nil, "commit-1"])
+        #expect(b.backlog.card(id: "id-12")?.state == .review)
+        #expect(b.backlog.pushes("id-12").map(\.commit) == ["commit-1", "commit-2"])
+        #expect(!FileManager.default.fileExists(atPath: a.home.appending(path: "state/pushes.json").path))
+    }
+
+    @Test("B235: a branch that no push on the card names is someone else's, even when it exists")
+    func aBranchWithoutAPushRecordIsRefused() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        h.addCard(12)
+        h.git.state { $0.remoteTips["loopworker-12-fix-it"] = "someone-1" }
+        try await h.boot()
+        await h.cycle()
+        #expect(h.lifecycle.state.get.acquiredBases == ["main"])
+        #expect(!h.git.calls.contains { $0.hasPrefix("hasRemoteBranch") })
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.git.state.get.pushes.isEmpty)
+        guard case .markStuck("id-12", let blocker)? = h.backlog.writes.last else {
+            Issue.record("expected markStuck, got \(h.backlog.writes)")
+            return
+        }
+        #expect(blocker.hasPrefix("Branch `loopworker-12-fix-it` already exists on the forge and wasn't created by LoopWorker for this card"))
+    }
+
+    @Test("B235: a Manager restart mid-run keeps the lease tip that the resumed card started from")
+    func aRestartKeepsTheLeaseTip() async throws {
+        let h = try await spawned()
+        try await requeuedAfterStuck(h)
+        h.git.state { $0.remoteTips["loopworker-12-fix-it"] = "human-1" }
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 2)
+        try h.restart()
+        try await h.manager.start()
+        await h.manager.settle()
+        #expect(h.log.contains("adopted the worker for g/app#12 on loopworker-12-fix-it", level: .info))
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.git.state.get.pushes.map(\.expected) == [nil, "human-1"])
+        #expect(h.backlog.card(id: "id-12")?.state == .review)
+    }
+
+    func writeLegacyLedger(_ h: ManagerHarness, commit: String) throws {
+        try Data(#"{"id-12":{"branch":"loopworker-12-fix-it","commit":"\#(commit)"}}"#.utf8).write(to: h.home.appending(path: "state/pushes.json"))
+    }
+
+    @Test("B236: an older version's push ledger resumes a card that records no push, and only then")
+    func theLegacyLedgerIsAFallback() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        h.addCard(12)
+        h.addCard(13)
+        h.git.state { $0.remoteTips["loopworker-12-fix-it"] = "old-1"; $0.remoteTips["loopworker-13-fix-it"] = "old-2" }
+        try FileManager.default.createDirectory(at: h.home.appending(path: "state"), withIntermediateDirectories: true)
+        try Data(#"{"id-12":{"branch":"loopworker-12-fix-it","commit":"old-1"},"id-13":{"branch":"loopworker-13-fix-it","commit":"old-2"}}"#.utf8)
+            .write(to: h.home.appending(path: "state/pushes.json"))
+        h.backlog.state { $0.pushes = [("id-13", PushRecord(branch: "renamed-13", commit: "new-1"))] }
+        try await h.boot()
+        await h.cycle()
+        #expect(h.lifecycle.state.get.acquiredBases == ["loopworker-12-fix-it"])
+        #expect(h.log.contains("resuming g/app#12 from origin/loopworker-12-fix-it, which an earlier attempt pushed at old-1 (as \(h.home.appending(path: "state/pushes.json").path) records)", level: .info))
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.git.state.get.pushes.map(\.expected) == ["old-1"])
+        h.clock.advance(60)
+        await h.cycle()
+        #expect(h.lifecycle.state.get.acquiredBases == ["loopworker-12-fix-it", "main"])  // 13's own record names another branch
+    }
+
+    @Test("B236: a card.json without a lease, from an older version, leases on the legacy ledger")
+    func anOldCardRecordLeasesOnTheLegacyLedger() async throws {
+        let h = try await spawned()
+        let file = h.stateDir().appending(path: "card.json")
+        var record = try #require(CardRecord.read(file))
+        record.lease = nil
+        try record.write(file)
+        try writeLegacyLedger(h, commit: "old-1")
+        h.git.state { $0.remoteTips["loopworker-12-fix-it"] = "old-1" }
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.git.state.get.pushes.map(\.expected) == ["old-1"])
+        #expect(h.backlog.card(id: "id-12")?.state == .review)
     }
 
     @Test("B235: every finish that pushes records the push on the card with its next backlog write; one that doesn't push records nothing")
