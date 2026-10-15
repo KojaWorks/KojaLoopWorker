@@ -337,7 +337,8 @@ One Manager serves each project. When a second one serves the same project with 
 backlog (two hosts configured for it by mistake), each leaves the cards that the other claimed
 alone: `status` lists them under "held by other Managers" with the other Manager's
 `<host>:<home>`, and the log says so once per card. Remove the project from one host's config;
-if the other Manager is gone for good, move its cards back to ready.
+if the other Manager is gone for good, move its cards back to ready. The card records each
+branch that LoopWorker pushed for it, so whichever Manager claims it next continues that branch.
 
 Stopping escalates. The first SIGINT (Ctrl-C) drains: running workers finish, nothing new is
 claimed, then the Manager exits. A second SIGINT force-stops: it reaps every worker and releases

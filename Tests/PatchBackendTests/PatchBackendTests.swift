@@ -500,7 +500,7 @@ private func make(_ fake: FakePatch, _ patchKeys: String = "", log: LogRecorder 
         ])
     }
 
-    @Test("B235: writes after a push record it in content.pushed; lastPush is the owner's last one in body order")
+    @Test("B238: writes after a push record it in content.pushed; lastPush is the owner's last one in body order")
     func pushesAreRecordedOnTheCard() async throws {
         let fake = FakePatch()
         fake.rows["roadmap"] = [card(1, status: "In progress")]

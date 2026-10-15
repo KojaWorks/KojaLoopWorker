@@ -824,7 +824,7 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.backlog.writes.last == .release("id-12", reason: "Couldn't start a worker: reading g/app#12's last push: lastPush g/app#12 failed", countsAsAttempt: false))
     }
 
-    @Test("B235: a card that one install pushed, then went stuck and was re-queued, resumes on another install and pushes under the lease")
+    @Test("B178, B235: a card that one install pushed, then went stuck and was re-queued, resumes on another install and pushes under the lease")
     func anotherInstallResumesThePushedBranch() async throws {
         let a = try await spawned()
         try await requeuedAfterStuck(a)
@@ -843,7 +843,7 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(!FileManager.default.fileExists(atPath: a.home.appending(path: "state/pushes.json").path))
     }
 
-    @Test("B235: a branch that no push on the card names is someone else's, even when it exists")
+    @Test("B178, B210: a branch that no push on the card names is someone else's, even when it exists")
     func aBranchWithoutAPushRecordIsRefused() async throws {
         let h = try ManagerHarness(projects: oneColdProject)
         h.addCard(12)
@@ -863,7 +863,7 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(blocker.hasPrefix("Branch `loopworker-12-fix-it` already exists on the forge and wasn't created by LoopWorker for this card"))
     }
 
-    @Test("B235: a Manager restart mid-run keeps the lease tip that the resumed card started from")
+    @Test("B202: a Manager restart mid-run keeps the lease tip that the resumed card started from")
     func aRestartKeepsTheLeaseTip() async throws {
         let h = try await spawned()
         try await requeuedAfterStuck(h)

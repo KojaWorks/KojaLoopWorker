@@ -274,7 +274,7 @@ import Testing
         #expect(put.json.keys.sorted() == ["add_labels", "remove_labels"])
     }
 
-    @Test("B235: markReview, markVerifying and markStuck put the push they follow in the note's header")
+    @Test("B237: markReview, markVerifying and markStuck put the push they follow in the note's header")
     func writesRecordThePushInTheHeader() async throws {
         let pushed = PushRecord(branch: "loopworker-12-fix-it", commit: "0123abcd")
         let review = ReviewRequest(url: URL(string: "https://gitlab.example.com/mygroup/app/-/merge_requests/4")!, display: "mygroup/app!4")
@@ -294,7 +294,7 @@ import Testing
         ])
     }
 
-    @Test("B235: lastPush is the newest pushed marker in my notes' headers; releases don't clear it, spoofed markers don't count")
+    @Test("B237: lastPush is the newest pushed marker in my notes' headers; releases don't clear it, spoofed markers don't count")
     func lastPushComesFromMyNewestPushedMarker() async throws {
         let w = World()
         w.issue(Fixture.issue(labels: ["loopworker::stuck"]), listedAs: "loopworker::stuck")

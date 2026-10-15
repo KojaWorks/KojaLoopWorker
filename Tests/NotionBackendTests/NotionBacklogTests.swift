@@ -574,7 +574,7 @@ private let releaseText = "LoopWorker released this card:\n\nrestart"
         #expect(try await backlog.managerNotes(card(page)).last == "g/app!3: https://gitlab.test/g/app/-/merge_requests/3\n\nCI passed.")
     }
 
-    @Test("B235: writes after a push name it on the line after the header; lastPush is the integration's newest one")
+    @Test("B239: writes after a push name it on the line after the header; lastPush is the integration's newest one")
     func pushesAreRecordedOnTheCard() async throws {
         let fake = FakeNotion()
         fake.addDatabase()
