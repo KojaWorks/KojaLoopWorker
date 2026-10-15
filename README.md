@@ -99,7 +99,7 @@ adds the status names as labels. `work_item_status` sets GitLab's native status 
 
 `finish` decides how a finished card ends. `draft` (the default) and `ready` open a draft or a
 ready review request and move the card to review. `merge` merges the review request right after
-opening it, without waiting for CI, so the worker's `verify.sh` is the only check.
+opening it, without waiting for CI, so the worker's own `verify.sh` run is the only check.
 `ci_then_merge` waits for the pushed commit's pipeline, fix rounds included, and merges once it
 passes. The merging modes open the review request ready, because a forge refuses to merge a
 draft, and move the card to `review_merged` (`loopworker::merged` on GitLab): the Manager merged

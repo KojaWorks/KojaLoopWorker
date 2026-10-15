@@ -363,10 +363,10 @@ only that commit and never one that someone else pushed since. The result decide
 | `MergeResult` | Decision |
 | --- | --- |
 | `merged` | `markMerged` with a note that names the base branch, the merge commit when the forge reports one and, for `ciThenMerge`, the pipeline that passed; delete the watch record |
-| `pending`: the forge is still checking, or a pipeline that it requires still runs | keep watching; `markStuck` with the forge's reason when still pending `ci_timeout_minutes` after the first `pending` |
+| `pending`: the forge is still checking, hasn't processed the push yet, or checks that it requires still run | keep watching; `markStuck` with the forge's reason when still pending `ci_timeout_minutes` after the first `pending` |
 | `outdated`: the branch conflicts with the base branch, or the forge requires a rebase | queue a rebase round; `markStuck` with the forge's reason when the watch already ran one |
 | `blocked`: missing approvals, branch protection, a draft, unresolved threads, a head that moved, a closed review request | `markStuck`, naming the forge's reason and linking the review request: a human merges it by hand or changes the rule, then moves the card on |
-| An error | back off 30 s doubling to 10 min, with a notification at the third failure in a row; a `BackendRejection` marks the card stuck |
+| An error | back off 30 s doubling to 10 min, with a notification at the third failure in a row; `markStuck` when errors last `ci_timeout_minutes`; a `BackendRejection` marks the card stuck |
 
 A failed `markMerged` backs off the same way, and the retry calls `merge` again, which reports
 the merge that already landed.

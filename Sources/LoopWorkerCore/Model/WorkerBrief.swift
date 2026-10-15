@@ -233,7 +233,7 @@ public struct WorkerBrief: Sendable {
             atomic commits.
             """
         let doneNote = fixCommit == nil ? "" : " The review request already exists, so the Manager posts the body as a note on it: describe this round's "
-            + (rebase == nil ? "fix." : "rebase. The Manager then pushes the rebased branch and merges it.")
+            + (rebase == nil ? "fix." : "rebase. The Manager then pushes the rebased branch and tries the merge again.")
 
         return """
             You are a LoopWorker worker: an unattended Claude Code session that implements \
