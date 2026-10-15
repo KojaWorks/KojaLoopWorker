@@ -6,8 +6,9 @@ import LoopWorkerCore
 /// The Manager's card state lives in the state property, a select with the options `next`,
 /// `working`, `ci`, `review` and `stuck`; the team's own status property is never touched.
 /// A `next` card is `ready` only when a trusted user edited the page last, or the integration
-/// did and its newest comment is a release (DESIGN.md "Trust in Notion"). The Manager's notes
-/// are page comments that the integration wrote, each under a header line (`ManagerComment`).
+/// did after releasing a card that it owned; a `working` or `ci` card is the Manager's only
+/// while the integration's newest comment says so (DESIGN.md "Trust in Notion"). The Manager's
+/// notes are page comments that the integration wrote, each under a header line (`ManagerComment`).
 ///
 /// `CardRef.id` is the page id; `display` is the unique-id property (`CARD-12`) when the
 /// database has one, else `notion:` and the page id's first 8 hex digits.
@@ -21,6 +22,8 @@ public actor NotionBacklog: Backlog {
     private let now: @Sendable () -> Date
     private let host: String
     private var loggedOnce: Set<String> = []
+    /// The database that each page was last read from, so a page's 404 can be told from a lost connection.
+    private var pageDatabases: [String: String] = [:]
     private var dataSources: [String: String] = [:]
     private var schemas: [String: (read: Date, properties: [String: JSON])] = [:]
     private var userNames: [String: String] = [:]
@@ -39,7 +42,7 @@ public actor NotionBacklog: Backlog {
         var found: [(card: Card, created: Date)] = []
         for (db, path) in served(projects) {
             for page in try await query(db, option: "next") {
-                let card = try await evaluate(page, project: path)
+                let card = try await evaluate(page, project: path).card
                 if card.state == .ready { found.append((card, page.created)) }
             }
         }
@@ -56,22 +59,41 @@ public actor NotionBacklog: Backlog {
         try await list("ci", projects)
     }
 
+    /// The cards in `option` that the Manager owns; a card that LoopWorker never claimed is left out.
     private func list(_ option: String, _ projects: [ProjectSpec]) async throws -> [Card] {
         var cards: [Card] = []
         for (db, path) in served(projects) {
-            for page in try await query(db, option: option) { cards.append(try await evaluate(page, project: path)) }
+            for page in try await query(db, option: option) {
+                let card = try await evaluate(page, project: path).card
+                if card.state != .other { cards.append(card) }
+            }
         }
         return cards
     }
 
     public func card(_ ref: CardRef) async throws -> Card? {
-        guard let json = try await client.request("GET", "pages/\(ref.id)", missing: .none) else { return nil }
+        try await read(ref)?.card
+    }
+
+    /// Nil when the page is deleted, in the trash or outside the served databases. Notion also
+    /// answers 404 for a page that is no longer shared with the integration, so a 404 re-checks
+    /// the database and throws `notConnected` when the integration lost it.
+    private func read(_ ref: CardRef) async throws -> Evaluation? {
+        _ = try await meID()
+        guard let json = try await client.request("GET", "pages/\(ref.id)", missing: .none) else {
+            let databases = pageDatabases[ref.id].map { [$0] } ?? config.projectPaths.keys.sorted()
+            for db in databases {
+                _ = try await client.request("GET", "data_sources/\(try await dataSource(db))", missing: .database(db))
+            }
+            return nil
+        }
         let page = try Page(json)
         guard !page.inTrash, let project = try await project(of: page) else { return nil }
         return try await evaluate(page, project: project)
     }
 
     public func snapshot(_ card: Card) async throws -> CardSnapshot {
+        _ = try await meID()
         guard let json = try await client.request("GET", "pages/\(card.ref.id)", missing: .none) else {
             throw NotionError.unexpectedState(card: card.ref.display, expected: "a page to snapshot", actual: "deleted")
         }
@@ -91,7 +113,10 @@ public actor NotionBacklog: Backlog {
         var names: [String: String] = [:]
         for id in withheld.subtracting([""]) { names[id] = await name(id) }
         for id in trusted { names[id] = await name(id) }
-        return NotionMarkdown.snapshot(title: page.title, blocks: blocks, comments: comments, trusted: trusted, me: me, names: names)
+        let vouched = comments.last { $0.author == me && ManagerComment.kind($0.text)?.isClaim == true }
+            .flatMap { ManagerComment.vouchedTitle($0.text) }
+        return NotionMarkdown.snapshot(vouchedTitle: vouched, pageTitle: page.title, blocks: blocks, comments: comments,
+                                       trusted: trusted, me: me, names: names)
     }
 
     /// The integration's release, stuck, review and CI comments, header stripped, oldest first.
@@ -106,19 +131,22 @@ public actor NotionBacklog: Backlog {
     // MARK: Writes
 
     public func claim(_ card: Card) async throws -> Bool {
-        guard let fresh = try await self.card(card.ref), fresh.state == .ready else {
+        let me = try await meID()
+        // Listed before the page is re-read: a rival's claim posted after this list follows its
+        // `working` write, so the re-read below sees `working` and this claim stops there.
+        let stale = Set(try await comments(card.ref.id).filter { $0.author == me && ManagerComment.kind($0.text)?.isClaim == true }.map(\.id))
+        guard let fresh = try await read(card.ref), fresh.card.state == .ready, let title = fresh.vouchedTitle else {
             log.info("claim lost for \(card.ref.display): it is no longer ready")
             return false
         }
         try await setState(card.ref.id, "working")
         let nonce = UUID().uuidString.prefix(8).lowercased()
-        let mine = try await post(card.ref.id, .claim(host: host, nonce: nonce), [])
-        let me = try await meID()
-        let ours = try await comments(card.ref.id).filter { $0.author == me }
+        let mine = try await post(card.ref.id, .claim(host: host, nonce: nonce), [(ManagerComment.vouchedTitlePrefix + title, nil)])
+        let ours = try await comments(card.ref.id).filter { $0.author == me && !stale.contains($0.id) }
         // The claims after the integration's newest other comment are this round's.
         let round = ours.reversed().prefix { ManagerComment.kind($0.text)?.isClaim == true }.reversed()
         guard let winner = round.first, winner.id != mine else { return true }
-        log.info("claim lost for \(card.ref.display): an older claim comment \(winner.id) (\(winner.text)) won the race")
+        log.info("claim lost for \(card.ref.display): the older claim comment \(winner.id) won the race")
         do { _ = try await client.request("DELETE", "comments/\(mine)") }
         catch { log.error("\(card.ref.display): can't delete the lost claim comment \(mine): \(error)") }
         return false
@@ -128,20 +156,20 @@ public actor NotionBacklog: Backlog {
         try await require(card, ["working", "ci"], for: "markReview")
         var segments: [(text: String, link: URL?)] = [("\(review.display): ", nil), (review.url.absoluteString, review.url)]
         if let note { segments.append(("\n\n\(note)", nil)) }
-        try await post(card.ref.id, .review, segments)
         try await setState(card.ref.id, "review")
+        try await post(card.ref.id, .review, segments)
     }
 
     public func markVerifying(_ card: Card, review: ReviewRequest) async throws {
         try await require(card, ["working"], for: "markVerifying")
-        try await post(card.ref.id, .ci, [("\(review.display): ", nil), (review.url.absoluteString, review.url)])
         try await setState(card.ref.id, "ci")
+        try await post(card.ref.id, .ci, [("\(review.display): ", nil), (review.url.absoluteString, review.url)])
     }
 
     public func resumeFix(_ card: Card) async throws -> Bool {
         let state = try await currentOption(card)
         guard state == "ci" else {
-            log.info("CI fix round for \(card.ref.display) dropped: its \(config.stateProperty) is \(state ?? "empty"), not ci")
+            log.info("CI fix round for \(card.ref.display) dropped: it is \(state), not ci")
             return false
         }
         try await setState(card.ref.id, "working")
@@ -150,8 +178,8 @@ public actor NotionBacklog: Backlog {
 
     public func markStuck(_ card: Card, blocker: String) async throws {
         try await require(card, ["working", "ci"], for: "markStuck")
-        try await post(card.ref.id, .stuck, [(blocker, nil)])
         try await setState(card.ref.id, "stuck")
+        try await post(card.ref.id, .stuck, [(blocker, nil)])
     }
 
     public func release(_ card: Card, reason: String, countsAsAttempt: Bool) async throws {
@@ -162,17 +190,18 @@ public actor NotionBacklog: Backlog {
 
     private func require(_ card: Card, _ options: [String], for call: String) async throws {
         let state = try await currentOption(card)
-        guard let state, options.contains(state) else {
-            throw NotionError.unexpectedState(card: "\(call) \(card.ref.display)", expected: options.joined(separator: " or "), actual: state ?? "empty")
+        guard options.contains(state) else {
+            throw NotionError.unexpectedState(card: "\(call) \(card.ref.display)", expected: options.joined(separator: " or "), actual: state)
         }
     }
 
-    /// The state property's option as stored now; nil when it is empty, or the page is deleted or in the trash.
-    private func currentOption(_ card: Card) async throws -> String? {
+    /// The state property's option as stored now, "empty", or "deleted or in the trash".
+    private func currentOption(_ card: Card) async throws -> String {
         _ = try await meID()
-        guard let json = try await client.request("GET", "pages/\(card.ref.id)", missing: .none) else { return nil }
-        let page = try Page(json)
-        return page.inTrash ? nil : page.select(config.stateProperty)
+        guard let json = try await client.request("GET", "pages/\(card.ref.id)", missing: .none),
+              case let page = try Page(json), !page.inTrash
+        else { return "deleted or in the trash" }
+        return page.select(config.stateProperty) ?? "empty"
     }
 
     private func setState(_ page: String, _ option: String) async throws {
@@ -238,32 +267,60 @@ public actor NotionBacklog: Backlog {
         }
     }
 
-    /// Maps a page to a card, judging trust for `next` (B190). Reads the comments unless the
-    /// state property alone makes the card `other`.
-    private func evaluate(_ page: Page, project: String) async throws -> Card {
+    struct Evaluation {
+        var card: Card
+        /// For a `ready` card, the title that the claim records as vouched.
+        var vouchedTitle: String?
+    }
+
+    /// Maps a page to a card (B190). A `next` card is `ready` when a trusted user edited it
+    /// last, or the integration did and its newest comment is a release that follows a claim,
+    /// a CI notice or a release. A `working` or `ci` card is the Manager's only while the
+    /// integration's newest comment is a claim, a CI notice or a release. Anything else is
+    /// `other`, logged once. Reads the comments unless the state property alone makes it `other`.
+    private func evaluate(_ page: Page, project: String) async throws -> Evaluation {
         let me = try await meID()
+        if let db = config.databaseID(for: ProjectSpec(path: project)) { pageDatabases[page.id] = db }
         let unique = page.uniqueID
         let display = unique.map { u in u.prefix.map { "\($0)-\(u.number)" } ?? "\(u.number)" }
             ?? "notion:\(page.id.replacingOccurrences(of: "-", with: "").prefix(8))"
-        var state = page.select(config.stateProperty).flatMap { Self.states[$0] } ?? .other
+        let option = page.select(config.stateProperty)
+        var state = option.flatMap { Self.states[$0] } ?? .other
         var comments: [Comment] = []
-        if state == .ready, page.editor.map(config.trustedUsers.contains) != true, page.editor != me {
-            let editor = await name(page.editor)
-            logOnce(page.id, "skipping \(display) \"\(page.title)\": its last editor \(editor) is not in [backlog.notion] trusted_users")
+        var vouched: String?
+        func skip(_ reason: String, _ why: String) {
+            logOnce(page.id, reason, "skipping \(display): \(why)")
             state = .other
+        }
+        if state == .ready, page.editor.map(config.trustedUsers.contains) != true, page.editor != me {
+            skip("untrusted editor", "its last editor \(await name(page.editor)) is not in [backlog.notion] trusted_users")
         } else if state != .other {
             comments = try await self.comments(page.id)
-            if state == .ready, page.editor == me,
-               comments.last(where: { $0.author == me }).flatMap({ ManagerComment.kind($0.text) })?.isRelease != true {
-                logOnce(page.id, "skipping \(display) \"\(page.title)\": LoopWorker edited it last and its newest LoopWorker comment is not a release")
-                state = .other
+            let ours = comments.filter { $0.author == me }
+            let kinds = ours.map { ManagerComment.kind($0.text) }
+            switch state {
+            case .ready where page.editor != me:
+                vouched = page.title
+            case .ready:
+                guard kinds.last??.isRelease == true, kinds.count >= 2, kinds[kinds.count - 2]?.keepsOwnership == true else {
+                    skip("release vouch", "LoopWorker edited it last, and its newest LoopWorker comment is not a release of a card that LoopWorker owned")
+                    break
+                }
+                vouched = ours.last { ManagerComment.kind($0.text)?.isClaim == true }.flatMap { ManagerComment.vouchedTitle($0.text) }
+                if vouched == nil { skip("no vouched title", "no LoopWorker claim comment records a vouched title") }
+            case .working, .verifying:
+                if kinds.last??.keepsOwnership != true {
+                    skip("not claimed", "its \(config.stateProperty) says \(option ?? ""), but LoopWorker never claimed it")
+                }
+            default: break
             }
         }
-        return Card(
+        let card = Card(
             ref: CardRef(id: page.id, display: display), project: project, number: unique.map { "\($0.number)" },
             title: page.title, state: state, priority: try await priority(page, project: project), model: model(page),
             attempts: comments.filter { $0.author == me && ManagerComment.kind($0.text) == .failedRelease }.count,
             url: page.url)
+        return Evaluation(card: card, vouchedTitle: state == .ready ? vouched : nil)
     }
 
     /// B194: a number as is; a select or multi-select option ranks by its place in the
@@ -300,8 +357,10 @@ public actor NotionBacklog: Backlog {
 
     private func meID() async throws -> String {
         let me = try await client.me()
-        guard let id = me["id"]?.string else { throw NotionError.malformed("GET /v1/users/me returned no id") }
-        return NotionID.normalize(id) ?? id
+        guard let raw = me["id"]?.string else { throw NotionError.malformed("GET /v1/users/me returned no id") }
+        let id = NotionID.normalize(raw) ?? raw
+        if config.trustedUsers.contains(id) { throw NotionError.integrationTrusted(id: id, name: me["name"]?.string ?? "unnamed") }
+        return id
     }
 
     /// The configured databases of `projects`, in a stable order.
@@ -377,19 +436,19 @@ public actor NotionBacklog: Backlog {
     func name(_ user: String?) async -> String {
         guard let user else { return "an unknown user" }
         if let cached = userNames[user] { return cached }
+        var name = user
         do {
-            if let name = try await client.request("GET", "users/\(user)", missing: .none)?["name"]?.string {
-                userNames[user] = name
-                return name
-            }
+            if let n = try await client.request("GET", "users/\(user)", missing: .none)?["name"]?.string { name = n }
         } catch {
-            logOnce("user \(user)", "can't read the name of Notion user \(user): \(error)")
+            logOnce(user, "user name", "can't read the name of Notion user \(user); showing its id: \(error)")
         }
-        return user
+        userNames[user] = name
+        return name
     }
 
-    private func logOnce(_ key: String, _ message: String) {
-        guard loggedOnce.insert("\(key)|\(message)").inserted else { return }
+    /// Logs `message` the first time that `id` is skipped for `reason`.
+    private func logOnce(_ id: String, _ reason: String, _ message: String) {
+        guard loggedOnce.insert("\(id)|\(reason)").inserted else { return }
         log.info(message)
     }
 }

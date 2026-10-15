@@ -43,7 +43,7 @@ final class FakeNotion: @unchecked Sendable {
     /// Extra fields merged into every query response, e.g. `request_status`.
     var queryExtra: [String: JSON] = [:]
     var clock = Date(timeIntervalSince1970: 2_000_000_000)
-    private var nextComment = 1
+    private(set) var nextComment = 1
     /// Runs after a comment is created, e.g. to let a competing Manager post its claim.
     var afterComment: (() -> Void)?
 
@@ -293,4 +293,14 @@ func make(_ fake: FakeNotion, config: HostConfig? = nil, log: LogRecorder = LogR
 
 func card(_ page: String, _ state: CardState = .working) -> Card {
     Card(ref: CardRef(id: page, display: "CARD-x"), project: "owner/app", title: "t", state: state)
+}
+
+extension FakeNotion {
+    /// A claim comment by the integration that records `title` as vouched.
+    func addClaim(_ page: String, title: String = "card 1", host: String = "h") {
+        addComment(page, by: botID, "LoopWorker claimed this card (host \(host), 1234).\n\nVouched title: \(title)")
+    }
+
+    /// The id that the fake gives the next comment.
+    var nextCommentID: String { id(nextComment, "cc") }
 }
