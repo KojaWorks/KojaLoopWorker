@@ -594,10 +594,10 @@ extension Manager {
         do {
             do {
                 switch Outcome.parse(data) {
-                case .done(let title, let body, let guide):
+                case .done(let title, let body, let guide, let replies):
                     do {
                         try await finishDone(spec, card: card, branch: branch, base: base, title: title, body: body, guide: guide,
-                                             ciRound: s.ciRound, ciCommit: s.ciCommit,
+                                             replies: replies, ciRound: s.ciRound, ciCommit: s.ciCommit,
                                              waitForCI: projects[ref.key]?.contract?.ci.waitForCI ?? false)
                     } catch let rejection as BackendRejection {
                         try await stuck(spec, card: card, blocker: "Couldn't finish: the forge or backlog refused: \(rejection)")
@@ -622,7 +622,7 @@ extension Manager {
     ///     count from. Not `origin/<branch>`, which any later fetch moves to the round's own push.
     func finishDone(
         _ spec: SlotSpec, card: Card, branch: String, base: String, title: String, body: String, guide: String?,
-        ciRound: Int? = nil, ciCommit: String? = nil, waitForCI: Bool = false
+        replies: [String: String] = [:], ciRound: Int? = nil, ciCommit: String? = nil, waitForCI: Bool = false
     ) async throws {
         let ahead = try await step("counting commits on \(branch)") {
             if let ciCommit { try await self.deps.git.commitsSince(spec.worktree, commit: ciCommit) }
@@ -652,11 +652,27 @@ extension Manager {
             log.warning("\(label(spec)): didn't attach \(r.path)\(resolved) to \(card.ref)'s review request: \(r.reason)")
             text += "\n\nLoopWorker didn't attach \(r.path.replacingOccurrences(of: "\n", with: " ")): \(r.reason)"
         }
-        let cardLine = card.url.map { "Card: [\(card.ref.display)](\($0.absoluteString))" } ?? "Card: \(card.ref.display)"
-        let draft = ReviewRequestDraft(
-            project: spec.project, card: card, sourceBranch: branch, targetBranch: base, title: title,
-            body: "\(text)\n\n---\n\(cardLine)\(guideLine)\n", draft: spec.project.draftReviewRequests, assignToOwner: true)
-        let review = try await step("opening the review request") { try await self.deps.forge.openReviewRequest(draft) }
+        let existing = try await step("looking for an open review request of \(branch)") {
+            try await forge.openReviewRequest(for: project, sourceBranch: branch)
+        }
+        let review: ReviewRequest
+        if let existing {
+            review = existing
+            try await postRound(spec, card: card, review: review, commit: commit, text: text + (guideLine.isEmpty ? "" : "\n" + guideLine), replies: replies)
+        } else {
+            if !replies.isEmpty {
+                let ids = replies.keys.sorted()
+                log.warning("\(label(spec)): \(card.ref)'s worker replied to threads \(ids.joined(separator: ", ")), but \(branch) has no open review request; adding them to the new one's description")
+                text += "\n\nLoopWorker didn't post the worker's replies to threads " + ids.map(Self.inlineCode).joined(separator: ", ")
+                    + ": the branch had no open review request.\n\n" + ids.map { "\(Self.inlineCode($0)):\n\n\(replies[$0]!)" }.joined(separator: "\n\n")
+            }
+            let cardLine = card.url.map { "Card: [\(card.ref.display)](\($0.absoluteString))" } ?? "Card: \(card.ref.display)"
+            let draft = ReviewRequestDraft(
+                project: spec.project, card: card, sourceBranch: branch, targetBranch: base, title: title,
+                body: "\(text)\n\n---\n\(cardLine)\(guideLine)\n", draft: spec.project.draftReviewRequests, assignToOwner: true,
+                commit: commit)
+            review = try await step("opening the review request") { try await forge.openReviewRequest(draft) }
+        }
         guard waitForCI else {
             try await step("moving \(card.ref) to review") { try await self.deps.backlog.markReview(card, review: review) }
             log.info("\(label(spec)): finished \(card.ref): \(review.display) \(review.url.absoluteString)")
@@ -673,6 +689,36 @@ extension Manager {
         watch(record, card: verifying, lastPoll: clock.now())
         log.info("\(label(spec)): \(card.ref) waits for CI on \(commit.prefix(12)): \(review.display) \(review.url.absoluteString)")
     }
+
+    /// Posts a round's replies into their threads, then `text` as a note on `review` under a
+    /// line naming `commit`. A reply that fails or names an unknown thread is logged and listed
+    /// under the note; a failed note throws, and a retry finds what was already posted.
+    func postRound(_ spec: SlotSpec, card: Card, review: ReviewRequest, commit: String, text: String, replies: [String: String]) async throws {
+        let forge = deps.forge, project = spec.project
+        var problems: [String] = []
+        for (thread, reply) in replies.sorted(by: { $0.key < $1.key }) {
+            do {
+                switch try await forge.replyToThread(thread, text: reply, commit: commit, on: review, project: project) {
+                case .posted: log.info("\(label(spec)): replied in thread \(thread) of \(review.display)")
+                case .alreadyPosted: log.info("\(label(spec)): thread \(thread) of \(review.display) already has this round's reply")
+                case .noSuchThread:
+                    log.warning("\(label(spec)): \(card.ref)'s worker replied to thread \(thread), which \(review.display) doesn't have; listing it under the round's note")
+                    problems.append("LoopWorker didn't post the worker's reply to thread \(Self.inlineCode(thread)): \(review.display) has no such thread. The reply:\n\n\(reply)")
+                }
+            } catch {
+                log.error("\(label(spec)): replying in thread \(thread) of \(review.display) failed: \(error)")
+                problems.append("LoopWorker couldn't post the worker's reply in thread \(Self.inlineCode(thread)); the Manager's log on \(hostName) has the error. The reply:\n\n\(reply)")
+            }
+        }
+        let note = "LoopWorker pushed `\(commit.prefix(12))` to this branch.\n\n\(text)" + problems.map { "\n\n" + $0 }.joined()
+        let posted = try await step("posting this round's note on \(review.display)") {
+            try await forge.postReviewNote(note, commit: commit, on: review, project: project)
+        }
+        if !posted { log.info("\(label(spec)): \(review.display) already has the note for \(commit.prefix(12)); not posting it again") }
+    }
+
+    /// `text` as inline code on one line.
+    static func inlineCode(_ text: String) -> String { "`" + text.filter { $0 != "`" && !$0.isNewline } + "`" }
 
     /// Pushes the card branch with a lease on the card's commit in the push ledger (the
     /// Manager's last push, or the tip that a resumed card or fix round started from; none: the

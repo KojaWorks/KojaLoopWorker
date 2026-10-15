@@ -23,6 +23,8 @@ final class FakeGit: GitDriving, @unchecked Sendable {
         /// Branches on the forge and their tips. A push must lease on the tip (nil: no branch)
         /// and moves it.
         var remoteTips: [String: String] = [:]
+        /// When set, every push pushes this commit, as when HEAD didn't move between pushes.
+        var head: String?
         var failHasRemoteBranch = false
     }
 
@@ -87,7 +89,7 @@ final class FakeGit: GitDriving, @unchecked Sendable {
             guard $0.remoteTips[branch] == expected else { throw PushRejected(branch: branch, url: url) }
             $0.pushes.append((worktree, url, branch, expected, environment))
             $0.calls.append("push \(branch)")
-            let commit = "commit-\($0.pushes.count)"
+            let commit = $0.head ?? "commit-\($0.pushes.count)"
             $0.remoteTips[branch] = commit
             return commit
         }

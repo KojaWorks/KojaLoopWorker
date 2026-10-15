@@ -213,6 +213,15 @@ extension ReviewFeedback {
     }
 }
 
+/// What `Forge.replyToThread` did.
+public enum ThreadReply: Sendable, Equatable {
+    case posted
+    /// An earlier finish of the same round posted it.
+    case alreadyPosted
+    /// The review request has no thread with that id.
+    case noSuchThread
+}
+
 /// The hidden header that marks what the Manager posts on a review request or a card: the first
 /// line is `manager`, more marker lines may follow, and a blank line ends the header. Text that
 /// a worker wrote only ever follows that blank line, so a marker inside it is never read as one.

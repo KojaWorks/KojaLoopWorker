@@ -161,7 +161,8 @@ public struct GitHubForge: Forge {
             return review
         }
 
-        var body = NewPull(title: draft.title, head: draft.sourceBranch, base: draft.targetBranch, body: draft.body, draft: draft.draft)
+        var body = NewPull(title: draft.title, head: draft.sourceBranch, base: draft.targetBranch,
+                           body: draft.body + (draft.commit.map { "\n\n" + ReviewMarker.round($0) } ?? ""), draft: draft.draft)
         let pull: Pull
         do {
             pull = try await request("POST", "repos/\(path)/pulls", body: body, as: Pull.self)
@@ -315,6 +316,118 @@ public struct GitHubForge: Forge {
         }
         struct Repository: Decodable { var pullRequest: Pull? }
         var repository: Repository?
+    }
+
+    public func postReviewNote(_ text: String, commit: String, on review: ReviewRequest, project: ProjectSpec) async throws -> Bool {
+        struct PullBody: Decodable { var body: String? }
+        let number = try pullNumber(review)
+        let marker = ReviewMarker.round(commit)
+        if try await request("GET", "repos/\(project.path)/pulls/\(number)", as: PullBody.self).body?.contains(marker) == true { return false }
+        if try await myConversationComments(project, number).contains(where: { ReviewMarker.has(marker, $0) }) { return false }
+        try await postComment(project, number, ReviewMarker.note(text, markers: [marker]))
+        return true
+    }
+
+    /// A review thread gets a reply to its first comment. A conversation comment has no
+    /// thread, so its reply is a new conversation comment that links it.
+    public func replyToThread(_ thread: String, text: String, commit: String, on review: ReviewRequest, project: ProjectSpec) async throws -> ThreadReply {
+        let number = try pullNumber(review)
+        let result = try await graphQLEnvelope("thread \(thread) of \(review.display)", Self.threadQuery, ["id": thread], as: GQLNodeData.self)
+        if result.errors.contains(where: { $0.type == "NOT_FOUND" }) { return .noSuchThread }
+        guard let node = try result.get().node, node.repository?.nameWithOwner.lowercased() == project.path.lowercased(),
+              node.pullRequest?.number == number else { return .noSuchThread }
+        let marker = ReviewMarker.reply(commit, thread: thread)
+        let body = ReviewMarker.note(text, markers: [marker])
+        let me = try await login()
+        switch node.typename {
+        case "PullRequestReviewThread":
+            if node.comments?.nodes.contains(where: { $0.author?.login.lowercased() == me.lowercased() && ReviewMarker.has(marker, $0.body ?? "") }) == true {
+                return .alreadyPosted
+            }
+            guard let first = node.first?.nodes.first?.databaseId else {
+                throw GitHubError.malformed("thread \(thread) of \(review.display) has no comment to reply to")
+            }
+            struct Reply: Encodable { var body: String }
+            _ = try await request("POST", "repos/\(project.path)/pulls/\(number)/comments/\(first)/replies", body: Reply(body: body), as: Ignored.self)
+        case "IssueComment":
+            if try await myConversationComments(project, number).contains(where: { ReviewMarker.has(marker, $0) }) { return .alreadyPosted }
+            let link = node.url.map { "[@\(node.author?.login ?? "ghost")'s comment](\($0.absoluteString))" } ?? "a comment"
+            try await postComment(project, number, ReviewMarker.note("In reply to \(link):\n\n\(text)", markers: [marker]))
+        default:
+            return .noSuchThread
+        }
+        return .posted
+    }
+
+    static let threadQuery = """
+        query($id: ID!) {
+          node(id: $id) {
+            __typename
+            ... on PullRequestReviewThread {
+              repository { nameWithOwner }
+              pullRequest { number }
+              first: comments(first: 1) { nodes { databaseId } }
+              comments(last: 100) { nodes { author { login } body } }
+            }
+            ... on IssueComment {
+              repository { nameWithOwner }
+              pullRequest { number }
+              url
+              author { login }
+            }
+          }
+        }
+        """
+
+    struct GQLNodeData: Decodable {
+        struct Node: Decodable {
+            struct Repository: Decodable { var nameWithOwner: String }
+            struct Pull: Decodable { var number: Int }
+            struct Comments: Decodable {
+                struct Comment: Decodable {
+                    var databaseId: Int?
+                    var author: GQLLogin?
+                    var body: String?
+                }
+                var nodes: [Comment]
+            }
+            var typename: String
+            var repository: Repository?
+            var pullRequest: Pull?
+            var first: Comments?
+            var comments: Comments?
+            var url: URL?
+            var author: GQLLogin?
+            enum CodingKeys: String, CodingKey {
+                case typename = "__typename", repository, pullRequest, first, comments, url, author
+            }
+        }
+        var node: Node?
+    }
+
+    private func login() async throws -> String { try await request("GET", "user", as: User.self).login }
+
+    /// The bodies of every conversation comment on pull request `number` that the token's user wrote.
+    private func myConversationComments(_ project: ProjectSpec, _ number: Int) async throws -> [String] {
+        struct Comment: Decodable {
+            var body: String?
+            var user: User?
+        }
+        let me = try await login().lowercased()
+        var mine: [String] = []
+        for page in 1... {
+            let comments = try await request("GET", "repos/\(project.path)/issues/\(number)/comments", query: [
+                URLQueryItem(name: "per_page", value: "100"), URLQueryItem(name: "page", value: "\(page)"),
+            ], as: [Comment].self)
+            mine += comments.filter { $0.user?.login.lowercased() == me }.compactMap(\.body)
+            if comments.count < 100 { break }
+        }
+        return mine
+    }
+
+    private func postComment(_ project: ProjectSpec, _ number: Int, _ body: String) async throws {
+        struct Body: Encodable { var body: String }
+        _ = try await request("POST", "repos/\(project.path)/issues/\(number)/comments", body: Body(body: body), as: Ignored.self)
     }
 
     /// The number in a display that `Pull.reviewRequest` made, `<path>#<number>`.

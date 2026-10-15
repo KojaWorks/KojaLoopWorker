@@ -60,7 +60,7 @@ public struct GitLabForge: Forge {
             "source_branch": draft.sourceBranch,
             "target_branch": draft.targetBranch,
             "title": draft.draft ? "Draft: \(title)" : title,
-            "description": Trust.neutralizeQuickActions(draft.body),
+            "description": Trust.neutralizeQuickActions(draft.body) + (draft.commit.map { "\n\n" + ReviewMarker.round($0) } ?? ""),
             "remove_source_branch": "true",
         ].merging(assignee) { a, _ in a }, idempotent: false)
         return try review(created, draft.project)
@@ -95,6 +95,33 @@ public struct GitLabForge: Forge {
                 })
         }
         return ReviewFeedback.build(threads, owner: me.username, openedAt: opened, vouchedAt: vouchedAt)
+    }
+
+    public func postReviewNote(_ text: String, commit: String, on review: ReviewRequest, project: ProjectSpec) async throws -> Bool {
+        let path = try mergeRequestPath(review, project)
+        let marker = ReviewMarker.round(commit)
+        let mr: GLMergeRequest = try await client.get(path)
+        if mr.description?.contains(marker) == true { return false }
+        let me = try await client.me()
+        let notes: [GLNote] = try await client.getAll(path + "/notes")
+        if notes.contains(where: { $0.author.id == me.id && ReviewMarker.has(marker, $0.body) }) { return false }
+        let _: GLNote = try await client.send("POST", path + "/notes", body: [
+            "body": ReviewMarker.note(Trust.neutralizeQuickActions(text), markers: [marker]),
+        ], idempotent: false)
+        return true
+    }
+
+    /// `POST .../discussions/:id/notes`, which also turns a single comment into a thread.
+    public func replyToThread(_ thread: String, text: String, commit: String, on review: ReviewRequest, project: ProjectSpec) async throws -> ThreadReply {
+        let path = try mergeRequestPath(review, project) + "/discussions/\(GitLabPath.encode(thread))"
+        guard let discussion: GLDiscussion = try await client.getIfFound(path) else { return .noSuchThread }
+        let me = try await client.me()
+        let marker = ReviewMarker.reply(commit, thread: thread)
+        if discussion.notes.contains(where: { $0.author.id == me.id && ReviewMarker.has(marker, $0.body) }) { return .alreadyPosted }
+        let _: GLNote = try await client.send("POST", path + "/notes", body: [
+            "body": ReviewMarker.note(Trust.neutralizeQuickActions(text), markers: [marker]),
+        ], idempotent: false)
+        return .posted
     }
 
     static func position(_ p: GLDiscussion.Position) -> ReviewFeedback.Position? {

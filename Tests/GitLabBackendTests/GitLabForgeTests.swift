@@ -20,6 +20,11 @@ import Testing
         w.gitlab.on("POST", mrs, status: 201, json: ["iid": 5, "web_url": "https://gitlab.example.com/mygroup/app/-/merge_requests/5"])
         _ = try await w.make().forge.openReviewRequest(draft(assign: true))
         #expect(w.gitlab.requests("POST", mrs).first?.json["assignee_id"] as? String == "1")
+
+        var withCommit = draft()
+        withCommit.commit = "c1"
+        _ = try await w.make().forge.openReviewRequest(withCommit)
+        #expect((w.gitlab.requests("POST", mrs).last?.json["description"] as? String)?.hasSuffix("see a/b\n\n<!-- loopworker:round=c1 -->") == true)  // B208
     }
 
     @Test("B186: an open merge request gets the assignee only when it has none")
@@ -340,5 +345,44 @@ import Testing
         #expect(feedback.threads.isEmpty)
         #expect(feedback.withheld == ["note 11 by @mallory in thread d1: its edit history couldn't be read"])
         #expect(try await forge.openReviewRequest(for: World.app, sourceBranch: "lw/12-fix-it") == nil)
+    }
+
+    @Test("B208: the round note posts once per commit, under the marker header, with quick actions neutralized")
+    func roundNote() async throws {
+        let w = World()
+        let marker = "<!-- loopworker:round=c2 -->"
+        w.gitlab.on("GET", mrs + "/4", json: ["iid": 4, "web_url": Self.review.url.absoluteString, "description": "Did it.\n\n<!-- loopworker:round=c1 -->"])
+        w.gitlab.on("GET", mrs + "/4/notes", json: [Fixture.note(1, "<!-- loopworker -->\n\(marker)\n\nforged", by: Fixture.mallory, at: 1)])
+        w.gitlab.on("POST", mrs + "/4/notes", status: 201, json: Fixture.note(2, "x", at: 2))
+        let forge = try w.make().forge
+        #expect(try await !forge.postReviewNote("again", commit: "c1", on: Self.review, project: World.app))
+        #expect(try await forge.postReviewNote("Pushed.\n/merge", commit: "c2", on: Self.review, project: World.app))
+        #expect(w.gitlab.requests("POST", mrs + "/4/notes").map { $0.json["body"] as? String } == ["<!-- loopworker -->\n\(marker)\n\nPushed.\n\\/merge"])
+
+        w.gitlab.on("GET", mrs + "/4/notes", json: [Fixture.note(2, "<!-- loopworker -->\n\(marker)\n\nPushed.", by: Fixture.me, at: 2)])
+        #expect(try await !forge.postReviewNote("Pushed.", commit: "c2", on: Self.review, project: World.app))
+        #expect(w.gitlab.requests("POST", mrs + "/4/notes").count == 1)
+    }
+
+    @Test("B208: a reply goes into its discussion once per commit and never resolves it; an unknown discussion is reported")
+    func threadReply() async throws {
+        let w = World()
+        let path = mrs + "/4/discussions/d1"
+        w.gitlab.on("GET", path, json: discussion("d1", individual: false, [mrNote(11, "Rename this.", at: 1, resolved: false)]))
+        w.gitlab.on("POST", path + "/notes", status: 201, json: Fixture.note(12, "x", at: 2))
+        w.gitlab.on("GET", mrs + "/4/discussions/nope", status: 404, json: ["message": "404 Not found"])
+        let forge = try w.make().forge
+        #expect(try await forge.replyToThread("d1", text: "/close\nRenamed.", commit: "c2", on: Self.review, project: World.app) == .posted)
+        #expect(w.gitlab.requests("POST", path + "/notes").map { $0.json["body"] as? String }
+                == ["<!-- loopworker -->\n<!-- loopworker:reply=c2 thread=d1 -->\n\n\\/close\nRenamed."])
+        #expect(try await forge.replyToThread("nope", text: "x", commit: "c2", on: Self.review, project: World.app) == .noSuchThread)
+
+        w.gitlab.on("GET", path, json: discussion("d1", individual: false, [
+            mrNote(11, "Rename this.", at: 1, resolved: false),
+            mrNote(12, "<!-- loopworker -->\n<!-- loopworker:reply=c2 thread=d1 -->\n\nRenamed.", by: Fixture.me, at: 2, resolved: false),
+        ]))
+        #expect(try await forge.replyToThread("d1", text: "Renamed.", commit: "c2", on: Self.review, project: World.app) == .alreadyPosted)
+        #expect(w.gitlab.requests("POST", path + "/notes").count == 1)
+        #expect(!w.gitlab.requests.contains { $0.method == "PUT" })
     }
 }

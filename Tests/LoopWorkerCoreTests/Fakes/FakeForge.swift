@@ -33,6 +33,25 @@ final class FakeForge: Forge, @unchecked Sendable {
         /// The `vouchedAt` of each `reviewFeedback` call.
         var feedbackCalls: [Date?] = []
         var failFeedback: (any Error)?
+        /// The commit each review request opened with, by URL: its description's round marker.
+        var openedAt: [URL: String] = [:]
+        /// Every note that `postReviewNote` posted.
+        var notes: [Posted] = []
+        /// Makes the next `postReviewNote` throw once.
+        var failNextNote: (any Error)?
+        /// The thread ids each review request has, by URL.
+        var threads: [URL: Set<String>] = [:]
+        /// Every reply that `replyToThread` posted.
+        var replies: [Posted] = []
+        /// Threads whose reply throws.
+        var failReplies: Set<String> = []
+    }
+
+    struct Posted: Equatable {
+        var review: URL
+        var thread: String?
+        var commit: String
+        var text: String
     }
 
     let state = Guarded(State())
@@ -52,6 +71,7 @@ final class FakeForge: Forge, @unchecked Sendable {
                                    display: "\(draft.project.path)!\(n)")
             $0.opened.append(draft)
             $0.byBranch[draft.sourceBranch] = rr
+            $0.openedAt[rr.url] = draft.commit
             return rr
         }
     }
@@ -65,6 +85,25 @@ final class FakeForge: Forge, @unchecked Sendable {
             $0.feedbackCalls.append(vouchedAt)
             if let e = $0.failFeedback { throw e }
             return $0.feedback[review.url] ?? ReviewFeedback()
+        }
+    }
+
+    func postReviewNote(_ text: String, commit: String, on review: ReviewRequest, project: ProjectSpec) async throws -> Bool {
+        try state {
+            if let e = $0.failNextNote { $0.failNextNote = nil; throw e }
+            if $0.openedAt[review.url] == commit || $0.notes.contains(where: { $0.review == review.url && $0.commit == commit }) { return false }
+            $0.notes.append(Posted(review: review.url, commit: commit, text: text))
+            return true
+        }
+    }
+
+    func replyToThread(_ thread: String, text: String, commit: String, on review: ReviewRequest, project: ProjectSpec) async throws -> ThreadReply {
+        try state {
+            guard $0.threads[review.url]?.contains(thread) == true else { return .noSuchThread }
+            if $0.failReplies.contains(thread) { throw FakeError("reply in \(thread) failed") }
+            if $0.replies.contains(where: { $0.review == review.url && $0.thread == thread && $0.commit == commit }) { return .alreadyPosted }
+            $0.replies.append(Posted(review: review.url, thread: thread, commit: commit, text: text))
+            return .posted
         }
     }
 

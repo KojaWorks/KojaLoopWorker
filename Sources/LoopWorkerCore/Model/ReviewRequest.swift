@@ -13,12 +13,15 @@ public struct ReviewRequestDraft: Sendable, Equatable {
     /// Assign the review request to the forge token's user, who owns the card. An open
     /// review request without an assignee gets one too. Best effort: the forge logs a failure.
     public var assignToOwner: Bool
+    /// The pushed commit that the review request opens with; nil leaves the round marker out.
+    public var commit: String?
 
     public init(
         project: ProjectSpec, card: Card, sourceBranch: String, targetBranch: String,
-        title: String, body: String, draft: Bool, assignToOwner: Bool = false
+        title: String, body: String, draft: Bool, assignToOwner: Bool = false, commit: String? = nil
     ) {
         self.assignToOwner = assignToOwner
+        self.commit = commit
         self.project = project
         self.card = card
         self.sourceBranch = sourceBranch

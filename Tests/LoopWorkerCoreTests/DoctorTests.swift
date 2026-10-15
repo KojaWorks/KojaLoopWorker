@@ -11,6 +11,8 @@ private final class DiagnosableForge: Forge, Diagnosable, @unchecked Sendable {
     func openReviewRequest(_ draft: ReviewRequestDraft) async throws -> ReviewRequest { fatalError("unused") }
     func openReviewRequest(for project: ProjectSpec, sourceBranch: String) async throws -> ReviewRequest? { nil }
     func reviewFeedback(for review: ReviewRequest, project: ProjectSpec, vouchedAt: Date?) async throws -> ReviewFeedback { ReviewFeedback() }
+    func postReviewNote(_ text: String, commit: String, on review: ReviewRequest, project: ProjectSpec) async throws -> Bool { false }
+    func replyToThread(_ thread: String, text: String, commit: String, on review: ReviewRequest, project: ProjectSpec) async throws -> ThreadReply { .noSuchThread }
     func attach(_ file: URL, to project: ProjectSpec) async throws -> URL? { nil }
     func pipeline(for project: ProjectSpec, commit: String) async throws -> PipelineStatus? { nil }
     func baselineJobs(for project: ProjectSpec, ref: String, names: [String]) async throws -> [String: CIJobBaseline] { [:] }

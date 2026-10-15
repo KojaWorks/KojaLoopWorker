@@ -55,7 +55,8 @@ public struct WorkerBrief: Sendable {
         ///   - redact: Applied to the outcome's text and to every note.
         public init(outcome: Outcome?, notes: [String], redact: (String) -> String = { $0 }) {
             switch outcome {
-            case .done(let title, let body, let guide)?: self.outcome = .done(title: redact(title), body: redact(body), guide: guide)
+            case .done(let title, let body, let guide, let replies)?:
+                self.outcome = .done(title: redact(title), body: redact(body), guide: guide, replies: replies.mapValues(redact))
             case .stuck(let blocker)?: self.outcome = .stuck(blocker: redact(blocker))
             case nil: self.outcome = nil
             }
@@ -162,7 +163,7 @@ public struct WorkerBrief: Sendable {
             switch p.outcome {
             case .stuck(let blocker)?:
                 out += "\nThe previous worker reported stuck:\n\n\(Self.fenced(blocker))"
-            case .done(let title, let body, _)?:
+            case .done(let title, let body, _, _)?:
                 out += "\nThe previous worker reported done, titled \"\(title)\":\n\n\(Self.fenced(body))"
             case nil:
                 break
@@ -187,7 +188,7 @@ public struct WorkerBrief: Sendable {
             2. Fix the failures on this branch with the smallest change. Commit as you go, in \
             atomic commits.
             """
-        let doneNote = ciFix == nil ? "" : " The review request already exists and the Manager keeps it as it is, so the title and body may describe the whole change."
+        let doneNote = ciFix == nil ? "" : " The review request already exists, so the Manager posts the body as a note on it: describe this round's fix."
 
         return """
             You are a LoopWorker worker: an unattended Claude Code session that implements \

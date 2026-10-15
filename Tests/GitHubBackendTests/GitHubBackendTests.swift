@@ -390,4 +390,67 @@ private func graphQLBody(_ req: URLRequest) -> [String: Any] {
         let f = try forge(StubGitHub { _, _ in (500, [:], "") }, "[forge.github]\napi_base = \"https://ghe.example.com/api/v3\"")
         #expect(f.graphQLURL.absoluteString == "https://ghe.example.com/api/graphql")
     }
+
+    @Test("B208: the round note is a conversation comment, posted once per commit")
+    func roundNote() async throws {
+        let marker = "<!-- loopworker:round=c2 -->"
+        var mine = "[]"
+        let stub = StubGitHub { req, _ in
+            switch (req.httpMethod!, req.url!.path) {
+            case ("GET", "/user"): (200, [:], #"{"login": "octo"}"#)
+            case ("GET", "/repos/owner/app/pulls/7"): (200, [:], json(["body": "Did it.\n\n<!-- loopworker:round=c1 -->"]))
+            case ("GET", "/repos/owner/app/issues/7/comments"): (200, [:], mine)
+            case ("POST", "/repos/owner/app/issues/7/comments"): (201, [:], "{}")
+            default: (404, [:], #"{"message": "Not Found"}"#)
+            }
+        }
+        let f = try forge(stub)
+        #expect(try await !f.postReviewNote("again", commit: "c1", on: Self.review, project: project))
+        #expect(try await f.postReviewNote("Pushed.", commit: "c2", on: Self.review, project: project))
+        let posts = stub.requests.filter { $0.httpMethod == "POST" }
+        #expect(posts.map { graphQLBody($0)["body"] as? String } == ["<!-- loopworker -->\n\(marker)\n\nPushed."])
+        mine = json([["body": "<!-- loopworker -->\n\(marker)\n\nPushed.", "user": ["login": "Octo"]]])
+        #expect(try await !f.postReviewNote("Pushed.", commit: "c2", on: Self.review, project: project))
+    }
+
+    @Test("B208: a review thread reply answers its first comment; a conversation comment gets a linked new comment; unknown ids are reported")
+    func threadReply() async throws {
+        let stub = StubGitHub { req, _ in
+            switch (req.httpMethod!, req.url!.path) {
+            case ("GET", "/user"): return (200, [:], #"{"login": "octo"}"#)
+            case ("GET", "/repos/owner/app/issues/7/comments"): return (200, [:], "[]")
+            case ("POST", "/graphql"):
+                let id = (graphQLBody(req)["variables"] as? [String: Any])?["id"] as? String
+                switch id {
+                case "PRRT_1":
+                    return (200, [:], json(["data": ["node": [
+                        "__typename": "PullRequestReviewThread", "repository": ["nameWithOwner": "Owner/App"], "pullRequest": ["number": 7],
+                        "first": ["nodes": [["databaseId": 111]]], "comments": ["nodes": [["author": ["login": "alice"], "body": "Rename."]]],
+                    ]]]))
+                case "IC_1":
+                    return (200, [:], json(["data": ["node": [
+                        "__typename": "IssueComment", "repository": ["nameWithOwner": "owner/app"], "pullRequest": ["number": 7],
+                        "url": "https://github.com/owner/app/pull/7#issuecomment-5", "author": ["login": "bob"],
+                    ]]]))
+                case "PRRT_other":
+                    return (200, [:], json(["data": ["node": [
+                        "__typename": "PullRequestReviewThread", "repository": ["nameWithOwner": "owner/app"], "pullRequest": ["number": 8],
+                    ]]]))
+                default:
+                    return (200, [:], json(["data": ["node": NSNull()], "errors": [["type": "NOT_FOUND", "message": "Could not resolve"]]]))
+                }
+            default: return (201, [:], "{}")
+            }
+        }
+        let f = try forge(stub)
+        #expect(try await f.replyToThread("PRRT_1", text: "Renamed.", commit: "c2", on: Self.review, project: project) == .posted)
+        #expect(try await f.replyToThread("IC_1", text: "Added.", commit: "c2", on: Self.review, project: project) == .posted)
+        #expect(try await f.replyToThread("garbage", text: "x", commit: "c2", on: Self.review, project: project) == .noSuchThread)
+        #expect(try await f.replyToThread("PRRT_other", text: "x", commit: "c2", on: Self.review, project: project) == .noSuchThread)
+        let posts = stub.requests.filter { $0.httpMethod == "POST" && $0.url?.path != "/graphql" }
+        #expect(posts.map { $0.url!.path } == ["/repos/owner/app/pulls/7/comments/111/replies", "/repos/owner/app/issues/7/comments"])
+        #expect(graphQLBody(posts[0])["body"] as? String == "<!-- loopworker -->\n<!-- loopworker:reply=c2 thread=PRRT_1 -->\n\nRenamed.")
+        #expect(graphQLBody(posts[1])["body"] as? String
+                == "<!-- loopworker -->\n<!-- loopworker:reply=c2 thread=IC_1 -->\n\nIn reply to [@bob's comment](https://github.com/owner/app/pull/7#issuecomment-5):\n\nAdded.")
+    }
 }
