@@ -31,6 +31,7 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(try String(contentsOf: dir.appending(path: "card.md"), encoding: .utf8) == "# Fix it\n")
         #expect(try String(contentsOf: dir.appending(path: "brief.md"), encoding: .utf8).contains("g/app#12 in g/app"))
         #expect(try String(contentsOf: dir.appending(path: "mcp.json"), encoding: .utf8) == #"{"mcpServers":{}}"#)
+        #expect(try String(contentsOf: dir.appending(path: "settings.json"), encoding: .utf8).contains("Write(~/.claude/**)"))
 
         let env = dir.appending(path: "worker.env")
         #expect(try fileMode(env) == 0o600)
@@ -343,7 +344,7 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(!saw.contains("glpat-fabricated"))
         #expect(!saw.contains("sk-ant-parent"))
         #expect(!saw.contains("USER="))
-        #expect(saw.contains("ARG:--add-dir\nARG:\(state.path)\nARG:--strict-mcp-config\nARG:--mcp-config\nARG:\(state.path)/mcp.json\nARG:--model\nARG:opus\nARG:the brief"))
+        #expect(saw.contains("ARG:--add-dir\nARG:\(state.path)\nARG:--strict-mcp-config\nARG:--mcp-config\nARG:\(state.path)/mcp.json\nARG:--settings\nARG:\(state.path)/settings.json\nARG:--model\nARG:opus\nARG:the brief"))
     }
 }
 

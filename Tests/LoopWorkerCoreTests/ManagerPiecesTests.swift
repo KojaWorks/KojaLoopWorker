@@ -270,7 +270,7 @@ func temporaryDirectory() throws -> URL {
         #expect(r == .failed("Invalid API key"))
         let spec = runner.specs.get[0]
         #expect(spec.executable == "claude")
-        #expect(spec.arguments == ["-p", "ok", "--model", "haiku"])
+        #expect(spec.arguments == ["-p", "ok", "--model", "haiku", "--safe-mode", "--no-session-persistence"])
         #expect(spec.environment["USER"] == .some(nil))
         #expect(spec.environment["CLAUDE_CODE_OAUTH_TOKEN"] == "fabricated")
         #expect(spec.timeout == .seconds(120))
@@ -371,6 +371,26 @@ func temporaryDirectory() throws -> URL {
         #expect(s.contains("LOOPWORKER=1"))
         #expect(!WorkerLaunch.script(worktree: URL(filePath: "/w"), stateDir: URL(filePath: "/s"), port: 1, model: nil)
             .contains("--model"))
+    }
+
+    @Test func scriptAddsTheSettingsFile() {  // B243
+        let s = WorkerLaunch.script(worktree: URL(filePath: "/w"), stateDir: URL(filePath: "/s/0"), port: 1, model: nil)
+        #expect(s.contains("--strict-mcp-config --mcp-config '/s/0/mcp.json' --settings '/s/0/settings.json'"))
+    }
+
+    @Test func settingsDenyWritesUnderClaudeAndTheResolvedMemoryDirectory() throws {  // B243
+        let root = FileManager.default.temporaryDirectory.appending(path: "lw-settings-\(UUID().uuidString)").resolvingSymlinksInPath()
+        let synced = root.appending(path: "Synced/automemory")
+        try FileManager.default.createDirectory(at: synced, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appending(path: "home/.claude"), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: root.appending(path: "home/.claude/automemory"), withDestinationURL: synced)
+        let json = WorkerLaunch.settings(home: root.appending(path: "home"), userSettings: Data(#"{"autoMemoryDirectory": "~/.claude/automemory"}"#.utf8))
+        let object = try #require(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: [String: [String]]])
+        let deny = try #require(object["permissions"]?["deny"])
+        #expect(deny.contains("Edit(~/.claude/**)") && deny.contains("Write(~/.claude/**)"))
+        #expect(deny.contains("Edit(/\(root.path)/home/.claude/**)"))
+        #expect(deny.contains("Write(/\(synced.path)/**)"))
+        #expect(WorkerLaunch.settings(home: nil, userSettings: nil) == #"{"permissions":{"deny":["Edit(~/.claude/**)","Write(~/.claude/**)"]}}"#)
     }
 }
 

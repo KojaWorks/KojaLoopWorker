@@ -22,7 +22,7 @@ enum Attachments {
     /// Files that the Manager writes at the top of a slot state directory; `worker.env` holds
     /// the worker's secrets.
     static let slotFiles: Set<String> = [
-        "outcome.json", "card.json", "card.md", "brief.md", "ci.md", "launch.sh", "mcp.json", "worker.env", LastOutcome.fileName,
+        "outcome.json", "card.json", "card.md", "brief.md", "ci.md", "launch.sh", "mcp.json", "settings.json", "worker.env", LastOutcome.fileName,
     ]
 
     nonisolated(unsafe) private static let reference = #/\]\(attachment:([^)\s]+)/#

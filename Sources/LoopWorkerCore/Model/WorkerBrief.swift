@@ -263,6 +263,9 @@ public struct WorkerBrief: Sendable {
             file above, and the Manager handles the rest.
             - Follow the repository's own conventions (AGENTS.md, CLAUDE.md, CONTRIBUTING) for \
             code, comments, tests and commit messages.
+            - Don't write memories, and don't change Claude Code's settings or hooks: writes under \
+            `~/.claude` are denied. When you learned something that would help later work, put it \
+            in the outcome body under a "Learnings" heading.
 
             ## Steps
 

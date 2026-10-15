@@ -198,7 +198,7 @@ extension Manager {
         let dir = spec.stateDir
         do {
             try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-            for name in ["outcome.json", "card.md", "brief.md", "launch.sh", "mcp.json", "worker.env", "guide.html", "ci.md"] {
+            for name in ["outcome.json", "card.md", "brief.md", "launch.sh", "mcp.json", "settings.json", "worker.env", "guide.html", "ci.md"] {
                 try? fm.removeItem(at: dir.appending(path: name))
             }
             try CardRecord(ref: card.ref, project: spec.project.path, number: card.number, slot: spec.index,
@@ -456,6 +456,9 @@ extension Manager {
             if let report { try Data(report.utf8).write(to: ciFile) }
             try Data(brief.utf8).write(to: dir.appending(path: "brief.md"))
             try mcp.write(to: dir.appending(path: "mcp.json"))
+            let userHome = deps.environment["HOME"].map { URL(filePath: $0) }
+            let userSettings = userHome.flatMap { fm.contents(atPath: $0.appending(path: ".claude/settings.json").path) }
+            try Data(WorkerLaunch.settings(home: userHome, userSettings: userSettings).utf8).write(to: dir.appending(path: "settings.json"))
             let envFile = dir.appending(path: "worker.env")
             guard fm.createFile(atPath: envFile.path, contents: Data(WorkerLaunch.environmentFile(env).utf8),
                                 attributes: [.posixPermissions: 0o600]) else {

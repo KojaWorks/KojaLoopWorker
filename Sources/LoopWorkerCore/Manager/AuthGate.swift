@@ -105,7 +105,8 @@ public struct AuthGate: Sendable {
         return true
     }
 
-    /// Runs `claude -p ok --model haiku` with `USER` removed (the same claude-code 401
+    /// Runs `claude -p ok --model haiku --safe-mode --no-session-persistence` (no hooks, plugins,
+    /// MCP servers or session file: it only proves the token) with `USER` removed (the same claude-code 401
     /// workaround as the launch script) and `CLAUDE_CODE_OAUTH_TOKEN` passed from
     /// `environment` when present, under a `preflightTimeout` s timeout. Never throws.
     /// - Parameter isQuarantined: Reads the quarantine flag of the `claude` that `PATH` in
@@ -121,7 +122,7 @@ public struct AuthGate: Sendable {
     ) async -> Verdict {
         var env: [String: String?] = ["USER": nil]
         if let token = environment["CLAUDE_CODE_OAUTH_TOKEN"] { env["CLAUDE_CODE_OAUTH_TOKEN"] = token }
-        let spec = ProcessSpec("claude", ["-p", "ok", "--model", "haiku"], environment: env, timeout: .seconds(preflightTimeout))
+        let spec = ProcessSpec("claude", ["-p", "ok", "--model", "haiku", "--safe-mode", "--no-session-persistence"], environment: env, timeout: .seconds(preflightTimeout))
         do {
             let r = try await runner.run(spec)
             let last = r.output.split(whereSeparator: \.isNewline).last.map(String.init)

@@ -21,6 +21,11 @@ learned the hard way, and which the port must keep or fix, is listed in
   boundary yet: the worker runs as the Manager's user, so a worker that is deliberately
   turned against the host can read anything that user can, including `secrets.env`. Running
   workers under their own user or in an OS sandbox is planned hardening.
+- **The Worker keeps its host user's Claude Code setup.** Workers load the user's settings,
+  CLAUDE.md, plugins, skills, hooks and memories, because that tuned setup is what makes their
+  work good. They may not write under `~/.claude` or to the memory directory, so one bad card
+  can't change what every later session loads; a worker reports what it learned in its outcome.
+  The auth preflight is not an agent and runs in Claude Code's safe mode.
 - **A repo can't widen its own reach.** A project's `finish` (whether the Manager merges) and
   `worker_env` (which variables reach its workers) live only in the host config, never in the
   project contract, so neither a repo nor its worker can opt itself into a merge or into more
