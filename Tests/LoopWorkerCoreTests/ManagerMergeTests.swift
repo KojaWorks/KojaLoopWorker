@@ -41,6 +41,21 @@ import Testing
         #expect(h.log.contains("g/app#12: merged g/app!1 into main as merge-1; moved to review_merged", level: .info))
     }
 
+    @Test("B230: a watched card that another Manager claimed since is neither merged nor moved, and the watch is dropped")
+    func watchOfACardHeldElsewhereStops() async throws {
+        let h = try await finished("merge")
+        h.backlog.state { $0.cards["id-12"]?.holder = "rival.local:/srv/lw" }
+        await h.cycle()
+        #expect(h.forge.state.get.mergeCalls.isEmpty)
+        #expect(h.backlog.card(id: "id-12")?.state == .verifying)
+        #expect(!h.backlog.writes.contains { if case .markStuck = $0 { true } else { false } })
+        #expect(try record(h) == nil)
+        #expect(h.log.contains("stopped watching g/app#12: rival.local:/srv/lw claimed it", level: .warning))
+        h.clock.advance(121)
+        await h.cycle()
+        #expect(h.forge.state.get.mergeCalls.isEmpty)
+    }
+
     @Test("B214: finish = ready opens a ready review request and moves the card to review")
     func readyFinish() async throws {
         let h = try await finished("ready")

@@ -199,6 +199,12 @@ extension Manager {
             unwatch(id)
             return
         }
+        // A human sent it back and another Manager claimed and finished it between two polls.
+        if let other = heldElsewhere(fresh) {
+            log.warning("stopped watching \(r.card): \(other) claimed it since this Manager pushed \(r.sha.prefix(12)); never merging or moving it")
+            unwatch(id)
+            return
+        }
         guard ciWatches[id] != nil else { return }
         ciWatches[id]!.card = fresh
         let project = projects[ProjectSpec(path: r.project).key]

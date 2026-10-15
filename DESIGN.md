@@ -484,7 +484,8 @@ A Manager touches only the cards that it holds, or that nobody holds (claimed by
 without holder ids, or after a release):
 
 - The stranded-card sweep and startup adoption leave a card that another Manager holds alone.
-- The CI sweep resumes CI and merge watches only of `verifying` cards that it holds.
+- The CI sweep resumes CI and merge watches only of `verifying` cards that it holds, and a
+  poll that finds its card held by another Manager drops the watch without merging.
 - A worker whose card another Manager's newer claim took over is abandoned.
 - GitLab's claim is not compare-and-set, so two claims can both succeed. After claiming, the
   Manager re-reads the card and doesn't start a worker when it is no longer `working` or a
