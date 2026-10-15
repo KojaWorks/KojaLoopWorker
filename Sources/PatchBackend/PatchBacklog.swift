@@ -121,7 +121,7 @@ public actor PatchBacklog: Backlog {
                        kind: "note", fields: fields)
     }
 
-    public func markVerifying(_ card: Card, review: ReviewRequest) async throws {
+    public func markVerifying(_ card: Card, review: ReviewRequest, plan: VerifyingPlan) async throws {
         var fields: [String: JSON] = ["status": .string(config.status.verifying)]
         if let field = config.reviewLinkField { fields[field] = .string(review.url.absoluteString) }
         try await move(card, note: "Review request: [\(review.display)](\(review.url.absoluteString))\n\nWaiting for CI before review.",
@@ -129,6 +129,10 @@ public actor PatchBacklog: Backlog {
     }
 
     /// One PATCH filtered on the verifying status, so a card that a human moved stays put.
+    public func markMerged(_ card: Card, review: ReviewRequest, note: String?) async throws {
+        throw BackendRejection("markMerged \(card.ref.display): not implemented yet")
+    }
+
     public func resumeFix(_ card: Card) async throws -> Bool {
         let changed = try await client.patch(config.roadmapTable, [
             URLQueryItem(name: "id", value: "eq.\(card.ref.id)"),

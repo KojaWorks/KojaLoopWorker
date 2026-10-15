@@ -28,6 +28,9 @@ public struct HostConfig: Sendable {
     public var projects: [ProjectSpec]
     /// The full file, for backends to decode their own sections.
     public var toml: String
+    /// Settings that still work but should change, e.g. a deprecated key. The Manager logs
+    /// each at load; doctor shows each as a warning.
+    public var warnings: [String] = []
 
     public struct EngineConfig: Sendable, Equatable {
         /// Try to restart the container engine when a lifecycle script's output says it is down.
@@ -73,13 +76,30 @@ public struct HostConfig: Sendable {
 
         var projects: [ProjectSpec] = []
         var keys: [String: String] = [:]
+        var warnings: [String] = []
         for p in raw.project ?? [] {
             guard !p.path.isEmpty else { throw ConfigError("config.toml: a [[project]] has an empty path") }
+            let finish: FinishMode
+            switch (p.finish, p.draft) {
+            case (let name?, nil):
+                guard let mode = FinishMode(rawValue: name) else {
+                    let modes = FinishMode.allCases.map { "\"\($0.rawValue)\"" }.joined(separator: ", ")
+                    throw ConfigError("config.toml: \(p.path): finish must be one of \(modes), got \"\(name)\"")
+                }
+                finish = mode
+            case (nil, let draft?):
+                finish = draft ? .draft : .ready
+                warnings.append("config.toml: \(p.path): draft is deprecated; replace it with finish = \"\(finish.rawValue)\"")
+            case (nil, nil):
+                finish = .draft
+            case (_?, _?):
+                throw ConfigError("config.toml: \(p.path): set finish only; draft is its deprecated alias")
+            }
             let spec = ProjectSpec(
                 path: p.path, slots: p.slots ?? 1, hot: p.hot ?? false,
                 weight: (p.weight ?? 1) > 0 ? p.weight ?? 1 : 1,
                 model: p.model, contract: p.contract.map(expandTilde),
-                baseBranch: p.base_branch, draftReviewRequests: p.draft ?? true,
+                baseBranch: p.base_branch, finish: finish,
                 workerEnv: p.worker_env ?? [])
             guard spec.slots >= 0 else { throw ConfigError("config.toml: \(p.path): slots must be >= 0") }
             if let other = keys[spec.key] {
@@ -110,7 +130,8 @@ public struct HostConfig: Sendable {
             backlogKind: backlog,
             forgeKind: raw.forge?.kind ?? backlog,
             projects: projects,
-            toml: text)
+            toml: text,
+            warnings: warnings)
     }
 
     // Field names mirror the TOML keys.
@@ -141,6 +162,7 @@ public struct HostConfig: Sendable {
         var model: String?
         var contract: String?
         var base_branch: String?
+        var finish: String?
         var draft: Bool?
         var worker_env: [String]?
     }

@@ -58,6 +58,10 @@ public struct GitLabForge: Forge {
         return try review(created, draft.project)
     }
 
+    public func merge(_ review: ReviewRequest, project: ProjectSpec, head: String) async throws -> MergeResult {
+        throw BackendRejection("merging \(review.display): not implemented yet")
+    }
+
     public func attach(_ file: URL, to project: ProjectSpec) async throws -> URL? {
         let upload = try await client.upload(projectPath(project) + "/uploads", file: file)
         let relative = upload.fullPath ?? "/\(project.path)\(upload.url)"

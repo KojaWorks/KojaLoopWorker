@@ -482,7 +482,7 @@ private let releaseText = "LoopWorker released this card:\n\nrestart"
         let page = fake.addPage(1, state: "working")
         fake.addClaim(page)
         let backlog = try make(fake)
-        try await backlog.markVerifying(card(page), review: review)
+        try await backlog.markVerifying(card(page), review: review, plan: .ciThenReview)
         #expect(fake.state(page) == "ci")
         #expect(try await backlog.resumeFix(card(page)) == true)
         #expect(fake.state(page) == "working")
@@ -505,7 +505,7 @@ private let releaseText = "LoopWorker released this card:\n\nrestart"
         fake.addClaim(page)
         fake.queued["POST /v1/comments"] = [(500, [:], .object(["message": "down"]))]
         let backlog = try make(fake)
-        await #expect(throws: NotionError.self) { try await backlog.markVerifying(card(page), review: review) }
+        await #expect(throws: NotionError.self) { try await backlog.markVerifying(card(page), review: review, plan: .ciThenReview) }
         #expect(try await backlog.verifying(in: [app]).map(\.ref.id) == [page])
     }
 

@@ -19,7 +19,24 @@ import Testing
         #expect(c.maxAttempts == 3)
         #expect(c.clonesDir.path == "/tmp/lw-home/clones")
         #expect(c.projects.map(\.key) == ["group--my-app"])
-        #expect(c.projects[0].draftReviewRequests)
+        #expect(c.projects[0].finish == .draft)
+    }
+
+    @Test("B202: finish decodes, draft is its deprecated alias, and conflicts or unknown modes fail")
+    func finishModes() throws {
+        func parse(_ keys: String) throws -> HostConfig {
+            try HostConfig.parse("[backlog]\nkind = \"gitlab\"\n[[project]]\npath = \"a/b\"\n\(keys)\n", home: home)
+        }
+        #expect(try parse("finish = \"ci_then_merge\"").projects[0].finish == .ciThenMerge)
+        #expect(try parse("finish = \"merge\"").warnings.isEmpty)
+        let ready = try parse("draft = false")
+        #expect(ready.projects[0].finish == .ready)
+        #expect(ready.warnings == [#"config.toml: a/b: draft is deprecated; replace it with finish = "ready""#])
+        #expect(try parse("draft = true").projects[0].finish == .draft)
+        let unknown = try #require(throws: ConfigError.self) { try parse("finish = \"auto\"") }
+        #expect("\(unknown)".contains(#"finish must be one of "draft", "ready", "merge", "ci_then_merge", got "auto""#))
+        let both = try #require(throws: ConfigError.self) { try parse("finish = \"ready\"\ndraft = false") }
+        #expect("\(both)".contains("set finish only"))
     }
 
     @Test func backlogKindIsRequired() {

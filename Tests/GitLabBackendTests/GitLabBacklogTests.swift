@@ -396,7 +396,7 @@ import Testing
     @Test("B172: markVerifying links the review request and swaps working for ci; only from working")
     func markVerifying() async throws {
         let w = world("loopworker::working")
-        try await w.backlog().markVerifying(card, review: review)
+        try await w.backlog().markVerifying(card, review: review, plan: .ciThenReview)
         let note = try #require(w.gitlab.requests("POST", Fixture.issuePath + "/notes").first)
         #expect(note.json["body"] as? String == "<!-- loopworker -->\n\nReview request: \(review.url.absoluteString)\n\nWaiting for CI before review.")
         let put = try #require(w.gitlab.requests("PUT", Fixture.issuePath).first)
@@ -404,7 +404,7 @@ import Testing
         #expect(put.json["remove_labels"] as? String == "loopworker::next,loopworker::working,loopworker::review,loopworker::stuck")
 
         let v = world("loopworker::ci")
-        let e = await #expect(throws: GitLabError.self) { try await v.backlog().markVerifying(card, review: review) }
+        let e = await #expect(throws: GitLabError.self) { try await v.backlog().markVerifying(card, review: review, plan: .ciThenReview) }
         #expect(e?.description == "markVerifying mygroup/app#12: expected working, found verifying")
         #expect(v.gitlab.requests.filter { $0.method != "GET" }.isEmpty)
     }

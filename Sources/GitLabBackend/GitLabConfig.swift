@@ -45,6 +45,7 @@ struct GitLabBacklogSettings: Sendable, Equatable {
         case .ready: labelPrefix + "next"
         case .working: labelPrefix + "working"
         case .review: labelPrefix + "review"
+        case .reviewMerged: labelPrefix + "merged"
         case .stuck: labelPrefix + "stuck"
         case .verifying: labelPrefix + "ci"
         case .other: nil

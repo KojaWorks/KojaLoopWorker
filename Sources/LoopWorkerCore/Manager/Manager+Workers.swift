@@ -628,7 +628,7 @@ extension Manager {
         let cardLine = card.url.map { "Card: [\(card.ref.display)](\($0.absoluteString))" } ?? "Card: \(card.ref.display)"
         let draft = ReviewRequestDraft(
             project: spec.project, card: card, sourceBranch: branch, targetBranch: base, title: title,
-            body: "\(text)\n\n---\n\(cardLine)\(guideLine)\n", draft: spec.project.draftReviewRequests, assignToOwner: true)
+            body: "\(text)\n\n---\n\(cardLine)\(guideLine)\n", draft: spec.project.finish.opensDraft, assignToOwner: true)
         let review = try await step("opening the review request") { try await self.deps.forge.openReviewRequest(draft) }
         guard waitForCI else {
             try await step("moving \(card.ref) to review") { try await self.deps.backlog.markReview(card, review: review) }
@@ -640,7 +640,7 @@ extension Manager {
                                    sha: commit, review: review, round: ciRound ?? 0, pushedAt: clock.now())
         do { try record.write(stateDir: stateDir) }
         catch { throw StepError(step: "writing the CI watch record", error: error) }
-        try await step("moving \(card.ref) to verifying") { try await self.deps.backlog.markVerifying(card, review: review) }
+        try await step("moving \(card.ref) to verifying") { try await self.deps.backlog.markVerifying(card, review: review, plan: .ciThenReview) }
         var verifying = card
         verifying.state = .verifying
         watch(record, card: verifying, lastPoll: clock.now())

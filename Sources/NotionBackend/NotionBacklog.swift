@@ -160,10 +160,14 @@ public actor NotionBacklog: Backlog {
         try await post(card.ref.id, .review, segments)
     }
 
-    public func markVerifying(_ card: Card, review: ReviewRequest) async throws {
+    public func markVerifying(_ card: Card, review: ReviewRequest, plan: VerifyingPlan) async throws {
         try await require(card, ["working"], for: "markVerifying")
         try await setState(card.ref.id, "ci")
         try await post(card.ref.id, .ci, [("\(review.display): ", nil), (review.url.absoluteString, review.url)])
+    }
+
+    public func markMerged(_ card: Card, review: ReviewRequest, note: String?) async throws {
+        throw BackendRejection("markMerged \(card.ref.display): not implemented yet")
     }
 
     public func resumeFix(_ card: Card) async throws -> Bool {

@@ -104,3 +104,22 @@ public enum CIJobBaseline: Sendable, Equatable {
     /// The base branch has no passed or failed job of that name, or it couldn't be read.
     case unknown
 }
+
+/// What `Forge.merge` did, or why the forge refused. Each refusal names the forge's own
+/// reason (GitLab's `detailed_merge_status`, GitHub's `mergeable_state`) for the log and the
+/// card's blocker.
+public enum MergeResult: Sendable, Equatable {
+    /// The review request is merged, by this call or earlier. The merge commit when the forge
+    /// reports one.
+    case merged(commit: String?)
+    /// The forge can't decide yet: it is still computing mergeability, or a pipeline that the
+    /// project requires still runs. Trying again later may merge.
+    case pending(String)
+    /// The target branch moved: the change conflicts with it, or the forge requires the source
+    /// branch to be rebased onto it first. A rebase round may fix it.
+    case outdated(String)
+    /// A rule refuses the merge, and a rebase won't change that: missing approvals, branch
+    /// protection, a draft, unresolved threads, a required pipeline that failed, a head that
+    /// moved past `head`, or a closed review request.
+    case blocked(String)
+}

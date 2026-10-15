@@ -225,10 +225,14 @@ public actor GitLabBacklog: Backlog {
         try await move(read, to: .review)
     }
 
-    public func markVerifying(_ card: Card, review: ReviewRequest) async throws {
+    public func markVerifying(_ card: Card, review: ReviewRequest, plan: VerifyingPlan) async throws {
         let read = try await require(card, in: [.working], for: "markVerifying")
         try await postNote(read, "Review request: \(review.url.absoluteString)\n\nWaiting for CI before review.")
         try await move(read, to: .verifying)
+    }
+
+    public func markMerged(_ card: Card, review: ReviewRequest, note: String?) async throws {
+        throw BackendRejection("markMerged \(card.ref.display): not implemented yet")
     }
 
     public func resumeFix(_ card: Card) async throws -> Bool {

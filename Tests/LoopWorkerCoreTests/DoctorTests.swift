@@ -10,6 +10,7 @@ private final class DiagnosableForge: Forge, Diagnosable, @unchecked Sendable {
     func defaultBranch(for project: ProjectSpec) async throws -> String { "main" }
     func openReviewRequest(_ draft: ReviewRequestDraft) async throws -> ReviewRequest { fatalError("unused") }
     func attach(_ file: URL, to project: ProjectSpec) async throws -> URL? { nil }
+    func merge(_ review: ReviewRequest, project: ProjectSpec, head: String) async throws -> MergeResult { .merged(commit: nil) }
     func pipeline(for project: ProjectSpec, commit: String) async throws -> PipelineStatus? { nil }
     func baselineJobs(for project: ProjectSpec, ref: String, names: [String]) async throws -> [String: CIJobBaseline] { [:] }
     func retryJobs(project: ProjectSpec, jobs: [CIJob]) async throws -> Bool { false }

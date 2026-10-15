@@ -230,6 +230,10 @@ public struct GitHubForge: Forge {
     }
 
     /// Always nil: GitHub's API has no way to attach a file to a pull request.
+    public func merge(_ review: ReviewRequest, project: ProjectSpec, head: String) async throws -> MergeResult {
+        throw BackendRejection("merging \(review.display): not implemented yet")
+    }
+
     public func attach(_ file: URL, to project: ProjectSpec) async throws -> URL? { nil }
 
     // MARK: HTTP

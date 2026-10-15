@@ -455,7 +455,7 @@ private func make(_ fake: FakePatch, _ patchKeys: String = "", log: LogRecorder 
         let backlog = try make(fake, "review_link_field = \"solved_in_pr\"")
         let c = try #require(try await backlog.card(CardRef(id: "u1", display: "~1")))
         let pr = ReviewRequest(url: URL(string: "https://github.com/owner/app/pull/7")!, display: "owner/app#7")
-        try await backlog.markVerifying(c, review: pr)
+        try await backlog.markVerifying(c, review: pr, plan: .ciThenReview)
         #expect(fake.rows["roadmap"]![0]["status"] == .string("Verifying"))
         #expect(fake.rows["roadmap"]![0]["solved_in_pr"] == .string("https://github.com/owner/app/pull/7"))
         #expect(fake.rows["patch_blocks"]!.first?["content"]?["text"]

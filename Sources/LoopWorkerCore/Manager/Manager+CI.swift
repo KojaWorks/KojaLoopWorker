@@ -517,7 +517,7 @@ extension Manager {
     func returnToVerifying(_ card: Card, _ fix: FixRound, why: String) async {
         do { try fix.record.write(stateDir: stateDir) }
         catch { log.error("\(card.ref): can't rewrite its CI watch record: \(error)") }
-        do { try await deps.backlog.markVerifying(card, review: fix.record.review) }
+        do { try await deps.backlog.markVerifying(card, review: fix.record.review, plan: .ciThenReview) }
         catch {
             log.error("\(card.ref): can't move it back to verifying after its fix round failed to start: \(error); the stranded-card sweep releases it")
         }
