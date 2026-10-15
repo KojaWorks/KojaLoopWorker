@@ -91,6 +91,7 @@ public struct Doctor: Sendable {
                 ? DoctorCheck("config", .warn, "no projects", remedy: "add a [[project]] to \(home.appending(path: "config.toml").path)")
                 : DoctorCheck("config", .ok, "projects: \(c.projects.map(\.path).joined(separator: ", "))"))
             checks += c.warnings.map { DoctorCheck("config", .warn, $0, remedy: "edit \(home.appending(path: "config.toml").path)") }
+            if let upload = Self.uploadCheck(c.uploadCommand) { checks.append(upload) }
         } catch {
             config = nil
             checks.append(DoctorCheck("config", .fail, "\(error)", remedy: "create or fix \(home.appending(path: "config.toml").path); README.md \"Configuration\" shows a complete one"))
@@ -130,6 +131,19 @@ public struct Doctor: Sendable {
     }
 
     /// True when no check failed: doctor's exit status.
+    /// B245: the command's first word must be an executable at an absolute path, because a
+    /// launchd service's PATH is minimal. Nil when no `upload_command` is set.
+    static func uploadCheck(_ command: String) -> DoctorCheck? {
+        guard let program = command.split(separator: " ").first.map(String.init) else { return nil }
+        guard program.hasPrefix("/") else {
+            return DoctorCheck("upload_command", .warn, "\(program) is not an absolute path", remedy: "name it by its absolute path; a launchd service has a minimal PATH")
+        }
+        guard FileManager.default.isExecutableFile(atPath: program) else {
+            return DoctorCheck("upload_command", .fail, "\(program) is missing or not executable", remedy: "fix upload_command in config.toml, or remove it")
+        }
+        return DoctorCheck("upload_command", .ok, "\(program); anyone with a link that it prints can read the file")
+    }
+
     public static func passed(_ checks: [DoctorCheck]) -> Bool {
         !checks.contains { $0.level == .fail }
     }

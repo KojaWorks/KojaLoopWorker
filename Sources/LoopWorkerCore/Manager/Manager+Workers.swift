@@ -838,8 +838,12 @@ extension Manager {
         let pushed = PushRecord(branch: branch, commit: commit)
         // A refusal after the push still records it, or the next claim would call the branch foreign.
         do {
-            let forge = deps.forge, project = spec.project
-            let attach: @Sendable (URL) async throws -> URL? = { try await forge.attach($0, to: project) }
+            let forge = deps.forge, project = spec.project, cardName = card.number ?? card.ref.display
+            let uploader = config.uploadCommand.isEmpty ? nil : UploadCommand(command: config.uploadCommand, runner: deps.runner)
+            let attach: @Sendable (URL) async throws -> URL? = { file in
+                if let url = try await forge.attach(file, to: project) { return url }
+                return try await uploader?.upload(file, name: UploadCommand.name(project: project.path, card: cardName, file: file))
+            }
             var (text, refused) = try await step("attaching the files that the outcome references") {
                 try await Attachments.resolve(body, in: spec.stateDir, attach: attach)
             }

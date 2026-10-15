@@ -279,8 +279,10 @@ lost access to it, so a revoked connection never reaps running workers.
      not be one of the files that the Manager writes there (such as `worker.env`), be a
      regular non-empty file under 20 MB, not have a credential-like name, and not contain a
      credential shape or a PEM private key. The Manager uploads it with `forge.attach` and puts
-     the URL in place of the reference. A refused file, or any file on a forge without
-     attachments, keeps its reference, is logged, and gets a line under the body that says
+     the URL in place of the reference. On a forge without attachments (GitHub) it runs the
+     host's `upload_command` instead, if one is set, with a name that can't be guessed from the
+     card; anyone with the URL that it prints can read the file. A refused file, or any file
+     that neither can publish, keeps its reference, is logged, and gets a line under the body that says
      "LoopWorker didn't attach <path>: <reason>". The worker stays credential-free.
    - `stuck`: push the branch if it has commits, so the human can see the work in progress,
      then `markStuck` with the blocker and the branch name.

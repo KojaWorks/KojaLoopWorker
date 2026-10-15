@@ -62,10 +62,14 @@ enum Attachments {
         case .failure(let r): return .failure(r)
         }
         do {
-            guard let url = try await attach(file) else { return .failure(Refusal(path: path, reason: "this forge has no attachments")) }
+            guard let url = try await attach(file) else {
+                return .failure(Refusal(path: path, reason: "this forge has no attachments, and no upload_command is set"))
+            }
             return .success(url)
         } catch let rejection as BackendRejection {
             return .failure(Refusal(path: path, reason: "the forge refused it: \(rejection)"))
+        } catch let failure as UploadCommand.Failure {
+            return .failure(Refusal(path: path, reason: "upload_command failed: \(failure.detail)"))
         }
     }
 
@@ -110,5 +114,49 @@ enum Attachments {
         guard let name = components.last?.lowercased() else { return false }
         return name.hasPrefix(".env") || name.hasSuffix(".env") || name.hasPrefix("id_rsa") || name.hasPrefix("id_ed25519")
             || [".pem", ".key", ".p12"].contains { name.hasSuffix($0) }
+    }
+}
+
+/// The host's `upload_command`, which publishes an attachment for a forge that has no
+/// attachments (B245). It runs under `sh -c` with the file in `LOOPWORKER_UPLOAD_PATH` and a
+/// name in `LOOPWORKER_UPLOAD_NAME`, both passed as variables so that a worker-chosen file name
+/// can't become shell syntax, and without the Manager's secrets. Its last output line must be
+/// an https URL. Anyone who has that URL can read the file.
+public struct UploadCommand: Sendable {
+    public struct Failure: Error, CustomStringConvertible {
+        public var detail: String
+        public var description: String { detail }
+    }
+
+    static let timeout: Duration = .seconds(120)
+
+    var command: String
+    var runner: any ProcessRunning
+
+    /// A name that is unique per card and file and can't be guessed from the card:
+    /// `<project>-<card>-<12 random hex>-<file name>`, in `[A-Za-z0-9._-]`.
+    static func name(project: String, card: String, file: URL) -> String {
+        let random = UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12).lowercased()
+        let clean = { (s: String) in String(s.map { $0.isASCII && ($0.isLetter || $0.isNumber || ".-_".contains($0)) ? $0 : "-" }) }
+        return "\(clean(project))-\(clean(card))-\(random)-\(clean(file.lastPathComponent))"
+    }
+
+    /// Runs the command for `file` and returns the URL it printed.
+    /// - Throws: `Failure` naming the exit, the timeout or the missing URL, with the output's tail.
+    func upload(_ file: URL, name: String) async throws -> URL {
+        let spec = ProcessSpec("sh", ["-c", command], environment: ["LOOPWORKER_UPLOAD_PATH": file.path, "LOOPWORKER_UPLOAD_NAME": name],
+                               timeout: Self.timeout)
+        let result: ProcessResult
+        do { result = try await runner.run(spec) }
+        catch { throw Failure(detail: "can't start it: \(error)") }
+        let lines = result.output.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        let tail = lines.suffix(3).joined(separator: " / ")
+        guard result.succeeded else {
+            throw Failure(detail: result.timedOut ? "timed out after 120 s: \(tail)" : "exited \(result.status): \(tail)")
+        }
+        guard let last = lines.last, last.hasPrefix("https://"), let url = URL(string: last), url.host != nil else {
+            throw Failure(detail: "printed no https URL on its last line: \(tail)")
+        }
+        return url
     }
 }

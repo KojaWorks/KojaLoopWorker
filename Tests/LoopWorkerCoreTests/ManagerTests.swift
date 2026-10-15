@@ -420,7 +420,26 @@ func fileMode(_ url: URL) throws -> Int {
         try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"![after](attachment:after.png)","guide":"guide.html"}"#)
         h.tmux.set("lw_g--app_0", alive: false)
         await h.cycle()
-        #expect(h.forge.state.get.opened.first?.body == "![after](attachment:after.png)\n\nLoopWorker didn't attach after.png: this forge has no attachments\n\nLoopWorker didn't attach guide.html: this forge has no attachments\n\n---\nCard: [g/app#12](https://forge.example/g/app/-/issues/12)\n")
+        #expect(h.forge.state.get.opened.first?.body == "![after](attachment:after.png)\n\nLoopWorker didn't attach after.png: this forge has no attachments, and no upload_command is set\n\nLoopWorker didn't attach guide.html: this forge has no attachments, and no upload_command is set\n\n---\nCard: [g/app#12](https://forge.example/g/app/-/issues/12)\n")
+    }
+
+    @Test("B245: a forge without attachments publishes through upload_command")
+    func uploadCommandStandsInForAttachments() async throws {
+        let h = try await spawned(top: #"upload_command = "/opt/up \"$LOOPWORKER_UPLOAD_PATH\"""#)
+        h.forge.state { $0.supportsAttachments = false }
+        h.runner.handler { $0 = { spec in
+            guard spec.executable == "sh", let name = spec.environment["LOOPWORKER_UPLOAD_NAME"] ?? nil else { return ProcessResult(status: 0, output: "") }
+            return ProcessResult(status: 0, output: "uploading\nhttps://files.example/t/\(name)\n")
+        } }
+        try "<html/>".write(to: h.stateDir().appending(path: "guide.html"), atomically: true, encoding: .utf8)
+        try "png".write(to: h.stateDir().appending(path: "after.png"), atomically: true, encoding: .utf8)
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"![after](attachment:after.png)","guide":"guide.html"}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        let body = try #require(h.forge.state.get.opened.first?.body)
+        #expect(body.contains(#/!\[after\]\(https://files\.example/t/g-app-12-[0-9a-f]{12}-after\.png\)/#))
+        #expect(body.contains(#/Review guide: \[guide\.html\]\(https://files\.example/t/g-app-12-[0-9a-f]{12}-guide\.html\)/#))
+        #expect(!body.contains("didn't attach"))
     }
 
     @Test func outcomeWaitsForTheGraceWhileTheSessionLives() async throws {  // B56

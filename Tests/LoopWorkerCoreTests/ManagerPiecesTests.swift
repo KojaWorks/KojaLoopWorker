@@ -561,9 +561,52 @@ func temporaryDirectory() throws -> URL {
         let body = "![a](attachment:a.png)"
         let none = try await Attachments.resolve(body, in: root) { _ in nil }
         #expect(none.body == body)
-        #expect(none.refused == [Attachments.Refusal(path: "a.png", reason: "this forge has no attachments")])
+        #expect(none.refused == [Attachments.Refusal(path: "a.png", reason: "this forge has no attachments, and no upload_command is set")])
         let rejected = try await Attachments.resolve(body, in: root) { _ in throw BackendRejection("413 too large") }
         #expect(rejected.refused == [Attachments.Refusal(path: "a.png", reason: "the forge refused it: 413 too large")])
         await #expect(throws: FakeError("timeout")) { _ = try await Attachments.resolve(body, in: root) { _ in throw FakeError("timeout") } }
+    }
+}
+
+@Suite struct UploadCommandTests {
+    private func file(_ name: String) throws -> URL {
+        let dir = FileManager.default.temporaryDirectory.appending(path: "lw-upload-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let f = dir.appending(path: name)
+        try Data("guide".utf8).write(to: f)
+        return f
+    }
+
+    @Test func B245_theFileAndNameArriveAsVariablesNeverAsShell() async throws {
+        let f = try file("guide$(touch pwned).html")
+        let upload = UploadCommand(command: #"printf 'log line\nhttps://files.example/t/%s\n' "$LOOPWORKER_UPLOAD_NAME"; test -f "$LOOPWORKER_UPLOAD_PATH""#, runner: ProcessRunner())
+        let url = try await upload.upload(f, name: "n1")
+        #expect(url.absoluteString == "https://files.example/t/n1")
+        #expect(!FileManager.default.fileExists(atPath: f.deletingLastPathComponent().appending(path: "pwned").path))
+    }
+
+    @Test func B245_aFailureOrAMissingURLIsARefusalWithTheOutput() async throws {
+        let f = try file("a.png")
+        let failing = UploadCommand(command: "echo nope >&2; exit 3", runner: ProcessRunner())
+        await #expect { try await failing.upload(f, name: "n") } throws: { ($0 as? UploadCommand.Failure)?.detail == "exited 3: nope" }
+        let plain = UploadCommand(command: "echo http://insecure.example/a.png", runner: ProcessRunner())
+        await #expect { try await plain.upload(f, name: "n") } throws: { ($0 as? UploadCommand.Failure)?.detail.hasPrefix("printed no https URL") == true }
+        let (_, refused) = try await Attachments.resolve("![a](attachment:a.png)", in: f.deletingLastPathComponent()) { try await failing.upload($0, name: "n") }
+        #expect(refused == [Attachments.Refusal(path: "a.png", reason: "upload_command failed: exited 3: nope")])
+    }
+
+    @Test func B245_namesAreCleanAndCantBeGuessed() {
+        let a = UploadCommand.name(project: "KojaWorks/KojaApp", card: "LW-12", file: URL(filePath: "/s/guide.html"))
+        let b = UploadCommand.name(project: "KojaWorks/KojaApp", card: "LW-12", file: URL(filePath: "/s/guide.html"))
+        #expect(a != b)
+        #expect(a.hasPrefix("KojaWorks-KojaApp-LW-12-") && a.hasSuffix("-guide.html"))
+        #expect(a.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || ".-_".contains($0)) })
+    }
+
+    @Test func B245_doctorWantsAnAbsoluteExecutable() {
+        #expect(Doctor.uploadCheck("") == nil)
+        #expect(Doctor.uploadCheck("upload \"$LOOPWORKER_UPLOAD_PATH\"")?.level == .warn)
+        #expect(Doctor.uploadCheck("/nonexistent/upload x")?.level == .fail)
+        #expect(Doctor.uploadCheck("/bin/sh -c x")?.level == .ok)
     }
 }

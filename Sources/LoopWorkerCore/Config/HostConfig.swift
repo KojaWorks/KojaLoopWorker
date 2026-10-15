@@ -22,6 +22,9 @@ public struct HostConfig: Sendable {
     public var portStep: Int
     /// Shell command that receives an alert on stdin; empty disables alerts.
     public var notifyCommand: String
+    /// Shell command that publishes an attachment when the forge has none; empty disables it.
+    /// It gets `LOOPWORKER_UPLOAD_PATH` and `LOOPWORKER_UPLOAD_NAME` and prints the URL last.
+    public var uploadCommand: String = ""
     public var engine: EngineConfig
     public var backlogKind: String
     public var forgeKind: String
@@ -123,6 +126,7 @@ public struct HostConfig: Sendable {
             basePort: raw.base_port ?? 54400,
             portStep: raw.port_step ?? 100,
             notifyCommand: raw.notify_command ?? "",
+            uploadCommand: raw.upload_command ?? "",
             engine: EngineConfig(
                 recover: raw.engine?.recover ?? true,
                 startCommand: raw.engine?.start_command ?? "orb start",
@@ -143,6 +147,7 @@ public struct HostConfig: Sendable {
         var base_port: Int?
         var port_step: Int?
         var notify_command: String?
+        var upload_command: String?
         var engine: RawEngine?
         var backlog: RawKind?
         var forge: RawKind?
