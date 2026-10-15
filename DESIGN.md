@@ -362,9 +362,11 @@ A failed `markMerged` backs off the same way, and the retry calls `merge` again,
 the merge that already landed.
 
 A rebase round is a fix round whose brief names the review request, the base branch and the
-forge's reason, and tells the worker to rebase the branch onto `origin/<base>`, resolve the
-conflicts, run `verify.sh` and commit. Its finish requires `origin/<base>` to be an ancestor of
-the branch head (otherwise the card is marked stuck), force-pushes under the lease, and returns
+forge's reason, and tells the worker to rebase the branch onto the commit that `origin/<base>`
+pointed at when the round started, resolve the conflicts, run `verify.sh` and commit. The
+Manager records that commit, because the project refresh can move `origin/<base>` during the
+round. Its finish requires that commit to be an ancestor of the branch head (otherwise the card
+is marked stuck), force-pushes under the lease, and returns
 the card to `verifying` with the next round and the same plan. The watch record counts rebase
 rounds apart from CI fix rounds: a watch gets one rebase round, and it doesn't use up
 `ci_fix_attempts`.
