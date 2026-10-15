@@ -50,6 +50,8 @@ enum ManagerComment: Equatable {
 
     static let claimPrefix = "LoopWorker claimed this card ("
     static let vouchedTitlePrefix = "Vouched title: "
+    /// Starts the line after the header of a comment that follows a push: `Pushed: <branch>@<commit>`.
+    static let pushedPrefix = "Pushed: "
 
     var header: String {
         switch self {
@@ -94,9 +96,18 @@ enum ManagerComment: Equatable {
         return body.hasPrefix(vouchedTitlePrefix) ? String(body.dropFirst(vouchedTitlePrefix.count)) : nil
     }
 
-    /// The text after the header line and the blank line that follows it.
+    /// The push that a Manager comment records on the line after its header; nil for any other
+    /// text. Only call it for comments that the integration wrote.
+    static func pushed(_ text: String) -> PushRecord? {
+        let lines = text.split(separator: "\n", maxSplits: 2, omittingEmptySubsequences: false)
+        guard kind(text) != nil, lines.count >= 2, lines[1].hasPrefix(pushedPrefix) else { return nil }
+        return PushRecord(line: lines[1].dropFirst(pushedPrefix.count))
+    }
+
+    /// The text after the header line, the pushed line if any, and the blank line that follows.
     static func body(_ text: String) -> String {
-        let rest = text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).dropFirst().first ?? ""
+        var rest = text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).dropFirst().first ?? ""
+        if pushed(text) != nil { rest = rest.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).dropFirst().first ?? "" }
         return String(rest.drop { $0 == "\n" })
     }
 }

@@ -319,6 +319,7 @@ let reviewURL = URL(string: "https://forge.example/g/app/-/merge_requests/1")!
         #expect(h.forge.state.get.opened.count == 1)
         #expect(h.forge.state.get.notes.map(\.text) == ["LoopWorker pushed `commit-2` to this branch.\n\nFixed the test."])  // B207
         #expect(h.backlog.card(id: "id-12")?.state == .verifying)
+        #expect(h.backlog.pushes("id-12").map(\.commit) == ["commit-1", "commit-2"])  // B235
         let r = try #require(try record(h))
         #expect(r.sha == "commit-2" && r.round == 1)
     }

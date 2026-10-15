@@ -29,6 +29,11 @@ public protocol Backlog: Sendable {
     /// Manager hands them to the card's next worker as background, never as card content.
     func managerNotes(_ card: Card) async throws -> [String]
 
+    /// The newest push that a `markReview`, `markVerifying` or `markStuck` recorded on the card;
+    /// nil when there is none. Only the Manager's own notes count, as for the holder, so text that
+    /// someone else writes can't make a branch look like LoopWorker's. A release doesn't clear it.
+    func lastPush(_ card: Card) async throws -> PushRecord?
+
     /// Moves a `ready` card to `working` and records `holder` (`Manager.holder`) on it, so
     /// later reads report it as `Card.holder`. Returns false when the card is no longer `ready`
     /// (someone else moved it); the Manager then skips it. A claim that isn't compare-and-set
@@ -41,13 +46,14 @@ public protocol Backlog: Sendable {
 
     /// Moves a `working` or `verifying` card to `review` and links the review request from
     /// the card, followed by `note` (markdown) when given, e.g. a link to the CI pipeline
-    /// that passed.
-    func markReview(_ card: Card, review: ReviewRequest, note: String?) async throws
+    /// that passed. `pushed` is the push that the Manager just made for the card, recorded with
+    /// the note for `lastPush`; nil when this move follows no push.
+    func markReview(_ card: Card, review: ReviewRequest, note: String?, pushed: PushRecord?) async throws
 
     /// Moves a `working` card to `verifying`: the review request is open and the Manager
     /// waits for its CI, merges it, or both, as `plan` says. Links the review request from the
-    /// card and says what the Manager waits for.
-    func markVerifying(_ card: Card, review: ReviewRequest, plan: VerifyingPlan) async throws
+    /// card and says what the Manager waits for. `pushed` as for `markReview`.
+    func markVerifying(_ card: Card, review: ReviewRequest, plan: VerifyingPlan, pushed: PushRecord?) async throws
 
     /// Moves a `verifying` card to `review_merged`: the Manager merged its review request.
     /// Links the review request from the card, followed by `note` (markdown) when given, e.g.
@@ -63,8 +69,8 @@ public protocol Backlog: Sendable {
 
     /// Moves a `working` or `verifying` card to `stuck` and posts `blocker` (markdown) on the
     /// card under the backend's own header, so `blocker` doesn't repeat one. The card stays
-    /// assigned to its human so it shows up in their queue.
-    func markStuck(_ card: Card, blocker: String) async throws
+    /// assigned to its human so it shows up in their queue. `pushed` as for `markReview`.
+    func markStuck(_ card: Card, blocker: String, pushed: PushRecord?) async throws
 
     /// Returns a `working` card to `ready` and posts `reason` on the card, under the backend's
     /// own "released" header, so the history shows why it bounced. When `countsAsAttempt` is true (the worker crashed or hung), the release
@@ -74,9 +80,24 @@ public protocol Backlog: Sendable {
 }
 
 extension Backlog {
-    /// `markReview(_:review:note:)` without a note.
+    /// `markReview` without a note, after no push.
     public func markReview(_ card: Card, review: ReviewRequest) async throws {
-        try await markReview(card, review: review, note: nil)
+        try await markReview(card, review: review, note: nil, pushed: nil)
+    }
+
+    /// `markReview` after no push.
+    public func markReview(_ card: Card, review: ReviewRequest, note: String?) async throws {
+        try await markReview(card, review: review, note: note, pushed: nil)
+    }
+
+    /// `markVerifying` after no push.
+    public func markVerifying(_ card: Card, review: ReviewRequest, plan: VerifyingPlan) async throws {
+        try await markVerifying(card, review: review, plan: plan, pushed: nil)
+    }
+
+    /// `markStuck` after no push.
+    public func markStuck(_ card: Card, blocker: String) async throws {
+        try await markStuck(card, blocker: blocker, pushed: nil)
     }
 }
 

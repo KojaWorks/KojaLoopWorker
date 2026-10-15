@@ -279,6 +279,7 @@ import Testing
         #expect(h.forge.state.get.opened.count == 1)
         let r = try #require(try record(h))
         #expect(r.sha == "commit-2" && r.round == 1 && r.rebases == 1)
+        #expect(h.backlog.pushes("id-12").map(\.commit) == ["commit-1", "commit-2"])  // B235
         #expect(h.backlog.state.get.verifyingPlans["id-12"] == .merge)
         await h.cycle()
         #expect(h.forge.state.get.mergeCalls.last == "\(reviewURL.absoluteString) @ commit-2")

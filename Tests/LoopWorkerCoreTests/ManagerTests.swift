@@ -670,6 +670,7 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.log.contains("replying in thread d2 of g/app!1 failed: reply in d2 failed", level: .error))
         #expect(h.log.contains("g/app#12's worker replied to thread d`9\n, which g/app!1 doesn't have", level: .warning))
         #expect(h.backlog.card(id: "id-12")?.state == .review)
+        #expect(h.backlog.pushes("id-12").map(\.commit) == ["commit-1", "commit-2"])  // B235
     }
 
     @Test("B207: a failed round note fails the finish, and the retry posts it once without repeating the replies")
@@ -814,6 +815,48 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.backlog.writes.last == .release("id-12", reason: "Couldn't start a worker: checking whether loopworker-12-fix-it is still on the forge: git rev-parse origin/loopworker-12-fix-it failed", countsAsAttempt: false))
         let ledger = try Data(contentsOf: h.home.appending(path: "state/pushes.json"))
         #expect(try JSONDecoder().decode([String: PushRecord].self, from: ledger)["id-12"] == PushRecord(branch: "loopworker-12-fix-it", commit: "commit-1"))
+    }
+
+    @Test("B235: every finish that pushes records the push on the card with its next backlog write; one that doesn't push records nothing")
+    func finishesRecordTheirPushOnTheCard() async throws {
+        let pushed = { (commit: String) in PushRecord(branch: "loopworker-12-fix-it", commit: commit) }
+        let review = try await spawned()
+        try review.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        review.tmux.set("lw_g--app_0", alive: false)
+        await review.cycle()
+        #expect(review.backlog.card(id: "id-12")?.state == .review)
+        #expect(review.backlog.pushes("id-12") == [pushed("commit-1")])
+
+        let stuck = try await spawned()
+        try stuck.writeOutcome(#"{"outcome":"stuck","blocker":"Which endpoint?"}"#)
+        stuck.tmux.set("lw_g--app_0", alive: false)
+        await stuck.cycle()
+        #expect(stuck.backlog.card(id: "id-12")?.state == .stuck)
+        #expect(stuck.backlog.pushes("id-12") == [pushed("commit-1")])
+
+        let rejected = try await spawned()
+        rejected.backlog.state { $0.failMarkReview = BackendRejection("PUT /issues/12: 422 bad label") }
+        try rejected.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        rejected.tmux.set("lw_g--app_0", alive: false)
+        await rejected.cycle()
+        #expect(rejected.backlog.card(id: "id-12")?.state == .stuck)
+        #expect(rejected.backlog.pushes("id-12") == [pushed("commit-1")])
+
+        let noCommits = try await spawned()
+        noCommits.git.state { $0.defaultCommitsAhead = 0 }
+        try noCommits.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        noCommits.tmux.set("lw_g--app_0", alive: false)
+        await noCommits.cycle()
+        #expect(noCommits.backlog.card(id: "id-12")?.state == .stuck)
+        #expect(noCommits.backlog.pushes("id-12").isEmpty)
+
+        let refused = try await spawned()
+        refused.git.state { $0.pushFailure = PushRejected(branch: "loopworker-12-fix-it", url: "https://forge.example/g/app.git") }
+        try refused.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        refused.tmux.set("lw_g--app_0", alive: false)
+        await refused.cycle()
+        #expect(refused.backlog.card(id: "id-12")?.state == .stuck)
+        #expect(refused.backlog.pushes("id-12").isEmpty)
     }
 
     @Test func backendRejectionEndsTheCardStuck() async throws {  // B90

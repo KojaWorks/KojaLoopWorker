@@ -14,7 +14,8 @@ import LoopWorkerCore
 /// `content.loopworker` (`note`, `release`, `failed-attempt` or `claim`) so that `attempts` can
 /// count them and `snapshot` can leave them out. After a claim lands, `claim` appends a `claim`
 /// block whose `content.holder` names the Manager; a card's `holder` is the one in its last
-/// `claim` block in body order, unless a release block follows it.
+/// `claim` block in body order, unless a release block follows it. A note that follows a push
+/// carries `content.pushed` (`{"branch", "commit"}`); `lastPush` reads the last one in body order.
 public actor PatchBacklog: Backlog {
     let config: PatchConfig
     let client: PatchClient
@@ -102,6 +103,29 @@ public actor PatchBacklog: Backlog {
         ]).compactMap { $0["content"]?["text"]?.string }
     }
 
+    /// The `content.pushed` of the card's last block in body order that has one, among the blocks
+    /// that the PAT owner wrote and last edited.
+    public func lastPush(_ card: Card) async throws -> PushRecord? {
+        let owner = try await client.owner()
+        let blocks = try await client.getAll("patch_blocks", [
+            URLQueryItem(name: "table_name", value: "eq.\(config.roadmapTable)"),
+            URLQueryItem(name: "row_id", value: "eq.\(card.ref.id)"),
+            URLQueryItem(name: "content->>\(PatchMarkdown.markerKey)", value: "not.is.null"),
+            URLQueryItem(name: "content->>pushed", value: "not.is.null"),
+            URLQueryItem(name: "owner", value: "eq.\(owner)"),
+            URLQueryItem(name: "updated_by", value: "eq.\(owner)"),
+            URLQueryItem(name: "select", value: "id,content"),
+            URLQueryItem(name: "order", value: "sort.asc,id.asc"),
+        ])
+        guard let last = blocks.last else { return nil }
+        let pushed = last["content"]?["pushed"]
+        guard let branch = pushed?["branch"]?.string, let commit = pushed?["commit"]?.string, !branch.isEmpty, !commit.isEmpty else {
+            let json = String(decoding: (try? JSONEncoder().encode(pushed ?? .null)) ?? Data(), as: UTF8.self)
+            throw PatchError.malformed("\(card.ref.display): block \(last["id"]?.string ?? "?") has an unreadable content.pushed: \(json)")
+        }
+        return PushRecord(branch: branch, commit: commit)
+    }
+
     // MARK: Writes
 
     public func claim(_ card: Card, holder: String) async throws -> Bool {
@@ -134,15 +158,15 @@ public actor PatchBacklog: Backlog {
         return true
     }
 
-    public func markReview(_ card: Card, review: ReviewRequest, note: String?) async throws {
+    public func markReview(_ card: Card, review: ReviewRequest, note: String?, pushed: PushRecord?) async throws {
         var fields: [String: JSON] = ["status": .string(config.status.review)]
         if let field = config.reviewLinkField { fields[field] = .string(review.url.absoluteString) }
         try await move(card, from: [config.status.working, config.status.verifying],
                        note: "Review request: [\(review.display)](\(review.url.absoluteString))" + (note.map { "\n\n\($0)" } ?? ""),
-                       kind: "note", fields: fields)
+                       kind: "note", pushed: pushed, fields: fields)
     }
 
-    public func markVerifying(_ card: Card, review: ReviewRequest, plan: VerifyingPlan) async throws {
+    public func markVerifying(_ card: Card, review: ReviewRequest, plan: VerifyingPlan, pushed: PushRecord?) async throws {
         var fields: [String: JSON] = ["status": .string(config.status.verifying)]
         if let field = config.reviewLinkField { fields[field] = .string(review.url.absoluteString) }
         let waits = switch plan {
@@ -151,7 +175,7 @@ public actor PatchBacklog: Backlog {
         case .merge: "Merging into the base branch."
         }
         try await move(card, note: "Review request: [\(review.display)](\(review.url.absoluteString))\n\n\(waits)",
-                       kind: "note", fields: fields)
+                       kind: "note", pushed: pushed, fields: fields)
     }
 
     public func markMerged(_ card: Card, review: ReviewRequest, note: String?) async throws {
@@ -171,9 +195,9 @@ public actor PatchBacklog: Backlog {
         return !changed.isEmpty
     }
 
-    public func markStuck(_ card: Card, blocker: String) async throws {
+    public func markStuck(_ card: Card, blocker: String, pushed: PushRecord?) async throws {
         try await move(card, from: [config.status.working, config.status.verifying],
-                       note: "LoopWorker is stuck on this card:\n\n\(blocker)", kind: "note",
+                       note: "LoopWorker is stuck on this card:\n\n\(blocker)", kind: "note", pushed: pushed,
                        fields: ["status": .string(config.status.stuck)])
     }
 
@@ -187,7 +211,7 @@ public actor PatchBacklog: Backlog {
     /// Checks that the card has one of the `from` statuses (default: working), appends the
     /// note, then writes `fields` in a PATCH filtered on the status it read, so a card that a
     /// human moved meanwhile is left alone.
-    private func move(_ card: Card, from: [String]? = nil, note: String, kind: String, fields: [String: JSON]) async throws {
+    private func move(_ card: Card, from: [String]? = nil, note: String, kind: String, pushed: PushRecord? = nil, fields: [String: JSON]) async throws {
         let from = from ?? [config.status.working]
         let expected = from.joined(separator: " or ")
         guard let r = try await row(card.ref.id) else {
@@ -196,7 +220,8 @@ public actor PatchBacklog: Backlog {
         guard let status = r.status, from.contains(status) else {
             throw PatchError.unexpectedState(card: card.ref.display, expected: expected, actual: r.status ?? "")
         }
-        try await appendNote(r.id, note, kind: kind)
+        let extra: [String: JSON] = pushed.map { ["pushed": .object(["branch": .string($0.branch), "commit": .string($0.commit)])] } ?? [:]
+        try await appendNote(r.id, note, kind: kind, extra: extra)
         let changed = try await client.patch(config.roadmapTable, [
             URLQueryItem(name: "id", value: "eq.\(r.id)"),
             URLQueryItem(name: "status", value: "eq.\(status)"),
