@@ -25,17 +25,14 @@ public enum Secrets {
         do { text = try String(contentsOf: file, encoding: .utf8) }
         catch { throw ConfigError("can't read \(file.path): \(error.localizedDescription)") }
 
+        if let bad = rejectedLines(text).first {
+            throw ConfigError("\(file.path) line \(bad.number): \(bad.reason.rawValue); expected NAME=value")
+        }
         var values: [String: String] = [:]
-        for (n, raw) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+        for raw in text.split(separator: "\n") {
             let line = raw.trimmingCharacters(in: .whitespaces)
-            if line.isEmpty || line.hasPrefix("#") { continue }
-            guard let eq = line.firstIndex(of: "=") else {
-                throw ConfigError("\(file.path) line \(n + 1): expected NAME=value")
-            }
+            guard !line.hasPrefix("#"), let eq = line.firstIndex(of: "=") else { continue }
             let name = line[..<eq].trimmingCharacters(in: .whitespaces)
-            guard isName(name) else {
-                throw ConfigError("\(file.path) line \(n + 1): not a variable name")
-            }
             var value = Substring(line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces))
             if value.count >= 2, let q = value.first, q == "\"" || q == "'", value.last == q {
                 value = value.dropFirst().dropLast()
@@ -50,6 +47,28 @@ public enum Secrets {
     /// - Throws: whatever `load` throws.
     public static func overlay(_ base: [String: String], with file: URL) throws -> [String: String] {
         base.merging(try load(file)) { _, secret in secret }
+    }
+
+    /// A line of `secrets.env` that `load` refuses, by its 1-based number.
+    public struct RejectedLine: Sendable, Equatable {
+        public enum Reason: String, Sendable {
+            case noName = "no NAME="
+            case notAName = "not a variable name"
+        }
+        public var number: Int
+        public var reason: Reason
+    }
+
+    /// Every line of `secrets.env` text that `load` refuses: one without `=`, or one whose
+    /// part before `=` isn't a variable name (`export NAME=value`). Holds no content, because
+    /// a rejected line is often a bare token.
+    public static func rejectedLines(_ text: String) -> [RejectedLine] {
+        text.split(separator: "\n", omittingEmptySubsequences: false).enumerated().compactMap { n, raw in
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty || line.hasPrefix("#") { return nil }
+            guard let eq = line.firstIndex(of: "=") else { return RejectedLine(number: n + 1, reason: .noName) }
+            return isName(line[..<eq].trimmingCharacters(in: .whitespaces)) ? nil : RejectedLine(number: n + 1, reason: .notAName)
+        }
     }
 
     private static func isName(_ s: String) -> Bool {

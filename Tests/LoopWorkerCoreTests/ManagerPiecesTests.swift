@@ -96,6 +96,19 @@ func temporaryDirectory() throws -> URL {
         #expect(error?.description.contains("glpat") == false)
     }
 
+    @Test func rejectedLinesNameTheReasonNotTheContent() throws {
+        let text = "# c\n\nA=b\nexport B_TOKEN=fabricated\nglpat-fabricated\n"
+        #expect(Secrets.rejectedLines(text) == [.init(number: 4, reason: .notAName), .init(number: 5, reason: .noName)])
+
+        let dir = try temporaryDirectory()
+        let file = dir.appending(path: "secrets.env")
+        try text.write(to: file, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        let error = #expect(throws: ConfigError.self) { try Secrets.load(file) }
+        #expect(error?.description.hasSuffix("line 4: not a variable name; expected NAME=value") == true)
+        #expect(error?.description.contains("fabricated") == false)
+    }
+
     @Test func missingFileIsEmpty() throws {
         #expect(try Secrets.load(URL(filePath: "/nonexistent/secrets.env")) == [:])
     }
