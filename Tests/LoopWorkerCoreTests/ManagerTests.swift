@@ -502,6 +502,54 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.backlog.card(id: "id-12")?.state == .review)
     }
 
+    /// The card finished in review, and its owner moved it back to ready with the review request open.
+    func requeuedFromReview(_ h: ManagerHarness) async throws -> ReviewRequest {
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"Did it."}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.backlog.card(id: "id-12")?.state == .review)
+        h.backlog.setState("id-12", .ready)
+        return try #require(h.forge.state.get.byBranch["loopworker-12-fix-it"])
+    }
+
+    @Test("B206: a card resumed with an open review request gets its feedback in the brief, trust-checked against the snapshot's vouch")
+    func aReviewRoundBriefCarriesTheFeedback() async throws {
+        let h = try await spawned()
+        let review = try await requeuedFromReview(h)
+        let vouched = h.clock.now()
+        h.backlog.state { $0.snapshots["id-12"] = CardSnapshot(markdown: "# Fix it\n", vouchedAt: vouched) }
+        h.forge.state {
+            $0.feedback[review.url] = ReviewFeedback(threads: [
+                .init(id: "d1", position: nil, notes: [.init(author: "alice", createdAt: vouched, body: "Rename SECRET it.")]),
+            ], withheld: ["note 9 by @mallory in thread d2: posted late"])
+        }
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 2)
+        #expect(h.forge.state.get.feedbackCalls == [vouched])
+        let brief = try String(contentsOf: h.stateDir().appending(path: "brief.md"), encoding: .utf8)
+        #expect(brief.contains("## Resuming"))
+        #expect(brief.contains("## Review feedback"))
+        #expect(brief.contains(review.url.absoluteString))
+        #expect(brief.contains("```text\nRename [REDACTED] it.\n```"))
+        #expect(h.log.contains("withheld from g/app#12's review round: note 9 by @mallory in thread d2: posted late", level: .info))
+    }
+
+    @Test("B206: no review section without feedback; a failed read releases the card without counting an attempt")
+    func aReviewRoundWithoutFeedback() async throws {
+        let h = try await spawned()
+        let review = try await requeuedFromReview(h)
+        h.forge.state { $0.failFeedback = FakeError("discussions failed") }
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 1)
+        #expect(h.backlog.writes.last == .release("id-12", reason: "Couldn't start a worker: reading the review feedback on \(review.display): discussions failed", countsAsAttempt: false))
+
+        h.forge.state { $0.failFeedback = nil }
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 2)
+        let brief = try String(contentsOf: h.stateDir().appending(path: "brief.md"), encoding: .utf8)
+        #expect(brief.contains("## Resuming") && !brief.contains("## Review feedback"))
+    }
+
     @Test("B184: the next attempt's brief carries the previous outcome and LoopWorker's notes as background")
     func aRequeuedCardGetsThePreviousAttempt() async throws {
         let h = try await spawned()

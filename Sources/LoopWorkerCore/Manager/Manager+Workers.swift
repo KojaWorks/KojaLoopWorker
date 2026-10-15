@@ -296,9 +296,11 @@ extension Manager {
             WorkerBrief.CIFix(review: $0.record.review, commit: $0.record.sha, ciFile: ciFile,
                               round: $0.record.round + 1, rounds: contract.ci.fixAttempts)
         }
+        let reviewRound = resuming && fix == nil ? try await reviewRound(spec, card: card, branch: branch, vouchedAt: snapshot.vouchedAt) : nil
         let brief = WorkerBrief(card: card, project: spec.project, slot: spec, baseBranch: base, branch: branch,
                                 snapshotFile: snapshotFile, excluded: snapshot.excluded, contract: contract, ciFix: ciFix,
-                                resuming: resuming, previousAttempt: await previousAttempt(spec, card: card)).render()
+                                resuming: resuming, previousAttempt: await previousAttempt(spec, card: card),
+                                reviewRound: reviewRound).render()
 
         var env: [(name: String, value: String)] = []
         for name in ["CLAUDE_CODE_OAUTH_TOKEN"] + spec.project.workerEnv where !env.contains(where: { $0.name == name }) {
@@ -337,6 +339,23 @@ extension Manager {
         } catch {
             throw StepError(step: "writing the worker's files in \(dir.path)", error: error)
         }
+    }
+
+    /// The open review request of `branch` and its capped, redacted feedback; nil when none is
+    /// open or it has no feedback. Logs what was withheld or cut.
+    func reviewRound(_ spec: SlotSpec, card: Card, branch: String, vouchedAt: Date?) async throws -> WorkerBrief.ReviewRound? {
+        let forge = deps.forge, project = spec.project
+        guard let review = try await step("looking for an open review request of \(branch)", {
+            try await forge.openReviewRequest(for: project, sourceBranch: branch)
+        }) else { return nil }
+        let feedback = try await step("reading the review feedback on \(review.display)") {
+            try await forge.reviewFeedback(for: review, project: project, vouchedAt: vouchedAt)
+        }.capped(redact: deps.redact)
+        for line in feedback.withheld { log.info("\(label(spec)): withheld from \(card.ref)'s review round: \(line)") }
+        for line in feedback.cut { log.info("\(label(spec)): cut from \(card.ref)'s review round: \(line)") }
+        guard !feedback.isEmpty else { return nil }
+        log.info("\(label(spec)): \(card.ref) is a review round on \(review.display) with \(feedback.threads.count) threads")
+        return WorkerBrief.ReviewRound(review: review, feedback: feedback)
     }
 
     /// The newest outcome that any of the project's slots kept for this card, and the
