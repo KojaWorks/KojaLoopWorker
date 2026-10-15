@@ -7,7 +7,7 @@ moves the card on. The Manager is deterministic and runs no model; workers hold 
 forge credentials.
 
 One Manager runs per host and serves every project in its host config, cloning each repo on
-demand. Backlogs: GitLab issues and Patch. Forges: GitLab and GitHub. This README shows GitLab;
+demand. Backlogs: GitLab issues, Patch and Notion databases. Forges: GitLab and GitHub. This README shows GitLab;
 the other backends document their config sections in their source.
 [DESIGN.md](DESIGN.md) has the architecture; [docs/glossary.md](docs/glossary.md) the terms.
 
@@ -148,6 +148,61 @@ labels are `loopworker:next`, `loopworker:priority:<n>` and so on.
 
 A card that crashes `max_attempts` times becomes stuck. Closing an issue or removing its
 `loopworker::*` label while a worker runs stops that worker; nothing is written back.
+
+## Notion cards
+
+A Notion backlog keeps each project's cards in its own database. Notion is only a backlog: the
+code still goes to the forge in `[forge]`.
+
+```toml
+[backlog]
+kind = "notion"
+
+[backlog.notion]
+token_env         = "LOOPWORKER_NOTION_TOKEN"   # the variable in secrets.env that holds the secret
+trusted_users     = ["<notion user id>"]        # required: people whose edits vouch for cards
+state_property    = "LoopWorker"                # select with next, working, ci, review and stuck
+priority_property = "Priority"                  # optional: number, select or multi-select
+model_property    = "Model"                     # optional: select or text (a claude model alias)
+
+[backlog.notion.projects]                       # one database per [[project]]
+"mygroup/myapp" = "https://www.notion.so/<workspace>/<title>-<32 hex>"   # or the bare id
+
+[forge]
+kind = "gitlab"
+```
+
+Create an internal integration for LoopWorker
+([how](https://www.notion.com/help/add-and-manage-connections-with-the-api)) with the
+capabilities to read, update and insert content, read and insert comments, and read user
+information without email addresses. Put its secret in `secrets.env` as
+`LOOPWORKER_NOTION_TOKEN`. A person's token is refused, because the Manager's writes would then
+look like that person's edits. Connect the integration to each database: open the database,
+choose ••• -> Connections and add the integration.
+
+Give each database a select property that only LoopWorker uses, `LoopWorker` by default, with
+the options `next`, `working`, `ci`, `review` and `stuck`. The Manager never reads or writes the
+team's own status property. `loopworker doctor` checks every database and names any property,
+option or connection that is missing; it never changes a database. When a `trusted_users` id is
+wrong, doctor lists the workspace's people with their ids.
+
+A trusted user vouches for a card by setting its `LoopWorker` property to `next`. The Manager
+claims a `next` card only when a trusted user edited the page last. The worker sees the title,
+the blocks of the page that a trusted user edited last, and the comments that a trusted user
+wrote; everything else is withheld and named in the log. The Manager moves the card through
+the same states as on GitLab and posts a comment for each move: when it claims the card, when
+it releases it (and why), when the worker is stuck (and on what), and when it opens a review
+request or waits for its CI. A teammate sees those comments and the `LoopWorker` property
+change; the integration is their author.
+
+Notion doesn't record who changed one property, only who edited the page last. If someone
+untrusted sets `next` and a trusted user then edits the page for any reason, the Manager reads
+that edit as the vouch. Use a database that only trusted users can edit when that matters.
+
+A stuck card stays `stuck` until a trusted user answers in a comment and sets `LoopWorker` back
+to `next`; the next worker continues from the pushed branch. A card that crashes `max_attempts`
+times becomes stuck. Clearing the `LoopWorker` property, or moving the page to the trash, while
+a worker runs stops that worker; nothing is written back.
 
 ## Running
 
