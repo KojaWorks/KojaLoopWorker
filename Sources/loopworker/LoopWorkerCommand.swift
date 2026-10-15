@@ -9,7 +9,7 @@ struct LoopWorkerCommand: AsyncParsableCommand {
         abstract: "Claims cards from a backlog and runs one claude worker per card.",
         discussion: "State lives in $LOOPWORKER_HOME (default ~/.loopworker).",
         version: loopworkerVersion,
-        subcommands: [Run.self, Status.self, Pause.self, Resume.self, Doctor.self, Service.self, Version.self],
+        subcommands: [Run.self, Status.self, Pause.self, Resume.self, Doctor.self, Service.self, Prompt.self, Version.self],
         defaultSubcommand: Run.self)
 }
 
