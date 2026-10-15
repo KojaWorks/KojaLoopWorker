@@ -231,13 +231,13 @@ struct PromptContext {
         lines.append("- LOOPWORKER_HOME: \(home.path) (\(homeFromEnvironment ? "from the environment" : "the default; LOOPWORKER_HOME is not set"))")
 
         let configFile = home.appending(path: "config.toml")
-        var config: HostConfig?
+        var tokenVariables: [String]?
         if !FileManager.default.fileExists(atPath: configFile.path) {
             lines.append("- config.toml: missing (\(configFile.path))")
         } else {
             do {
                 let loaded = try HostConfig.load(home: home)
-                config = loaded
+                tokenVariables = try credentialVariables(loaded)
                 lines.append("- config.toml: valid (\(configFile.path)); backlog `\(loaded.backlogKind)`, forge `\(loaded.forgeKind)`")
                 if loaded.projects.isEmpty { lines.append("  - no `[[project]]` yet") }
                 for p in loaded.projects {
@@ -248,7 +248,7 @@ struct PromptContext {
             }
         }
 
-        lines += secretsLines(config: config)
+        lines += secretsLines(tokenVariables: tokenVariables)
 
         switch managerPid {
         case nil: lines.append("- Manager: none runs on this home")
@@ -258,7 +258,8 @@ struct PromptContext {
         return (lines + ["", ""]).joined(separator: "\n")
     }
 
-    private func secretsLines(config: HostConfig?) -> [String] {
+    /// - Parameter tokenVariables: the backend token variables, or nil when config.toml isn't valid.
+    private func secretsLines(tokenVariables: [String]?) -> [String] {
         let file = home.appending(path: "secrets.env")
         var lines: [String] = []
         var inFile: [String: Bool] = [:]
@@ -271,8 +272,9 @@ struct PromptContext {
             do {
                 let text = try String(contentsOf: file, encoding: .utf8)
                 inFile = Self.secretNames(text)
-                for n in Self.linesWithoutName(text) {
-                    lines.append("  - line \(n) has no `NAME=`, so the Manager refuses to start; a value pasted without its name looks like this")
+                for bad in Secrets.rejectedLines(text) {
+                    let hint = bad.reason == .noName ? "; a value pasted without its name looks like this" : ""
+                    lines.append("  - line \(bad.number): \(bad.reason.rawValue), so the Manager refuses to start\(hint)")
                 }
             }
             catch { lines.append("  - can't read it: \(error.localizedDescription)") }
@@ -280,16 +282,10 @@ struct PromptContext {
             lines.append("- secrets.env: missing (\(file.path))")
         }
 
-        var names: [String] = []
-        switch config.map({ c in Result { try credentialVariables(c) } }) {
-        case nil:
+        if tokenVariables == nil {
             lines.append("  - the backend token variables follow from config.toml, which isn't valid yet")
-        case .failure(let error)?:
-            lines.append("  - can't tell which variables the config needs: \(error)")
-        case .success(let backend)?:
-            names = backend
         }
-        for name in Set(names).sorted() + ["CLAUDE_CODE_OAUTH_TOKEN"] {
+        for name in Set(tokenVariables ?? []).sorted() + ["CLAUDE_CODE_OAUTH_TOKEN"] {
             var state = switch inFile[name] {
             case true?: "set in secrets.env"
             case false?: "empty in secrets.env"
@@ -305,15 +301,6 @@ struct PromptContext {
 
     /// Each `NAME=value` line's name in `secrets.env` text, mapped to whether its value is
     /// non-empty, judged the way `Secrets.load` trims it. Values are not kept.
-    /// The 1-based numbers of the lines in `secrets.env` text that `Secrets.load` rejects for
-    /// lacking `=`. Never the content: such a line is often a bare token.
-    static func linesWithoutName(_ text: String) -> [Int] {
-        text.split(separator: "\n", omittingEmptySubsequences: false).enumerated().compactMap { n, raw in
-            let line = raw.trimmingCharacters(in: .whitespaces)
-            return line.isEmpty || line.hasPrefix("#") || line.contains("=") ? nil : n + 1
-        }
-    }
-
     static func secretNames(_ text: String) -> [String: Bool] {
         var names: [String: Bool] = [:]
         for raw in text.split(separator: "\n") {
