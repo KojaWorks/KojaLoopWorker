@@ -67,7 +67,7 @@ public enum GitHubBackend {
         let webBase = "\(scheme)://\(webHost)" + (apiBase.port.map { ":\($0)" } ?? "")
         let gitEnv = try GitAskPass.environment(scriptDirectory: config.stateDir, username: "x-access-token", password: token)
         return GitHubForge(apiBase: apiBase, webBase: webBase, tokenEnv: tokenEnv, token: token, gitEnv: gitEnv,
-                           log: log, transport: transport, sleep: sleep, now: now)
+                           projects: config.projects.map(\.path), log: log, transport: transport, sleep: sleep, now: now)
     }
 }
 
@@ -112,12 +112,14 @@ public struct GitHubForge: Forge {
     let tokenEnv: String
     private let token: String
     private let gitEnv: [String: String]
+    /// The configured projects' paths, for doctor's repository checks.
+    let projects: [String]
     private let log: LogSink
     private let transport: HTTPTransport
     private let sleep: @Sendable (Double) async throws -> Void
     private let now: @Sendable () -> Date
 
-    init(apiBase: URL, webBase: String, tokenEnv: String, token: String, gitEnv: [String: String], log: LogSink,
+    init(apiBase: URL, webBase: String, tokenEnv: String, token: String, gitEnv: [String: String], projects: [String], log: LogSink,
          transport: @escaping HTTPTransport, sleep: @escaping @Sendable (Double) async throws -> Void,
          now: @escaping @Sendable () -> Date) {
         self.apiBase = apiBase
@@ -125,6 +127,7 @@ public struct GitHubForge: Forge {
         self.tokenEnv = tokenEnv
         self.token = token
         self.gitEnv = gitEnv
+        self.projects = projects
         self.log = log
         self.transport = transport
         self.sleep = sleep
@@ -754,5 +757,41 @@ public struct GitHubForge: Forge {
         }
         let details = (b.errors ?? []).compactMap(\.message)
         return details.isEmpty ? m : "\(m): \(details.joined(separator: "; "))"
+    }
+}
+
+extension GitHubForge: Diagnosable {
+    /// Reads the token's user (`GET /user`), then each project's repository: the token must
+    /// see it, and its user must be allowed to push. A fine-grained token's own permissions
+    /// aren't readable, so a repository that passes can still refuse the push.
+    public func diagnose() async -> [DoctorCheck] {
+        let user: String
+        do { user = try await login() } catch {
+            return [DoctorCheck("forge github", .fail, "\(error)",
+                                remedy: "check that this host reaches \(apiBase.absoluteString) and that \(tokenEnv) holds a GitHub token that can push and open pull requests")]
+        }
+        var checks = [DoctorCheck("forge github", .ok, "\(tokenEnv) belongs to @\(user) on \(apiBase.absoluteString)")]
+        for path in projects { checks.append(await repositoryCheck(path, user: user)) }
+        return checks
+    }
+
+    private func repositoryCheck(_ path: String, user: String) async -> DoctorCheck {
+        struct Repo: Decodable {
+            struct Permissions: Decodable { var push: Bool? }
+            var permissions: Permissions?
+        }
+        let name = "forge github \(path)"
+        do {
+            let repo = try await request("GET", "repos/\(path)", body: Optional<NoBody>.none, refusals: [404], as: Repo.self)
+            guard repo.permissions?.push != false else {
+                return DoctorCheck(name, .fail, "@\(user) may not push to \(path)", remedy: "give @\(user) write access to \(path)")
+            }
+            return DoctorCheck(name, .ok, "@\(user) can see \(path) and push to it")
+        } catch is Refusal {
+            return DoctorCheck(name, .fail, "\(tokenEnv) can't see \(path)",
+                               remedy: "give the token access to \(path): a fine-grained token needs the repository selected, with Contents and Pull requests set to read and write; a classic token needs the repo scope")
+        } catch {
+            return DoctorCheck(name, .fail, "\(error)", remedy: "check that \(path) is the repository's owner/name on GitHub")
+        }
     }
 }
