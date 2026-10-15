@@ -726,7 +726,7 @@ extension Manager {
         }
         if existing == nil, !replies.isEmpty {
             let ids = replies.keys.sorted()
-            log.warning("\(label(spec)): \(card.ref)'s worker replied to threads \(ids.joined(separator: ", ")), but \(branch) has no open review request; adding them to the new one's description")
+            log.warning("\(label(spec)): \(card.ref)'s worker replied to threads \(ids.map { String($0.prefix(12)) }.joined(separator: ", ")), but \(branch) has no open review request; adding them to the new one's description")
             text += "\n\nLoopWorker didn't post the worker's replies to threads " + ids.map(Self.inlineCode).joined(separator: ", ")
                 + ": the branch had no open review request.\n\n" + ids.map { "\(Self.inlineCode($0)):\n\n\(replies[$0]!)" }.joined(separator: "\n\n")
         }
@@ -767,14 +767,14 @@ extension Manager {
         for (thread, reply) in replies.sorted(by: { $0.key < $1.key }) {
             do {
                 switch try await forge.replyToThread(thread, text: reply, marker: ReviewMarker.reply(round.id, thread: thread), on: review, project: project) {
-                case .posted: log.info("\(label(spec)): replied in thread \(thread) of \(review.display)")
+                case .posted: log.info("\(label(spec)): replied in thread \(thread.prefix(12)) of \(review.display)")
                 case .alreadyPosted: log.info("\(label(spec)): thread \(thread) of \(review.display) already has this round's reply")
                 case .noSuchThread:
-                    log.warning("\(label(spec)): \(card.ref)'s worker replied to thread \(thread), which \(review.display) doesn't have; listing it under the round's note")
+                    log.warning("\(label(spec)): \(card.ref)'s worker replied to thread \(thread.prefix(12)), which \(review.display) doesn't have; listing it under the round's note")
                     problems.append("LoopWorker didn't post the worker's reply to thread \(Self.inlineCode(thread)): \(review.display) has no such thread. The reply:\n\n\(reply)")
                 }
             } catch {
-                log.error("\(label(spec)): replying in thread \(thread) of \(review.display) failed: \(error)")
+                log.error("\(label(spec)): replying in thread \(thread.prefix(12)) of \(review.display) failed: \(error)")
                 problems.append("LoopWorker couldn't post the worker's reply in thread \(Self.inlineCode(thread)); the Manager's log on \(hostName) has the error. The reply:\n\n\(reply)")
             }
         }
