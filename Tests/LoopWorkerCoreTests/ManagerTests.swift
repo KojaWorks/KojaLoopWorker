@@ -393,8 +393,9 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.backlog.writes.last == .markStuck("id-12", blocker: "The worker reported done, but branch `loopworker-12-fix-it` has no commits ahead of `main`."))
     }
 
-    @Test func failedFinishIsRetriedWithoutADuplicateReviewRequest() async throws {  // B91
+    @Test func failedFinishIsRetriedWithoutADuplicateReviewRequest() async throws {  // B91, B207
         let h = try await spawned()
+        h.git.state { $0.head = "commit-1" }
         h.backlog.state { $0.failMarkReview = FakeError("502 Bad Gateway") }
         try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
         h.tmux.set("lw_g--app_0", alive: false)
@@ -410,12 +411,13 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.forge.state.get.openCalls.count == 1)  // still backing off
         h.clock.advance(31)
         await h.cycle()
-        let calls = h.forge.state.get.openCalls
-        #expect(calls.count == 2)
-        // The forge dedupes per source branch, so the retry must name the same one.
-        #expect(calls.map(\.sourceBranch) == ["loopworker-12-fix-it", "loopworker-12-fix-it"])
+        // The retry finds the review request open, and its description already marks this round.
+        #expect(h.forge.state.get.openCalls.count == 2 && h.forge.state.get.opened.count == 1)
+        let marker = try #require(h.forge.state.get.opened.first?.marker)
+        #expect(marker.hasPrefix("<!-- loopworker:round=") && marker.hasSuffix(" commit=commit-1 -->"))
+        #expect(h.forge.state.get.notes.isEmpty)
+        #expect(h.log.contains("g/app!1 already has this round's note; not posting it again", level: .info))
         #expect(h.git.state.get.pushes.map(\.expected) == [nil, "commit-1"])  // the retry leases on its own push
-        #expect(h.forge.state.get.opened.count == 1)
         #expect(h.backlog.card(id: "id-12")?.state == .review)
         #expect(try h.status().projects[0].slots[0].state == "idle")
     }
@@ -484,6 +486,202 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.backlog.card(id: "id-12")?.state == .review)
     }
 
+    @Test("B202: a commit that a human pushed before the resume becomes the lease, so the push succeeds")
+    func aHumanCommitBeforeTheResumeKeepsThePush() async throws {
+        let h = try await spawned()
+        try await requeuedAfterStuck(h)
+        h.git.state { $0.remoteTips["loopworker-12-fix-it"] = "human-1" }
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 2)
+        #expect(h.log.contains("continuing g/app#12 from human-1, which includes commits pushed after LoopWorker's last push commit-1", level: .info))
+        let ledger = try Data(contentsOf: h.home.appending(path: "state/pushes.json"))
+        #expect(try JSONDecoder().decode([String: PushRecord].self, from: ledger)["id-12"] == PushRecord(branch: "loopworker-12-fix-it", commit: "human-1"))
+
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.git.state.get.pushes.map(\.expected) == [nil, "human-1"])
+        #expect(h.backlog.card(id: "id-12")?.state == .review)
+    }
+
+    /// The card finished in review, and its owner moved it back to ready with the review request open.
+    func requeuedFromReview(_ h: ManagerHarness) async throws -> ReviewRequest {
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"Did it."}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.backlog.card(id: "id-12")?.state == .review)
+        h.backlog.setState("id-12", .ready)
+        return try #require(h.forge.state.get.byBranch["loopworker-12-fix-it"])
+    }
+
+    @Test("B206: a card resumed with an open review request gets its feedback in the brief, trust-checked against the snapshot's vouch")
+    func aReviewRoundBriefCarriesTheFeedback() async throws {
+        let h = try await spawned()
+        let review = try await requeuedFromReview(h)
+        let vouched = h.clock.now()
+        h.backlog.state { $0.snapshots["id-12"] = CardSnapshot(markdown: "# Fix it\n", vouchedAt: vouched) }
+        h.forge.state {
+            $0.feedback[review.url] = ReviewFeedback(threads: [
+                .init(id: "d1", position: nil, notes: [.init(author: "alice", createdAt: vouched, body: "Rename SECRET it.")]),
+            ], withheld: ["note 9 by @mallory in thread d2: posted late"])
+        }
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 2)
+        #expect(h.forge.state.get.feedbackCalls == [vouched])
+        let brief = try String(contentsOf: h.stateDir().appending(path: "brief.md"), encoding: .utf8)
+        #expect(brief.contains("## Resuming"))
+        #expect(brief.contains("## Review feedback"))
+        #expect(brief.contains(review.url.absoluteString))
+        #expect(brief.contains("```text\nRename [REDACTED] it.\n```"))
+        #expect(h.log.contains("withheld from g/app#12's review round: note 9 by @mallory in thread d2: posted late", level: .info))
+    }
+
+    @Test("B206, B211: a failed feedback read releases the card before acquiring, uncounted, and backs off its claim; no section without feedback")
+    func aReviewRoundWithoutFeedback() async throws {
+        let h = try await spawned()
+        let review = try await requeuedFromReview(h)
+        let acquires = { h.lifecycle.calls.filter { $0.hasPrefix("acquire") }.count }
+        h.forge.state { $0.failFeedback = FakeError("discussions failed") }
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 1 && acquires() == 1)
+        #expect(h.backlog.writes.last == .release("id-12", reason: "Couldn't start a worker: reading the review feedback on \(review.display): discussions failed", countsAsAttempt: false))
+        #expect(h.log.contains("couldn't start a worker for g/app#12: reading the review feedback on g/app!1: discussions failed; releasing it and not claiming it again for 30 s (1 failure(s) in a row)", level: .error))
+
+        let claims = { h.backlog.writes.filter { $0 == .claim("id-12") }.count }
+        let before = claims()
+        h.clock.advance(20)
+        await h.cycle()
+        #expect(claims() == before)  // backing off
+        h.clock.advance(60)  // past the backoff and the fill interval
+        await h.cycle()
+        #expect(claims() == before + 1)
+        #expect(h.log.contains("not claiming it again for 60 s (2 failure(s) in a row)", level: .error))
+        #expect(acquires() == 1)
+
+        h.forge.state { $0.failFeedback = nil }
+        h.clock.advance(61)
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 2)
+        let brief = try String(contentsOf: h.stateDir().appending(path: "brief.md"), encoding: .utf8)
+        #expect(brief.contains("## Resuming") && !brief.contains("## Review feedback"))
+    }
+
+    /// A review round on card 12 is running: the open review request has threads d1 and d2.
+    func reviewRound() async throws -> (ManagerHarness, ReviewRequest) {
+        let h = try await spawned()
+        let review = try await requeuedFromReview(h)
+        h.forge.state {
+            $0.threads[review.url] = ["d1", "d2"]
+            $0.feedback[review.url] = ReviewFeedback(threads: [.init(id: "d1", position: nil, notes: [.init(author: "alice", createdAt: Date(), body: "Rename it.")])])
+        }
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 2)
+        return (h, review)
+    }
+
+    @Test("B207: a review round replies per thread and posts its body as a note; failed and unknown replies are listed under it")
+    func aReviewRoundPostsRepliesAndANote() async throws {
+        let (h, review) = try await reviewRound()
+        h.forge.state { $0.failReplies = ["d2"] }
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"Renamed things.","replies":{"d1":"Renamed it.","d2":"Kept it.","d`9\n":"Huh?"}}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        let f = h.forge.state.get, host = await h.manager.hostName
+        #expect(f.opened.count == 1 && f.openCalls.count == 2)
+        #expect(f.openCalls.last?.assignToOwner == true)  // B186: an open one without an assignee gets the owner
+        #expect(f.replies.map { [$0.review.absoluteString, $0.thread, $0.text] } == [[review.url.absoluteString, "d1", "Renamed it."]])
+        #expect(f.notes.first?.marker.contains(" commit=commit-2 read=") == true)
+        #expect(f.notes.map(\.text) == ["""
+            LoopWorker pushed `commit-2` to this branch.
+
+            Renamed things.
+
+            LoopWorker couldn't post the worker's reply in thread `d2`; the Manager's log on \(host) has the error. The reply:
+
+            Kept it.
+
+            LoopWorker didn't post the worker's reply to thread `d9`: g/app!1 has no such thread. The reply:
+
+            Huh?
+            """])
+        #expect(h.log.contains("replying in thread d2 of g/app!1 failed: reply in d2 failed", level: .error))
+        #expect(h.log.contains("g/app#12's worker replied to thread d`9\n, which g/app!1 doesn't have", level: .warning))
+        #expect(h.backlog.card(id: "id-12")?.state == .review)
+    }
+
+    @Test("B207: a failed round note fails the finish, and the retry posts it once without repeating the replies")
+    func aRetriedReviewRoundPostsOnce() async throws {
+        let (h, _) = try await reviewRound()
+        h.git.state { $0.head = "head-2" }
+        h.forge.state { $0.failNextNote = FakeError("note 502") }
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"Renamed things.","replies":{"d1":"Renamed it."}}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.log.contains("posting this round's note on g/app!1: note 502; retrying in 30 s", level: .error))
+        #expect(h.forge.state.get.replies.count == 1 && h.forge.state.get.notes.isEmpty)
+
+        h.backlog.state { $0.failMarkReview = FakeError("502 Bad Gateway") }
+        h.clock.advance(31)
+        await h.cycle()
+        #expect(h.forge.state.get.replies.count == 1 && h.forge.state.get.notes.count == 1)
+        #expect(h.log.contains("thread d1 of g/app!1 already has this round's reply", level: .info))
+
+        h.backlog.state { $0.failMarkReview = nil }
+        h.clock.advance(61)
+        await h.cycle()
+        #expect(h.forge.state.get.replies.count == 1 && h.forge.state.get.notes.count == 1)
+        #expect(h.log.contains("g/app!1 already has this round's note; not posting it again", level: .info))
+        #expect(h.backlog.card(id: "id-12")?.state == .review)
+    }
+
+    @Test("B207: a replies-only round after an earlier one posts its note and its reply in an already answered thread")
+    func aRepliesOnlyRoundStillPosts() async throws {
+        let (h, _) = try await reviewRound()
+        h.git.state { $0.head = "head-1" }
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"Renamed things.","replies":{"d1":"Renamed it."}}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.backlog.card(id: "id-12")?.state == .review)
+
+        h.backlog.setState("id-12", .ready)
+        h.clock.advance(60)
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 3)
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"Explained why not.","replies":{"d1":"Kept the old name: it is public API."}}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.git.state.get.pushes.suffix(2).map(\.expected) == ["commit-1", "head-1"])
+        #expect(h.forge.state.get.replies.map(\.text) == ["Renamed it.", "Kept the old name: it is public API."])
+        #expect(h.forge.state.get.notes.map(\.text) == [
+            "LoopWorker pushed `head-1` to this branch.\n\nRenamed things.", "LoopWorker pushed `head-1` to this branch.\n\nExplained why not.",
+        ])
+        #expect(h.backlog.card(id: "id-12")?.state == .review)
+    }
+
+    @Test("B207: replies without an open review request go into the new one's description")
+    func repliesWithoutAReviewRequest() async throws {
+        let h = try await spawned()
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"Did it.","replies":{"d1":"Renamed it."}}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        let body = try #require(h.forge.state.get.opened.first?.body)
+        #expect(body.hasPrefix("Did it.\n\nLoopWorker didn't post the worker's replies to threads `d1`: the branch had no open review request.\n\n`d1`:\n\nRenamed it.\n\n---\n"))
+        #expect(h.forge.state.get.notes.isEmpty)
+    }
+
+    @Test("B210: a push refused because someone pushed during the run says so, instead of calling the branch foreign")
+    func aPushDuringTheRunEndsStuckWithAnHonestBlocker() async throws {
+        let h = try await spawned()
+        try await requeuedAfterStuck(h)
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 2)
+        h.git.state { $0.remoteTips["loopworker-12-fix-it"] = "human-2" }
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix it","body":"b"}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.backlog.writes.last == .markStuck("id-12", blocker: "Someone pushed to `loopworker-12-fix-it` while the worker ran, so LoopWorker didn't overwrite those commits and didn't push the worker's. Move the card back to ready to redo this round on top of them."))
+    }
+
     @Test("B184: the next attempt's brief carries the previous outcome and LoopWorker's notes as background")
     func aRequeuedCardGetsThePreviousAttempt() async throws {
         let h = try await spawned()
@@ -522,7 +720,7 @@ func fileMode(_ url: URL) throws -> Int {
     @Test func aRequeuedCardWhoseBranchIsGoneStartsOverAndDropsItsLedgerEntry() async throws {  // B178
         let h = try await spawned()
         try await requeuedAfterStuck(h)
-        h.git.state { $0.remoteBranches = [] }  // a human deleted the branch on the forge
+        h.git.state { $0.remoteTips = [:] }  // a human deleted the branch on the forge
         await h.cycle()
         #expect(h.tmux.spawned.count == 2)
         #expect(h.lifecycle.state.get.acquiredBases == ["main", "main"])

@@ -36,6 +36,7 @@ final class ManagerHarness: @unchecked Sendable {
     init(projects: String, top: String = "", manifest: String = "", environment: [String: String] = defaultEnvironment) throws {
         home = try temporaryDirectory()
         self.environment = environment
+        lifecycle.state { [git] in $0.tip = { git.state.get.remoteTips[$0] } }
         try writeConfig(projects: projects, top: top)
         let config = try HostConfig.load(home: home)
         for p in config.projects { try writeContract(p, manifest: manifest) }

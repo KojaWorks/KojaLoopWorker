@@ -3,7 +3,7 @@ import LoopWorkerCore
 
 /// The trust rules of DESIGN.md "Trust", as pure functions over what GitLab returned.
 enum Trust {
-    static let managerMarker = "<!-- loopworker -->"
+    static let managerMarker = ReviewMarker.manager
     static let failedAttemptMarker = "<!-- loopworker:failed-attempt -->"
     static let cutoffMarkerPrefix = "<!-- loopworker:cutoff="
     /// A `next` label added this soon after a release note by me is that release's re-add.
@@ -141,11 +141,11 @@ enum Trust {
                 excluded.append("\(by): posted by LoopWorker")
                 continue
             }
-            let editedLate = note.lastEditedAt.map { $0 > cutoff } ?? false
+            let editedLate = note.contentEditedAt.map { $0 > cutoff } ?? false
             let mine = isMe(note.author) && (!editedLate || isMe(note.lastEditedBy))
             let early = note.createdAt <= cutoff && !editedLate
             guard mine || early else {
-                if let edited = note.lastEditedAt, editedLate, note.createdAt <= cutoff {
+                if let edited = note.contentEditedAt, editedLate, note.createdAt <= cutoff {
                     excluded.append("\(by), edited by \(name(note.lastEditedBy)) at \(time(edited))")
                 } else {
                     excluded.append(by)
@@ -155,7 +155,7 @@ enum Trust {
             comments.append("**\(name(note.author))** (\(time(note.createdAt))):\n\n\(note.body.trimmingCharacters(in: .whitespacesAndNewlines))\n")
         }
         if !comments.isEmpty { md += "\n## Comments\n\n" + comments.joined(separator: "\n") }
-        return CardSnapshot(markdown: md, excluded: excluded)
+        return CardSnapshot(markdown: md, excluded: excluded, vouchedAt: cutoff)
     }
 
     /// Escapes the `/` of every line whose first non-space character is `/`, so GitLab shows a

@@ -546,7 +546,7 @@ private let releaseText = "LoopWorker released this card:\n\nrestart"
         #expect(text.hasSuffix("[LoopWorker cut this comment here: 13 more characters don't fit in a Notion comment.]"))
     }
 
-    @Test("B212: markVerifying posts a CI notice per CI plan, and a merging notice for a merge")
+    @Test("B223: markVerifying posts a CI notice per CI plan, and a merging notice for a merge")
     func markVerifyingPerPlan() async throws {
         for (plan, text) in [
             (VerifyingPlan.ciThenReview, "LoopWorker is waiting for CI on its review request:\n\ng/app!3: \(review.url)\n\nWaiting for CI before review."),
@@ -563,7 +563,7 @@ private let releaseText = "LoopWorker released this card:\n\nrestart"
         }
     }
 
-    @Test("B212: a merging notice keeps a ci card the Manager's, through a rebase round and its release")
+    @Test("B223: a merging notice keeps a ci card the Manager's, through a rebase round and its release")
     func mergingKeepsOwnership() async throws {
         let fake = FakeNotion()
         fake.addDatabase()
@@ -578,7 +578,7 @@ private let releaseText = "LoopWorker released this card:\n\nrestart"
         #expect(!ManagerComment.merged.keepsOwnership)
     }
 
-    @Test("B212: markMerged sets merged, then posts the link and note; the option reads as review_merged")
+    @Test("B223: markMerged sets merged, then posts the link and note; the option reads as review_merged")
     func markMerged() async throws {
         let fake = FakeNotion()
         fake.addDatabase()
@@ -594,7 +594,7 @@ private let releaseText = "LoopWorker released this card:\n\nrestart"
         #expect(try await backlog.managerNotes(card(page)).last == "g/app!3: \(review.url)\n\nMerged into main as abc123.")
     }
 
-    @Test("B212: markMerged needs ci and writes nothing otherwise")
+    @Test("B223: markMerged needs ci and writes nothing otherwise")
     func markMergedOnlyFromCI() async throws {
         let fake = FakeNotion()
         fake.addDatabase()

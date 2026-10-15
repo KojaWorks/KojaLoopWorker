@@ -9,6 +9,10 @@ private final class DiagnosableForge: Forge, Diagnosable, @unchecked Sendable {
     func gitEnvironment() -> [String: String] { [:] }
     func defaultBranch(for project: ProjectSpec) async throws -> String { "main" }
     func openReviewRequest(_ draft: ReviewRequestDraft) async throws -> ReviewRequest { fatalError("unused") }
+    func openReviewRequest(for project: ProjectSpec, sourceBranch: String) async throws -> ReviewRequest? { nil }
+    func reviewFeedback(for review: ReviewRequest, project: ProjectSpec, vouchedAt: Date?) async throws -> ReviewFeedback { ReviewFeedback() }
+    func postReviewNote(_ text: String, marker: String, on review: ReviewRequest, project: ProjectSpec) async throws -> Bool { false }
+    func replyToThread(_ thread: String, text: String, marker: String, on review: ReviewRequest, project: ProjectSpec) async throws -> ThreadReply { .noSuchThread }
     func attach(_ file: URL, to project: ProjectSpec) async throws -> URL? { nil }
     func merge(_ review: ReviewRequest, project: ProjectSpec, head: String) async throws -> MergeResult { .merged(commit: nil) }
     func pipeline(for project: ProjectSpec, commit: String) async throws -> PipelineStatus? { nil }
@@ -100,7 +104,7 @@ private final class DiagnosableForge: Forge, Diagnosable, @unchecked Sendable {
         #expect(Doctor.passed(checks))
     }
 
-    @Test("B202: a deprecated config key is a warning")
+    @Test("B213: a deprecated config key is a warning")
     func deprecatedKeyWarns() async throws {
         try config("[backlog]\nkind = \"gitlab\"\n[[project]]\npath = \"g/app\"\ndraft = false\n")
         let checks = await doctor().run()

@@ -121,7 +121,7 @@ struct GitFixture {
         #expect(f.exists(slot.appending(path: ".build/cache")))
     }
 
-    @Test("B208: isAncestor tells whether the branch is based on origin/<base>")
+    @Test("B219: isAncestor tells whether the branch is based on origin/<base>")
     func isAncestor() async throws {
         let f = try await GitFixture()
         defer { f.cleanUp() }

@@ -95,6 +95,8 @@ public actor NotionBacklog: Backlog {
         return try await evaluate(page, project: project)
     }
 
+    /// `vouchedAt` stays nil: trust follows authorship, and Notion records no time when a
+    /// trusted user set `next`, so a review round trusts only the forge owner's notes.
     public func snapshot(_ card: Card) async throws -> CardSnapshot {
         _ = try await meID()
         guard let json = try await client.request("GET", "pages/\(card.ref.id)", missing: .none) else {

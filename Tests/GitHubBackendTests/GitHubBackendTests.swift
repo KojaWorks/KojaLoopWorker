@@ -331,7 +331,7 @@ private let pullJSON = #"{"number": 7, "html_url": "https://github.com/owner/app
         try await forge(stub).merge(review, project: project, head: head)
     }
 
-    @Test("B215: a merge sends merge_method merge and sha, and returns the merge commit")
+    @Test("B226: a merge sends merge_method merge and sha, and returns the merge commit")
     func mergesWithTheMergeCommit() async throws {
         let s = stub((200, #"{"sha": "beef", "merged": true, "message": "Pull Request successfully merged"}"#))
         #expect(try await merge(s) == .merged(commit: "beef"))
@@ -342,14 +342,14 @@ private let pullJSON = #"{"number": 7, "html_url": "https://github.com/owner/app
         #expect(s.requests.count == 1)
     }
 
-    @Test("B215: a refused merge of an already merged pull request is merged")
+    @Test("B226: a refused merge of an already merged pull request is merged")
     func alreadyMerged() async throws {
         let s = stub((405, #"{"message": "Pull Request is not mergeable"}"#), pull: pull(state: "closed", merged: true))
         #expect(try await merge(s) == .merged(commit: "feed"))
         #expect(s.requests.last?.url?.path == "/repos/owner/app/pulls/34")
     }
 
-    @Test("B215: a 409 is a moved head, without re-reading")
+    @Test("B226: a 409 is a moved head, without re-reading")
     func headMoved() async throws {
         let s = stub((409, #"{"message": "Head branch was modified. Review and try the merge again."}"#))
         #expect(try await merge(s) == .blocked(
@@ -357,7 +357,7 @@ private let pullJSON = #"{"number": 7, "html_url": "https://github.com/owner/app
         #expect(s.requests.count == 1)
     }
 
-    @Test("B215: closed and draft pull requests are blocked; a null mergeable is pending")
+    @Test("B226: closed and draft pull requests are blocked; a null mergeable is pending")
     func closedDraftAndUncomputed() async throws {
         let refused = (405, #"{"message": "Pull Request is not mergeable"}"#)
         #expect(try await merge(stub(refused, pull: pull(state: "closed"))) == .blocked("GitHub: closed (the pull request isn't open)"))
@@ -366,7 +366,7 @@ private let pullJSON = #"{"number": 7, "html_url": "https://github.com/owner/app
             == .pending("GitHub: mergeable unknown (GitHub is still computing it)"))
     }
 
-    @Test("B215: mergeable_state decides outdated, blocked or pending, naming the value", arguments: [
+    @Test("B226: mergeable_state decides outdated, blocked or pending, naming the value", arguments: [
         ("dirty", "outdated"), ("behind", "outdated"), ("blocked", "blocked"), ("unknown", "pending"),
         ("unstable", "pending"), ("clean", "pending"), ("has_hooks", "pending"), ("some_future_state", "blocked"),
     ])
@@ -382,14 +382,14 @@ private let pullJSON = #"{"number": 7, "html_url": "https://github.com/owner/app
         #expect(reason.hasPrefix("GitHub: \(state) ("))
     }
 
-    @Test("B215: blocked carries the merge's own message")
+    @Test("B226: blocked carries the merge's own message")
     func blockedNamesTheMessage() async throws {
         let s = stub((405, #"{"message": "At least 1 approving review is required"}"#), pull: pull(mergeable: false, mergeableState: "blocked"))
         #expect(try await merge(s) == .blocked(
             "GitHub: blocked (required reviews, checks or branch protection; the merge answered 405 At least 1 approving review is required)"))
     }
 
-    @Test("B215: a 5xx throws after the retries instead of returning a value")
+    @Test("B226: a 5xx throws after the retries instead of returning a value")
     func serverErrorThrows() async throws {
         let s = stub((502, "bad gateway"))
         await #expect(throws: GitHubError.unavailable(request: "PUT /repos/owner/app/pulls/34/merge", status: 502, message: "bad gateway")) {
@@ -397,7 +397,7 @@ private let pullJSON = #"{"number": 7, "html_url": "https://github.com/owner/app
         }
     }
 
-    @Test("B215: a review URL without a number is a BackendRejection naming it")
+    @Test("B226: a review URL without a number is a BackendRejection naming it")
     func urlWithoutNumber() async throws {
         let s = stub((200, "{}"))
         let bad = ReviewRequest(url: URL(string: "https://github.com/owner/app/pulls")!, display: "owner/app#?")
@@ -405,5 +405,166 @@ private let pullJSON = #"{"number": 7, "html_url": "https://github.com/owner/app
             try await forge(s).merge(bad, project: project, head: head)
         }
         #expect(s.requests.isEmpty)
+    }
+}
+
+private func json(_ value: Any) -> String {
+    String(decoding: try! JSONSerialization.data(withJSONObject: value), as: UTF8.self)
+}
+
+private func graphQLBody(_ req: URLRequest) -> [String: Any] {
+    (try? JSONSerialization.jsonObject(with: req.httpBody ?? Data())) as? [String: Any] ?? [:]
+}
+
+@Suite struct GitHubReviewTests {
+    static let review = ReviewRequest(url: URL(string: "https://github.com/owner/app/pull/7")!, display: "owner/app#7")
+
+    /// `2026-10-01T10:<minutes>:00Z`.
+    static func t(_ minutes: Int) -> String { String(format: "2026-10-01T10:%02d:00Z", minutes) }
+
+    func comment(_ id: String, _ body: String, by login: String? = "alice", at minutes: Int, published: Int? = nil,
+                 editedBy: String? = nil, editedAt: Int? = nil, state: String? = nil) -> [String: Any] {
+        [
+            "id": id, "author": login.map { ["login": $0] } ?? NSNull(), "body": body, "createdAt": Self.t(minutes),
+            "publishedAt": Self.t(published ?? minutes), "state": state ?? NSNull(),
+            "lastEditedAt": editedAt.map { Self.t($0) } ?? NSNull(), "editor": editedBy.map { ["login": $0] } ?? NSNull(),
+            "commit": ["oid": "head1"], "originalCommit": ["oid": "orig1"],
+        ]
+    }
+
+    func page(_ key: String, _ nodes: [[String: Any]], next: String? = nil) -> String {
+        json(["data": ["repository": ["pullRequest": [
+            "createdAt": Self.t(0),
+            key: ["pageInfo": ["hasNextPage": next != nil, "endCursor": next.map { $0 as Any } ?? NSNull()], "nodes": nodes],
+        ]]]])
+    }
+
+    @Test("B205: review threads, conversation comments and review bodies over GraphQL, trust-checked against the vouch by publish time")
+    func reviewFeedback() async throws {
+        let summary = ReviewMarker.note("LoopWorker pushed abc", markers: [ReviewMarker.round("r1", commit: "abc", read: try Date(Self.t(3), strategy: .iso8601))])
+        let stub = StubGitHub { [self] req, _ in
+            if req.url?.path == "/user" { return (200, [:], #"{"login": "Me"}"#) }
+            #expect(req.url?.absoluteString == "https://api.github.com/graphql")
+            let body = graphQLBody(req)
+            let query = body["query"] as? String ?? ""
+            let after = (body["variables"] as? [String: Any])?["after"] as? String
+            if query.contains("reviewThreads") {
+                if after == nil {
+                    return (200, [:], page("reviewThreads", [
+                        ["id": "PRRT_1", "isResolved": false, "path": "a.swift", "line": 10, "originalLine": 9, "diffSide": "RIGHT",
+                         "comments": ["totalCount": 102, "nodes": [comment("C1", "Rename this.", at: 1), comment("C2", "Ok", by: "me", at: 2)]]],
+                    ], next: "t1"))
+                }
+                return (200, [:], page("reviewThreads", [
+                    ["id": "PRRT_2", "isResolved": true, "path": "b.swift", "line": NSNull(), "originalLine": 3, "diffSide": "LEFT",
+                     "comments": ["totalCount": 1, "nodes": [comment("C3", "Done.", at: 1)]]],
+                    ["id": "PRRT_3", "isResolved": false, "path": "c.swift", "line": NSNull(), "originalLine": 4, "diffSide": "LEFT",
+                     "comments": ["totalCount": 1, "nodes": [comment("C4", "Hm.", at: 1, editedBy: "mallory", editedAt: 9)]]],
+                    ["id": "PRRT_4", "isResolved": false, "path": "d.swift", "line": 2, "originalLine": 2, "diffSide": "RIGHT",
+                     "comments": ["totalCount": 1, "nodes": [comment("C5", "Drafted early, submitted late.", at: 1, published: 7)]]],
+                ]))
+            }
+            if query.contains("reviews(first") {
+                return (200, [:], page("reviews", [
+                    comment("PRR_1", "Looks good apart from naming.", at: 1, published: 4, state: "COMMENTED"),
+                    comment("PRR_2", "Needs tests.", by: "bob", at: 2, published: 6, state: "CHANGES_REQUESTED"),
+                    comment("PRR_3", "", at: 4, state: "APPROVED"),
+                    comment("PRR_4", "Not sent yet.", by: "me", at: 4, state: "PENDING"),
+                ]))
+            }
+            return (200, [:], page("comments", [
+                comment("IC_1", "Before the summary.", at: 1),
+                comment("IC_2", summary, by: "me", at: 3),
+                comment("IC_3", "Also the docs.", by: nil, at: 4),
+                comment("IC_4", "Please also add tests.", by: "bob", at: 4),
+            ]))
+        }
+        let f = try forge(stub)
+        let feedback = try await f.reviewFeedback(for: Self.review, project: project, vouchedAt: try Date(Self.t(5), strategy: .iso8601))
+        #expect(feedback.threads.map(\.id) == ["PRRT_1", "IC_3", "IC_4", "PRR_1"])
+        #expect(feedback.threads[0].position == ReviewFeedback.Position(path: "a.swift", line: 10, side: .new, commit: "head1"))
+        #expect(feedback.threads[0].notes.map(\.author) == ["alice", "me"])
+        #expect(feedback.threads[1].notes[0].author == "ghost")
+        #expect(feedback.withheld.map { $0.prefix(while: { $0 != ":" }) } == ["note C4 by @alice in thread PRRT_3", "note C5 by @alice in thread PRRT_4", "note PRR_2 by @bob in thread PRR_2"])
+        #expect(feedback.withheld[1].hasSuffix("posted at \(Self.t(7)), after the card was vouched for at \(Self.t(5))"))
+        #expect(feedback.cut == ["the 100 oldest comments of thread PRRT_1 were left out"])
+        let variables = graphQLBody(stub.requests[1])["variables"] as? [String: Any]
+        #expect(variables?["number"] as? Int == 7 && variables?["owner"] as? String == "owner" && variables?["name"] as? String == "app")
+    }
+
+    @Test("B205: Enterprise GraphQL lives at /api/graphql")
+    func enterpriseGraphQL() throws {
+        let f = try forge(StubGitHub { _, _ in (500, [:], "") }, "[forge.github]\napi_base = \"https://ghe.example.com/api/v3\"")
+        #expect(f.graphQLURL.absoluteString == "https://ghe.example.com/api/graphql")
+    }
+
+    @Test("B208: the round note is a conversation comment, posted once per commit")
+    func roundNote() async throws {
+        let marker = "<!-- loopworker:round=c2 -->"
+        var mine = "[]"
+        let stub = StubGitHub { req, _ in
+            switch (req.httpMethod!, req.url!.path) {
+            case ("GET", "/user"): (200, [:], #"{"login": "octo"}"#)
+            case ("GET", "/repos/owner/app/pulls/7"): (200, [:], json(["body": "Did it.\n\n<!-- loopworker:round=c1 -->"]))
+            case ("GET", "/repos/owner/app/issues/7/comments"): (200, [:], mine)
+            case ("POST", "/repos/owner/app/issues/7/comments"): (201, [:], "{}")
+            default: (404, [:], #"{"message": "Not Found"}"#)
+            }
+        }
+        let f = try forge(stub)
+        #expect(try await !f.postReviewNote("again", marker: "<!-- loopworker:round=c1 -->", on: Self.review, project: project))
+        #expect(try await f.postReviewNote("Pushed.", marker: "<!-- loopworker:round=c2 -->", on: Self.review, project: project))
+        let posts = stub.requests.filter { $0.httpMethod == "POST" }
+        #expect(posts.map { graphQLBody($0)["body"] as? String } == ["<!-- loopworker -->\n\(marker)\n\nPushed."])
+        mine = json([["body": "<!-- loopworker -->\n\(marker)\n\nPushed.", "user": ["login": "Octo"]]])
+        #expect(try await !f.postReviewNote("Pushed.", marker: "<!-- loopworker:round=c2 -->", on: Self.review, project: project))
+    }
+
+    @Test("B208: a review thread reply answers its first comment; a conversation comment or review gets a linked new comment; unknown ids are reported")
+    func threadReply() async throws {
+        let stub = StubGitHub { req, _ in
+            switch (req.httpMethod!, req.url!.path) {
+            case ("GET", "/user"): return (200, [:], #"{"login": "octo"}"#)
+            case ("GET", "/repos/owner/app/issues/7/comments"): return (200, [:], "[]")
+            case ("POST", "/graphql"):
+                let id = (graphQLBody(req)["variables"] as? [String: Any])?["id"] as? String
+                switch id {
+                case "PRRT_1":
+                    return (200, [:], json(["data": ["node": [
+                        "__typename": "PullRequestReviewThread", "repository": ["nameWithOwner": "Owner/App"], "pullRequest": ["number": 7],
+                        "first": ["nodes": [["databaseId": 111]]], "comments": ["nodes": [["author": ["login": "alice"], "body": "Rename."]]],
+                    ]]]))
+                case "IC_1":
+                    return (200, [:], json(["data": ["node": [
+                        "__typename": "IssueComment", "repository": ["nameWithOwner": "owner/app"], "pullRequest": ["number": 7],
+                        "url": "https://github.com/owner/app/pull/7#issuecomment-5", "author": ["login": "bob"],
+                    ]]]))
+                case "PRR_1":
+                    return (200, [:], json(["data": ["node": [
+                        "__typename": "PullRequestReview", "repository": ["nameWithOwner": "owner/app"], "pullRequest": ["number": 7],
+                        "url": "https://github.com/owner/app/pull/7#pullrequestreview-9", "author": ["login": "carol"],
+                    ]]]))
+                case "PRRT_other":
+                    return (200, [:], json(["data": ["node": [
+                        "__typename": "PullRequestReviewThread", "repository": ["nameWithOwner": "owner/app"], "pullRequest": ["number": 8],
+                    ]]]))
+                default:
+                    return (200, [:], json(["data": ["node": NSNull()], "errors": [["type": "NOT_FOUND", "message": "Could not resolve"]]]))
+                }
+            default: return (201, [:], "{}")
+            }
+        }
+        let f = try forge(stub)
+        #expect(try await f.replyToThread("PRRT_1", text: "Renamed.", marker: ReviewMarker.reply("c2", thread: "PRRT_1"), on: Self.review, project: project) == .posted)
+        #expect(try await f.replyToThread("IC_1", text: "Added.", marker: ReviewMarker.reply("c2", thread: "IC_1"), on: Self.review, project: project) == .posted)
+        #expect(try await f.replyToThread("PRR_1", text: "Renamed.", marker: ReviewMarker.reply("c2", thread: "PRR_1"), on: Self.review, project: project) == .posted)
+        #expect(try await f.replyToThread("garbage", text: "x", marker: ReviewMarker.reply("c2", thread: "garbage"), on: Self.review, project: project) == .noSuchThread)
+        #expect(try await f.replyToThread("PRRT_other", text: "x", marker: ReviewMarker.reply("c2", thread: "PRRT_other"), on: Self.review, project: project) == .noSuchThread)
+        let posts = stub.requests.filter { $0.httpMethod == "POST" && $0.url?.path != "/graphql" }
+        #expect(posts.map { $0.url!.path } == ["/repos/owner/app/pulls/7/comments/111/replies", "/repos/owner/app/issues/7/comments", "/repos/owner/app/issues/7/comments"])
+        #expect((graphQLBody(posts[2])["body"] as? String)?.contains("In reply to [@carol's comment](https://github.com/owner/app/pull/7#pullrequestreview-9)") == true)
+        #expect(graphQLBody(posts[0])["body"] as? String == "<!-- loopworker -->\n<!-- loopworker:reply=c2 thread=PRRT_1 -->\n\nRenamed.")
+        #expect(graphQLBody(posts[1])["body"] as? String
+                == "<!-- loopworker -->\n<!-- loopworker:reply=c2 thread=IC_1 -->\n\nIn reply to [@bob's comment](https://github.com/owner/app/pull/7#issuecomment-5):\n\nAdded.")
     }
 }

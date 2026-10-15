@@ -16,6 +16,8 @@ One term per concept. Code, docs, logs and commits use the term in the left colu
 | **Verifying** | The card state between opening the review request and moving the card on, while the Manager waits for its CI (`wait_for_ci`, `finish = ci_then_merge`), merges it (`finish = merge` or `ci_then_merge`), or both. No worker runs and no slot is held. | waiting for CI, CI pending |
 | **Fix round** | A worker run on a `verifying` card's existing branch and review request: one that fixes its failed CI, or a rebase round. | CI retry, rework |
 | **Rebase round** | A fix round that rebases the card branch onto a base branch that moved, after the forge refused to merge it as outdated. | conflict round, re-merge |
+| **Review round** | A worker run on a card that its owner moved back to ready while its review request is open: the worker addresses the review feedback on the existing branch, and the Manager posts its replies and summary on the same review request. | review cycle, revision |
+| **Review feedback** | The unresolved threads and newer plain comments on a review request that a review round's worker gets, with only the notes that the trust check accepts. | review comments, MR comments |
 | **Pipeline** | The forge's CI run for one commit: a GitLab pipeline, or a GitHub commit's check runs taken together. | CI job (that is one part of it), build |
 | **Claim** | The Manager moving a ready card to `working` before it spawns a worker. | pick, take, assign |
 | **Release** | The Manager returning a `working` card to `ready` after a crash, hang or auth failure, with a note on the card. | reclaim, unclaim, bail |
@@ -25,7 +27,7 @@ One term per concept. Code, docs, logs and commits use the term in the left colu
 | **Finish mode** | A project's `finish` in the host config: `draft`, `ready`, `merge` or `ci_then_merge`. It decides whether the review request opens as a draft and whether the Manager merges it. | merge policy, auto-merge setting |
 | **Merge** | The Manager merging a card's review request into the base branch through the forge, for projects whose finish mode merges. | land, ship, auto-merge |
 | **Review merged** | The card state `review_merged`: the Manager merged the card's review request, and a human still has to look at the result. Not done: only a human decides that a card is done, and LoopWorker never does. | merged (except as Notion's option or GitLab's label), done, shipped |
-| **Push ledger** | `state/pushes.json`: the branch and commit that the Manager last pushed for each card. A push leases on it, and a re-queued card whose branch is still on the forge resumes from it. | push record, lease file |
+| **Push ledger** | `state/pushes.json`: per card, the branch and the commit that the Manager last pushed, or that a resumed card or fix round started from. A push leases on it, and a re-queued card whose branch is still on the forge resumes from it. | push record, lease file |
 | **Review request** | A forge's request to merge a branch: a GitLab merge request, a GitHub pull request. | MR, PR (except when naming one forge's object) |
 | **Vouch** | A human's act that makes a card trusted: on GitLab, the token's user adding the `next` label; on Notion, a trusted user being the last to edit a card in `next`. | approve, authorize |
 | **Trusted user** | A Notion user listed in `[backlog.notion] trusted_users`. Their edits vouch for cards and their blocks and comments reach the worker. | allowed user, owner |

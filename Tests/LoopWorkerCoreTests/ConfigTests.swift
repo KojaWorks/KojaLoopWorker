@@ -22,7 +22,7 @@ import Testing
         #expect(c.projects[0].finish == .draft)
     }
 
-    @Test("B202: finish decodes, draft is its deprecated alias, and conflicts or unknown modes fail")
+    @Test("B213: finish decodes, draft is its deprecated alias, and conflicts or unknown modes fail")
     func finishModes() throws {
         func parse(_ keys: String) throws -> HostConfig {
             try HostConfig.parse("[backlog]\nkind = \"gitlab\"\n[[project]]\npath = \"a/b\"\n\(keys)\n", home: home)
@@ -76,6 +76,8 @@ import Testing
     @Test func parsesDone() {
         let o = Outcome.parse(Data(#"{"outcome":"done","title":"T","body":"B","guide":"g.html"}"#.utf8))
         #expect(o == .done(title: "T", body: "B", guide: "g.html"))
+        let replies = Outcome.parse(Data(#"{"outcome":"done","title":"T","body":"B","replies":{"d1":"Renamed."}}"#.utf8))
+        #expect(replies == .done(title: "T", body: "B", guide: nil, replies: ["d1": "Renamed."]))  // B207
     }
 
     @Test func parsesStuck() {
@@ -168,7 +170,7 @@ import Testing
 
     @Test func outcomeTitleIsOneBoundedLine() {
         let long = String(repeating: "x", count: 500)
-        guard case .done(let title, _, _) = Outcome.parse(Data(#"{"outcome":"done","title":"\#(long)\nsecond"}"#.utf8)) else {
+        guard case .done(let title, _, _, _) = Outcome.parse(Data(#"{"outcome":"done","title":"\#(long)\nsecond"}"#.utf8)) else {
             Issue.record("not done"); return
         }
         #expect(title.count == Outcome.maxTitleLength)

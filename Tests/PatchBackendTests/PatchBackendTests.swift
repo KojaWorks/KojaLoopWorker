@@ -97,7 +97,7 @@ private func make(_ fake: FakePatch, _ patchKeys: String = "", log: LogRecorder 
         }
     }
 
-    @Test("B213: merged defaults to Merged, can be overridden, and must be distinct and non-empty")
+    @Test("B224: merged defaults to Merged, can be overridden, and must be distinct and non-empty")
     func mergedStatus() throws {
         #expect(try PatchConfig.from(hostConfig()).status.merged == "Merged")
         #expect(try PatchConfig.from(hostConfig(status: "[backlog.patch.status]\nmerged = \"Landed\"")).status.merged == "Landed")
@@ -501,7 +501,7 @@ private func make(_ fake: FakePatch, _ patchKeys: String = "", log: LogRecorder 
         #expect(fake.rows["roadmap"]![0]["status"] == .string("Shipped"))
     }
 
-    @Test("B213: markVerifying says what the Manager waits for, per plan")
+    @Test("B224: markVerifying says what the Manager waits for, per plan")
     func markVerifyingPerPlan() async throws {
         let pr = ReviewRequest(url: URL(string: "https://github.com/owner/app/pull/7")!, display: "owner/app#7")
         for (plan, text) in [(VerifyingPlan.ciThenReview, "Waiting for CI before review."),
@@ -515,7 +515,7 @@ private func make(_ fake: FakePatch, _ patchKeys: String = "", log: LogRecorder 
         }
     }
 
-    @Test("B213: markMerged moves verifying to Merged, links the review request and writes the note")
+    @Test("B224: markMerged moves verifying to Merged, links the review request and writes the note")
     func markMerged() async throws {
         let fake = FakePatch()
         fake.rows["roadmap"] = [card(1, status: "Verifying")]
@@ -533,7 +533,7 @@ private func make(_ fake: FakePatch, _ patchKeys: String = "", log: LogRecorder 
             .contains(URLQueryItem(name: "status", value: "eq.Verifying")))
     }
 
-    @Test("B213: markMerged needs a verifying card and writes nothing otherwise")
+    @Test("B224: markMerged needs a verifying card and writes nothing otherwise")
     func markMergedOnlyFromVerifying() async throws {
         let fake = FakePatch()
         fake.rows["roadmap"] = [card(1, status: "In progress")]

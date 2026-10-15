@@ -317,9 +317,28 @@ let reviewURL = URL(string: "https://forge.example/g/app/-/merge_requests/1")!
         #expect(h.git.calls.filter { $0.hasPrefix("commits") } == ["commitsAhead main", "commitsSince commit-1"])
         #expect(h.git.state.get.pushes.map(\.expected) == [nil, "commit-1"])
         #expect(h.forge.state.get.opened.count == 1)
+        #expect(h.forge.state.get.notes.map(\.text) == ["LoopWorker pushed `commit-2` to this branch.\n\nFixed the test."])  // B207
         #expect(h.backlog.card(id: "id-12")?.state == .verifying)
         let r = try #require(try record(h))
         #expect(r.sha == "commit-2" && r.round == 1)
+    }
+
+    @Test("B202, B212: a fix round leases on the branch tip it started from, which a human may have pushed, and counts its commits from there")
+    func fixRoundLeasesOnTheTip() async throws {
+        let h = try await verifying()
+        h.git.state { $0.remoteTips["loopworker-12-fix-it"] = "human-1" }
+        h.forge.state { $0.pipelines["commit-1"] = PipelineStatus(state: .failed, url: pipelineURL, failedJobs: [CIJob(name: "unit", stage: "", url: nil, logTail: "")]) }
+        h.clock.advance(121)
+        await h.cycle()
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 2)
+        #expect(h.log.contains("continuing g/app#12 from human-1, which includes commits pushed after LoopWorker's last push commit-1", level: .info))
+        try h.writeOutcome(#"{"outcome":"done","title":"Fix CI","body":"Fixed the test."}"#)
+        h.tmux.set("lw_g--app_0", alive: false)
+        await h.cycle()
+        #expect(h.git.state.get.pushes.map(\.expected) == [nil, "human-1"])
+        #expect(h.git.calls.filter { $0.hasPrefix("commitsSince") } == ["commitsSince human-1"])  // the human's commit isn't the worker's
+        #expect(h.backlog.card(id: "id-12")?.state == .verifying)
     }
 
     @Test("B168: a retried fix-round finish counts from the failed commit, not the moved origin/<branch>")
@@ -347,7 +366,7 @@ let reviewURL = URL(string: "https://forge.example/g/app/-/merge_requests/1")!
         try h.writeOutcome(#"{"outcome":"done","title":"Fix CI","body":"b"}"#)
         h.tmux.set("lw_g--app_0", alive: false)
         await h.cycle()
-        #expect(stuckBlocker(h) == "The worker reported done for CI fix round 1, but made no commits on `loopworker-12-fix-it` after the failed pipeline.")
+        #expect(stuckBlocker(h) == "The worker reported done for CI fix round 1, but made no commits on `loopworker-12-fix-it` after the commit that the round started from.")
     }
 
     @Test("B169: a pipeline that fails after the last fix round marks the card stuck with the failed jobs")

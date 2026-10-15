@@ -140,20 +140,29 @@ public struct GitHubForge: Forge {
         return try await request("GET", "repos/\(project.path)", as: Repo.self).default_branch
     }
 
+    public func openReviewRequest(for project: ProjectSpec, sourceBranch: String) async throws -> ReviewRequest? {
+        try await openPulls(project.path, sourceBranch).first?.reviewRequest(project.path)
+    }
+
+    private func openPulls(_ path: String, _ sourceBranch: String) async throws -> [Pull] {
+        let owner = path.split(separator: "/").first.map(String.init) ?? path
+        return try await request("GET", "repos/\(path)/pulls", query: [
+            URLQueryItem(name: "state", value: "open"),
+            URLQueryItem(name: "head", value: "\(owner):\(sourceBranch)"),
+        ], as: [Pull].self)
+    }
+
     public func openReviewRequest(_ draft: ReviewRequestDraft) async throws -> ReviewRequest {
         let path = draft.project.path
-        let owner = path.split(separator: "/").first.map(String.init) ?? path
-        let open = try await request("GET", "repos/\(path)/pulls", query: [
-            URLQueryItem(name: "state", value: "open"),
-            URLQueryItem(name: "head", value: "\(owner):\(draft.sourceBranch)"),
-        ], as: [Pull].self)
+        let open = try await openPulls(path, draft.sourceBranch)
         if let existing = open.first {
             let review = existing.reviewRequest(path)
             if draft.assignToOwner, existing.assignees?.isEmpty ?? true { await assignOwner(path, existing.number, review) }
             return review
         }
 
-        var body = NewPull(title: draft.title, head: draft.sourceBranch, base: draft.targetBranch, body: draft.body, draft: draft.draft)
+        var body = NewPull(title: draft.title, head: draft.sourceBranch, base: draft.targetBranch,
+                           body: draft.body + (draft.marker.map { "\n\n" + $0 } ?? ""), draft: draft.draft)
         let pull: Pull
         do {
             pull = try await request("POST", "repos/\(path)/pulls", body: body, as: Pull.self)
@@ -177,6 +186,282 @@ public struct GitHubForge: Forge {
         } catch {
             log.warning("can't assign \(review.display) (\(review.url.absoluteString)) to the token's user: \(error); leaving it unassigned")
         }
+    }
+
+    /// Reads the pull request's review threads, its conversation comments and the bodies of its
+    /// submitted reviews over GraphQL; a review body counts like a conversation comment. A
+    /// thread keeps its 100 newest comments; `cut` says when older ones were left out. A note's
+    /// time is `publishedAt`, because a comment in a review keeps its draft's `createdAt`.
+    public func reviewFeedback(for review: ReviewRequest, project: ProjectSpec, vouchedAt: Date?) async throws -> ReviewFeedback {
+        let number = try pullNumber(review)
+        let me = try await request("GET", "user", as: User.self).login
+        let parts = project.path.split(separator: "/", maxSplits: 1).map(String.init)
+        guard parts.count == 2 else { throw GitHubError.malformed("\(project.path) is not <owner>/<repo>") }
+        func note(_ c: GQLComment) -> ReviewFeedback.RawNote {
+            let edit: ReviewFeedback.Edit = c.lastEditedAt.map {
+                .edited(by: c.editor?.login ?? "ghost", owner: c.editor?.login.lowercased() == me.lowercased(), at: $0)
+            } ?? .never
+            return .init(id: c.id, author: c.author?.login ?? "ghost", byOwner: c.author?.login.lowercased() == me.lowercased(),
+                         createdAt: c.publishedAt ?? c.createdAt, body: c.body, edit: edit)
+        }
+        var threads: [ReviewFeedback.RawThread] = [], cut: [String] = [], opened: Date?
+        for query in [Self.reviewThreadsQuery, Self.commentsQuery, Self.reviewsQuery] {
+            var after: String?
+            repeat {
+                let data: GQLPullPage = try await graphQL("review feedback on \(review.display)", query, [
+                    "owner": parts[0], "name": parts[1], "number": number, "after": after ?? NSNull(),
+                ])
+                guard let pull = data.repository?.pullRequest else {
+                    throw GitHubError.malformed("GraphQL returned no pull request for \(review.display)")
+                }
+                opened = pull.createdAt
+                let info = pull.reviewThreads?.pageInfo ?? pull.comments?.pageInfo ?? pull.reviews?.pageInfo
+                if let t = pull.reviewThreads {
+                    for thread in t.nodes {
+                        let first = thread.comments.nodes.first
+                        let current = thread.line != nil
+                        let position = thread.path.map {
+                            ReviewFeedback.Position(path: $0, line: thread.line ?? thread.originalLine, side: thread.diffSide == "LEFT" ? .old : .new,
+                                                    commit: current ? first?.commit?.oid : first?.originalCommit?.oid)
+                        }
+                        if thread.comments.totalCount > thread.comments.nodes.count {
+                            cut.append("the \(thread.comments.totalCount - thread.comments.nodes.count) oldest comments of thread \(thread.id) were left out")
+                        }
+                        threads.append(.init(id: thread.id, position: position, resolvable: true, resolved: thread.isResolved,
+                                             notes: thread.comments.nodes.map(note)))
+                    }
+                }
+                let reviews = (pull.reviews?.nodes ?? []).filter { $0.state != "PENDING" && !$0.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                for c in (pull.comments?.nodes ?? []) + reviews {
+                    threads.append(.init(id: c.id, position: nil, resolvable: false, resolved: false, notes: [note(c)]))
+                }
+                after = info?.hasNextPage == true ? info?.endCursor : nil
+            } while after != nil
+        }
+        guard let opened else { throw GitHubError.malformed("GraphQL returned no createdAt for \(review.display)") }
+        var feedback = ReviewFeedback.build(threads, owner: me, openedAt: opened, vouchedAt: vouchedAt)
+        feedback.cut += cut
+        return feedback
+    }
+
+    static let reviewThreadsQuery = """
+        query($owner: String!, $name: String!, $number: Int!, $after: String) {
+          repository(owner: $owner, name: $name) {
+            pullRequest(number: $number) {
+              createdAt
+              reviewThreads(first: 50, after: $after) {
+                pageInfo { hasNextPage endCursor }
+                nodes {
+                  id isResolved path line originalLine diffSide
+                  comments(last: 100) {
+                    totalCount
+                    nodes { id author { login } body createdAt publishedAt lastEditedAt editor { login } commit { oid } originalCommit { oid } }
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+
+    static let commentsQuery = """
+        query($owner: String!, $name: String!, $number: Int!, $after: String) {
+          repository(owner: $owner, name: $name) {
+            pullRequest(number: $number) {
+              createdAt
+              comments(first: 100, after: $after) {
+                pageInfo { hasNextPage endCursor }
+                nodes { id author { login } body createdAt publishedAt lastEditedAt editor { login } }
+              }
+            }
+          }
+        }
+        """
+
+    static let reviewsQuery = """
+        query($owner: String!, $name: String!, $number: Int!, $after: String) {
+          repository(owner: $owner, name: $name) {
+            pullRequest(number: $number) {
+              createdAt
+              reviews(first: 100, after: $after) {
+                pageInfo { hasNextPage endCursor }
+                nodes { id state author { login } body createdAt publishedAt lastEditedAt editor { login } }
+              }
+            }
+          }
+        }
+        """
+
+    struct GQLLogin: Decodable { var login: String }
+    struct GQLCommit: Decodable { var oid: String }
+    struct GQLComment: Decodable {
+        var id: String
+        var author: GQLLogin?
+        var body: String
+        var createdAt: Date
+        /// Nil while the comment sits in a pending review.
+        var publishedAt: Date?
+        var lastEditedAt: Date?
+        var editor: GQLLogin?
+        /// A review's state; `PENDING` until it is submitted.
+        var state: String?
+        var commit: GQLCommit?
+        var originalCommit: GQLCommit?
+    }
+    struct GQLThread: Decodable {
+        struct Comments: Decodable {
+            var totalCount: Int
+            var nodes: [GQLComment]
+        }
+        var id: String
+        var isResolved: Bool
+        var path: String?
+        var line: Int?
+        var originalLine: Int?
+        var diffSide: String?
+        var comments: Comments
+    }
+    struct GQLPullPage: Decodable {
+        struct PageInfo: Decodable {
+            var hasNextPage: Bool
+            var endCursor: String?
+        }
+        struct Connection<Node: Decodable>: Decodable {
+            var pageInfo: PageInfo
+            var nodes: [Node]
+        }
+        struct Pull: Decodable {
+            var createdAt: Date
+            var reviewThreads: Connection<GQLThread>?
+            var comments: Connection<GQLComment>?
+            var reviews: Connection<GQLComment>?
+        }
+        struct Repository: Decodable { var pullRequest: Pull? }
+        var repository: Repository?
+    }
+
+    public func postReviewNote(_ text: String, marker: String, on review: ReviewRequest, project: ProjectSpec) async throws -> Bool {
+        struct PullBody: Decodable { var body: String? }
+        let number = try pullNumber(review)
+        if try await request("GET", "repos/\(project.path)/pulls/\(number)", as: PullBody.self).body?.contains(marker) == true { return false }
+        if try await myConversationComments(project, number).contains(where: { ReviewMarker.has(marker, $0) }) { return false }
+        try await postComment(project, number, ReviewMarker.note(text, markers: [marker]))
+        return true
+    }
+
+    /// A review thread gets a reply to its first comment. A conversation comment or a review
+    /// body has no thread, so its reply is a new conversation comment that links it.
+    public func replyToThread(_ thread: String, text: String, marker: String, on review: ReviewRequest, project: ProjectSpec) async throws -> ThreadReply {
+        let number = try pullNumber(review)
+        let result = try await graphQLEnvelope("thread \(thread) of \(review.display)", Self.threadQuery, ["id": thread], as: GQLNodeData.self)
+        if result.errors.contains(where: { $0.type == "NOT_FOUND" }) { return .noSuchThread }
+        guard let node = try result.get().node, node.repository?.nameWithOwner.lowercased() == project.path.lowercased(),
+              node.pullRequest?.number == number else { return .noSuchThread }
+        let body = ReviewMarker.note(text, markers: [marker])
+        let me = try await login()
+        switch node.typename {
+        case "PullRequestReviewThread":
+            if node.comments?.nodes.contains(where: { $0.author?.login.lowercased() == me.lowercased() && ReviewMarker.has(marker, $0.body ?? "") }) == true {
+                return .alreadyPosted
+            }
+            guard let first = node.first?.nodes.first?.databaseId else {
+                throw GitHubError.malformed("thread \(thread) of \(review.display) has no comment to reply to")
+            }
+            struct Reply: Encodable { var body: String }
+            _ = try await request("POST", "repos/\(project.path)/pulls/\(number)/comments/\(first)/replies", body: Reply(body: body), as: Ignored.self)
+        case "IssueComment", "PullRequestReview":
+            if try await myConversationComments(project, number).contains(where: { ReviewMarker.has(marker, $0) }) { return .alreadyPosted }
+            let link = node.url.map { "[@\(node.author?.login ?? "ghost")'s comment](\($0.absoluteString))" } ?? "a comment"
+            try await postComment(project, number, ReviewMarker.note("In reply to \(link):\n\n\(text)", markers: [marker]))
+        default:
+            return .noSuchThread
+        }
+        return .posted
+    }
+
+    static let threadQuery = """
+        query($id: ID!) {
+          node(id: $id) {
+            __typename
+            ... on PullRequestReviewThread {
+              repository { nameWithOwner }
+              pullRequest { number }
+              first: comments(first: 1) { nodes { databaseId } }
+              comments(last: 100) { nodes { author { login } body } }
+            }
+            ... on IssueComment {
+              repository { nameWithOwner }
+              pullRequest { number }
+              url
+              author { login }
+            }
+            ... on PullRequestReview {
+              repository { nameWithOwner }
+              pullRequest { number }
+              url
+              author { login }
+            }
+          }
+        }
+        """
+
+    struct GQLNodeData: Decodable {
+        struct Node: Decodable {
+            struct Repository: Decodable { var nameWithOwner: String }
+            struct Pull: Decodable { var number: Int }
+            struct Comments: Decodable {
+                struct Comment: Decodable {
+                    var databaseId: Int?
+                    var author: GQLLogin?
+                    var body: String?
+                }
+                var nodes: [Comment]
+            }
+            var typename: String
+            var repository: Repository?
+            var pullRequest: Pull?
+            var first: Comments?
+            var comments: Comments?
+            var url: URL?
+            var author: GQLLogin?
+            enum CodingKeys: String, CodingKey {
+                case typename = "__typename", repository, pullRequest, first, comments, url, author
+            }
+        }
+        var node: Node?
+    }
+
+    private func login() async throws -> String { try await request("GET", "user", as: User.self).login }
+
+    /// The bodies of every conversation comment on pull request `number` that the token's user wrote.
+    private func myConversationComments(_ project: ProjectSpec, _ number: Int) async throws -> [String] {
+        struct Comment: Decodable {
+            var body: String?
+            var user: User?
+        }
+        let me = try await login().lowercased()
+        var mine: [String] = []
+        for page in 1... {
+            let comments = try await request("GET", "repos/\(project.path)/issues/\(number)/comments", query: [
+                URLQueryItem(name: "per_page", value: "100"), URLQueryItem(name: "page", value: "\(page)"),
+            ], as: [Comment].self)
+            mine += comments.filter { $0.user?.login.lowercased() == me }.compactMap(\.body)
+            if comments.count < 100 { break }
+        }
+        return mine
+    }
+
+    private func postComment(_ project: ProjectSpec, _ number: Int, _ body: String) async throws {
+        struct Body: Encodable { var body: String }
+        _ = try await request("POST", "repos/\(project.path)/issues/\(number)/comments", body: Body(body: body), as: Ignored.self)
+    }
+
+    /// The number in a display that `Pull.reviewRequest` made, `<path>#<number>`.
+    private func pullNumber(_ review: ReviewRequest) throws -> Int {
+        guard let n = review.display.split(separator: "#").last.flatMap({ Int($0) }) else {
+            throw GitHubError.malformed("\(review.display) (\(review.url.absoluteString)) doesn't name a pull request as <path>#<number>")
+        }
+        return n
     }
 
     /// The commit's latest check runs (GitHub Actions and other apps), read as one pipeline:
@@ -343,10 +628,31 @@ public struct GitHubForge: Forge {
     private func request<B: Encodable, T: Decodable>(
         _ method: String, _ path: String, query: [URLQueryItem] = [], body: B?, refusals: Set<Int> = [], as: T.Type
     ) async throws -> T {
-        let label = "\(method) /\(path)"
         var comps = URLComponents(url: apiBase.appending(path: path), resolvingAgainstBaseURL: false)!
         comps.queryItems = query.isEmpty ? nil : query
-        var req = URLRequest(url: comps.url!, timeoutInterval: 30)
+        return try await send(method, comps.url!, label: "\(method) /\(path)", body: try body.map { try JSONEncoder().encode($0) },
+                              refusals: refusals, as: T.self)
+    }
+
+    /// The GraphQL endpoint: `/graphql` on api.github.com, `/api/graphql` on Enterprise.
+    var graphQLURL: URL {
+        apiBase.path.hasSuffix("/v3") ? apiBase.deletingLastPathComponent().appending(path: "graphql") : apiBase.appending(path: "graphql")
+    }
+
+    /// Runs a GraphQL operation and returns its `data`; any `errors` throw.
+    private func graphQL<T: Decodable>(_ operation: String, _ query: String, _ variables: [String: Any]) async throws -> T {
+        try await graphQLEnvelope(operation, query, variables, as: T.self).get()
+    }
+
+    private func graphQLEnvelope<T: Decodable>(_ operation: String, _ query: String, _ variables: [String: Any], as: T.Type) async throws -> GraphQLResult<T> {
+        let label = "POST graphql \(operation)"
+        let body = try JSONSerialization.data(withJSONObject: ["query": query, "variables": variables], options: [.sortedKeys])
+        let envelope = try await send("POST", graphQLURL, label: label, body: body, as: GraphQLEnvelope<T>.self)
+        return GraphQLResult(label: label, data: envelope.data, errors: envelope.errors ?? [])
+    }
+
+    private func send<T: Decodable>(_ method: String, _ url: URL, label: String, body: Data?, refusals: Set<Int> = [], as: T.Type) async throws -> T {
+        var req = URLRequest(url: url, timeoutInterval: 30)
         req.httpMethod = method
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
@@ -354,7 +660,7 @@ public struct GitHubForge: Forge {
         req.setValue("loopworker", forHTTPHeaderField: "User-Agent")
         if let body {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            req.httpBody = try JSONEncoder().encode(body)
+            req.httpBody = body
         }
 
         var attempt = 0
@@ -365,7 +671,7 @@ public struct GitHubForge: Forge {
             let status = resp.statusCode
             if (200..<300).contains(status) {
                 if data.isEmpty, let none = NoBody() as? T { return none }
-                do { return try JSONDecoder().decode(T.self, from: data) }
+                do { return try Self.decoder.decode(T.self, from: data) }
                 catch { throw GitHubError.malformed("\(label): \(error)") }
             }
             let message = Self.message(data)
@@ -385,6 +691,35 @@ public struct GitHubForge: Forge {
                 throw GitHubError.unauthorized(tokenEnv: tokenEnv, request: label, status: status, message: message)
             }
             throw BackendRejection("\(label): \(status) \(message)")
+        }
+    }
+
+    static var decoder: JSONDecoder {
+        let d = JSONDecoder()
+        d.dateDecodingStrategy = .iso8601
+        return d
+    }
+
+    struct GraphQLError: Decodable {
+        var message: String
+        /// `NOT_FOUND` for an id that names nothing.
+        var type: String?
+    }
+
+    private struct GraphQLEnvelope<T: Decodable>: Decodable {
+        var data: T?
+        var errors: [GraphQLError]?
+    }
+
+    struct GraphQLResult<T> {
+        var label: String
+        var data: T?
+        var errors: [GraphQLError]
+
+        func get() throws -> T {
+            if !errors.isEmpty { throw GitHubError.malformed("\(label): \(errors.map(\.message).joined(separator: "; "))") }
+            guard let data else { throw GitHubError.malformed("\(label): response has no data") }
+            return data
         }
     }
 

@@ -64,7 +64,7 @@ import Testing
         #expect(check.remedy?.contains("Connections") == true)
     }
 
-    @Test("B212: doctor requires the merged option only for a project that finishes by merging")
+    @Test("B223: doctor requires the merged option only for a project that finishes by merging")
     func mergedOptionOnlyForMergingProjects() async throws {
         let fake = FakeNotion()
         fake.addDatabase()

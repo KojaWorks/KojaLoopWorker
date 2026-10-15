@@ -33,6 +33,30 @@ final class FakeForge: Forge, @unchecked Sendable {
         /// `<review request url> @ <head>` per `merge` call.
         var mergeCalls: [String] = []
         var failMerge: (any Error)?
+        /// What `reviewFeedback` returns per review request URL; none: empty.
+        var feedback: [URL: ReviewFeedback] = [:]
+        /// The `vouchedAt` of each `reviewFeedback` call.
+        var feedbackCalls: [Date?] = []
+        var failFeedback: (any Error)?
+        /// The round marker of each review request's description, by URL.
+        var descriptionMarkers: [URL: String] = [:]
+        /// Every note that `postReviewNote` posted.
+        var notes: [Posted] = []
+        /// Makes the next `postReviewNote` throw once.
+        var failNextNote: (any Error)?
+        /// The thread ids each review request has, by URL.
+        var threads: [URL: Set<String>] = [:]
+        /// Every reply that `replyToThread` posted.
+        var replies: [Posted] = []
+        /// Threads whose reply throws.
+        var failReplies: Set<String> = []
+    }
+
+    struct Posted: Equatable {
+        var review: URL
+        var thread: String?
+        var marker: String
+        var text: String
     }
 
     let state = Guarded(State())
@@ -52,7 +76,39 @@ final class FakeForge: Forge, @unchecked Sendable {
                                    display: "\(draft.project.path)!\(n)")
             $0.opened.append(draft)
             $0.byBranch[draft.sourceBranch] = rr
+            $0.descriptionMarkers[rr.url] = draft.marker
             return rr
+        }
+    }
+
+    func openReviewRequest(for project: ProjectSpec, sourceBranch: String) async throws -> ReviewRequest? {
+        state.get.byBranch[sourceBranch]
+    }
+
+    func reviewFeedback(for review: ReviewRequest, project: ProjectSpec, vouchedAt: Date?) async throws -> ReviewFeedback {
+        try state {
+            $0.feedbackCalls.append(vouchedAt)
+            if let e = $0.failFeedback { throw e }
+            return $0.feedback[review.url] ?? ReviewFeedback()
+        }
+    }
+
+    func postReviewNote(_ text: String, marker: String, on review: ReviewRequest, project: ProjectSpec) async throws -> Bool {
+        try state {
+            if let e = $0.failNextNote { $0.failNextNote = nil; throw e }
+            if $0.descriptionMarkers[review.url] == marker || $0.notes.contains(where: { $0.review == review.url && $0.marker == marker }) { return false }
+            $0.notes.append(Posted(review: review.url, marker: marker, text: text))
+            return true
+        }
+    }
+
+    func replyToThread(_ thread: String, text: String, marker: String, on review: ReviewRequest, project: ProjectSpec) async throws -> ThreadReply {
+        try state {
+            guard $0.threads[review.url]?.contains(thread) == true else { return .noSuchThread }
+            if $0.failReplies.contains(thread) { throw FakeError("reply in \(thread) failed") }
+            if $0.replies.contains(where: { $0.review == review.url && $0.marker == marker }) { return .alreadyPosted }
+            $0.replies.append(Posted(review: review.url, thread: thread, marker: marker, text: text))
+            return .posted
         }
     }
 

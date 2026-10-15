@@ -12,7 +12,8 @@ struct CardRecord: Codable, Equatable {
     var claimedAt: Date
     /// Set for a CI fix round: its number, from 1.
     var ciRound: Int? = nil
-    /// Set for a CI fix round: the pushed commit whose pipeline failed.
+    /// Set for a CI fix round: the commit that the round started from, the branch tip after
+    /// the failed pipeline's commit; the round's own commits count from it.
     var ciCommit: String? = nil
     /// Set for a fix round that rebases the card branch.
     var rebaseRound: Bool? = nil
@@ -21,6 +22,8 @@ struct CardRecord: Codable, Equatable {
     /// Set for a rebase round once spawned: the commit that `origin/<base>` pointed at, which
     /// the worker rebases onto.
     var rebaseTarget: String? = nil
+    /// When a review round read the review feedback; its note's marker carries it.
+    var feedbackReadAt: Date? = nil
 
     static func read(_ file: URL) -> CardRecord? {
         guard let data = try? Data(contentsOf: file) else { return nil }
@@ -67,6 +70,13 @@ struct LastOutcome: Codable, Equatable {
 struct PushRecord: Codable, Equatable {
     var branch: String
     var commit: String
+}
+
+/// A worker run's identity on the review request, from its `card.json`: `id` is
+/// `ReviewMarker.roundID` of the claim time, `readAt` when it read the review feedback.
+struct Round: Sendable, Equatable {
+    var id: String
+    var readAt: Date?
 }
 
 /// A start or finish step failed; `step` says which, for the log.
@@ -118,7 +128,7 @@ extension Manager {
         }
         for c in candidates {
             guard let p = projects[c.key], !draining, !forceRequested,
-                  let card = cards.first(where: { $0.project.lowercased() == p.spec.path.lowercased() }),
+                  let card = cards.first(where: { $0.project.lowercased() == p.spec.path.lowercased() && !(claimBackoff[$0.ref.id].map { $0.until > now } ?? false) }),
                   let slot = p.slots.first(where: { $0.id == c.slot }), isFree(slot) else { continue }
             startWorker(card, on: SlotRef(key: c.key, id: c.slot))
             return
@@ -221,7 +231,20 @@ extension Manager {
             await abortStart(ref, card: card, contract: contract, why: "\(error)", broken: nil)
             return
         }
-        await acquireAndSpawn(ref, spec: spec, card: card, contract: contract, base: base, branch: branch, fix: nil, resuming: resuming)
+        // Read before acquiring, so a read that keeps failing doesn't provision a slot every time.
+        var snapshot: CardSnapshot?, reviewRound: WorkerBrief.ReviewRound?
+        if resuming {
+            do {
+                let read = try await self.snapshot(spec, card: card)
+                reviewRound = try await self.reviewRound(spec, card: card, branch: branch, vouchedAt: read.vouchedAt)
+                snapshot = read
+            } catch {
+                await releaseBeforeAcquire(ref, card: card, why: "\(error)")
+                return
+            }
+        }
+        await acquireAndSpawn(ref, spec: spec, card: card, contract: contract, base: base, branch: branch, fix: nil, resuming: resuming,
+                              snapshot: snapshot, reviewRound: reviewRound)
     }
 
     /// True when an earlier attempt of this card pushed `branch` and it is still on the forge,
@@ -250,13 +273,31 @@ extension Manager {
     /// A fix round or a resumed card resets the slot to the pushed card branch instead of the
     /// base branch.
     func acquireAndSpawn(_ ref: SlotRef, spec: SlotSpec, card: Card, contract: ProjectContract, base: String, branch: String,
-                         fix: FixRound?, resuming: Bool = false) async {
+                         fix: FixRound?, resuming: Bool = false, snapshot: CardSnapshot? = nil,
+                         reviewRound: WorkerBrief.ReviewRound? = nil) async {
         let dir = spec.stateDir
         let baseCommit: String
         do { baseCommit = try await deps.lifecycle.acquire(spec, contract: contract, base: fix == nil && !resuming ? base : branch, branch: branch) }
         catch {
             await abortStart(ref, card: card, contract: contract, why: "preparing the slot failed: \(error)", broken: error, fix: fix)
             return
+        }
+        if fix != nil || resuming {
+            do {
+                try leaseOnTip(spec, card: card, branch: branch, tip: baseCommit)
+                if fix != nil {
+                    // The round's own commits count from here, not from the failed commit: someone may have pushed since.
+                    let file = cardRecordFile(spec)
+                    guard var record = CardRecord.read(file) else { throw ConfigError("\(file.path) is missing or unreadable") }
+                    record.ciCommit = baseCommit
+                    try record.write(file)
+                    update(ref) { $0.ciCommit = baseCommit }
+                }
+            } catch {
+                await abortStart(ref, card: card, contract: contract, why: "recording \(branch) at \(baseCommit.prefix(12)) as the round's start failed: \(error)",
+                                 broken: nil, fix: fix)
+                return
+            }
         }
 
         // The project refresh moves the shared origin/<base>, so the round rebases onto a pinned commit.
@@ -278,7 +319,7 @@ extension Manager {
 
         do {
             try await writeWorkerFiles(spec, card: card, contract: contract, base: base, branch: branch, fix: fix,
-                                       rebaseTarget: rebaseTarget, resuming: resuming)
+                                       rebaseTarget: rebaseTarget, resuming: resuming, snapshot: snapshot, reviewRound: reviewRound)
         } catch {
             await abortStart(ref, card: card, contract: contract, why: "\(error)", broken: nil, fix: fix)
             return
@@ -296,17 +337,18 @@ extension Manager {
             $0.spawnedAt = clock.now()
         }
         if fix != nil { unwatch(card.ref.id) }
+        claimBackoff[card.ref.id] = nil
         let round = fix.map { " for \($0.name)" } ?? (resuming ? " resuming its pushed branch" : "")
         log.info("\(label(spec)): spawned worker\(round) for \(card.ref) on \(branch) at \(baseCommit.prefix(12)), base \(base), model \(model ?? "default")")
         watchFolderTrust(spec.session)
     }
 
     func writeWorkerFiles(_ spec: SlotSpec, card: Card, contract: ProjectContract, base: String, branch: String,
-                          fix: FixRound? = nil, rebaseTarget: String? = nil, resuming: Bool = false) async throws {
+                          fix: FixRound? = nil, rebaseTarget: String? = nil, resuming: Bool = false, snapshot read: CardSnapshot? = nil,
+                          reviewRound: WorkerBrief.ReviewRound? = nil) async throws {
         let dir = spec.stateDir
         let snapshot: CardSnapshot
-        do { snapshot = try await deps.backlog.snapshot(card) }
-        catch { throw StepError(step: "reading the card's snapshot", error: error) }
+        if let read { snapshot = read } else { snapshot = try await self.snapshot(spec, card: card) }
         for line in snapshot.excluded { log.info("\(label(spec)): withheld from \(card.ref): \(line)") }
         var markdown = snapshot.markdown
         if !snapshot.excluded.isEmpty {
@@ -328,7 +370,8 @@ extension Manager {
         }
         let brief = WorkerBrief(card: card, project: spec.project, slot: spec, baseBranch: base, branch: branch,
                                 snapshotFile: snapshotFile, excluded: snapshot.excluded, contract: contract, ciFix: ciFix,
-                                rebase: rebase, resuming: resuming, previousAttempt: await previousAttempt(spec, card: card)).render()
+                                rebase: rebase, resuming: resuming, previousAttempt: await previousAttempt(spec, card: card),
+                                reviewRound: reviewRound).render()
 
         var env: [(name: String, value: String)] = []
         for name in ["CLAUDE_CODE_OAUTH_TOKEN"] + spec.project.workerEnv where !env.contains(where: { $0.name == name }) {
@@ -367,6 +410,51 @@ extension Manager {
         } catch {
             throw StepError(step: "writing the worker's files in \(dir.path)", error: error)
         }
+    }
+
+    func snapshot(_ spec: SlotSpec, card: Card) async throws -> CardSnapshot {
+        do { return try await deps.backlog.snapshot(card) }
+        catch { throw StepError(step: "reading the card's snapshot", error: error) }
+    }
+
+    /// A start failed before the slot was acquired: releases the card (not counted: the read
+    /// failed, not the worker) and backs off claiming it, 30 s doubling to 10 min, so a read
+    /// that fails every time doesn't loop claim and release every tick.
+    func releaseBeforeAcquire(_ ref: SlotRef, card: Card, why: String) async {
+        guard let spec = slot(ref)?.spec else { return }
+        let failures = (claimBackoff[card.ref.id]?.failures ?? 0) + 1
+        let delay = min(30 * pow(2, Double(failures - 1)), 600)
+        claimBackoff[card.ref.id] = (clock.now().addingTimeInterval(delay), failures)
+        log.error("\(label(spec)): couldn't start a worker for \(card.ref): \(why); releasing it and not claiming it again for \(Int(delay)) s (\(failures) failure(s) in a row)")
+        do { try await deps.backlog.release(card, reason: "Couldn't start a worker: \(why)", countsAsAttempt: false) }
+        catch { log.error("\(label(spec)): can't release \(card.ref): \(error); the stranded-card sweep retries") }
+        try? FileManager.default.removeItem(at: cardRecordFile(spec))
+        free(ref)
+    }
+
+    /// The open review request of `branch` and its capped, redacted feedback; nil when none is
+    /// open or it has no feedback. Records the read time in `card.json` and logs what was
+    /// withheld or cut.
+    func reviewRound(_ spec: SlotSpec, card: Card, branch: String, vouchedAt: Date?) async throws -> WorkerBrief.ReviewRound? {
+        let forge = deps.forge, project = spec.project
+        guard let review = try await step("looking for an open review request of \(branch)", {
+            try await forge.openReviewRequest(for: project, sourceBranch: branch)
+        }) else { return nil }
+        let readAt = clock.now()
+        let feedback = try await step("reading the review feedback on \(review.display)") {
+            try await forge.reviewFeedback(for: review, project: project, vouchedAt: vouchedAt)
+        }.capped(redact: deps.redact)
+        let file = cardRecordFile(spec)
+        do {
+            guard var record = CardRecord.read(file) else { throw ConfigError("\(file.path) is missing or unreadable") }
+            record.feedbackReadAt = readAt
+            try record.write(file)
+        } catch { throw StepError(step: "recording when the review feedback was read", error: error) }
+        for line in feedback.withheld { log.info("\(label(spec)): withheld from \(card.ref)'s review round: \(line)") }
+        for line in feedback.cut { log.info("\(label(spec)): cut from \(card.ref)'s review round: \(line)") }
+        guard !feedback.isEmpty else { return nil }
+        log.info("\(label(spec)): \(card.ref) is a review round on \(review.display) with \(feedback.threads.count) threads")
+        return WorkerBrief.ReviewRound(review: review, feedback: feedback)
     }
 
     /// The newest outcome that any of the project's slots kept for this card, and the
@@ -605,13 +693,19 @@ extension Manager {
             update(ref) { $0.task = nil }
             return
         }
+        let record = CardRecord.read(cardRecordFile(spec))
+        if record == nil {
+            log.error("\(label(spec)): can't read \(cardRecordFile(spec).path); finishing \(card.ref) with the round named by its spawn time")
+        }
+        let round = Round(id: ReviewMarker.roundID(claimedAt: record?.claimedAt ?? s.spawnedAt ?? clock.now()), readAt: record?.feedbackReadAt)
         do {
             do {
                 switch Outcome.parse(data) {
-                case .done(let title, let body, let guide):
+                case .done(let title, let body, let guide, let replies):
                     do {
                         try await finishDone(spec, card: card, branch: branch, base: base, title: title, body: body, guide: guide,
-                                             ciRound: s.ciRound, ciCommit: s.ciCommit, rebaseRound: s.rebaseRound, rebases: s.rebases, rebaseTarget: s.rebaseTarget,
+                                             replies: replies, round: round, ciRound: s.ciRound, ciCommit: s.ciCommit,
+                                             rebaseRound: s.rebaseRound, rebases: s.rebases, rebaseTarget: s.rebaseTarget,
                                              plan: Self.verifyingPlan(spec.project, contract: projects[ref.key]?.contract))
                     } catch let rejection as BackendRejection {
                         try await stuck(spec, card: card, blocker: "Couldn't finish: the forge or backlog refused: \(rejection)")
@@ -619,6 +713,8 @@ extension Manager {
                 case .stuck(let blocker):
                     try await finishStuck(spec, card: card, branch: branch, base: base, blocker: blocker)
                 }
+            } catch is PushRejected where readPushes()[card.ref.id]?.branch == branch {
+                try await stuck(spec, card: card, blocker: "Someone pushed to `\(branch)` while the worker ran, so LoopWorker didn't overwrite those commits and didn't push the worker's. Move the card back to ready to redo this round on top of them.")
             } catch is PushRejected {
                 try await stuck(spec, card: card, blocker: "Branch `\(branch)` already exists on the forge and wasn't created by LoopWorker for this card, so LoopWorker didn't overwrite it. Rename or delete that branch (or change the project's branch template), then move the card back to ready.")
             }
@@ -632,15 +728,16 @@ extension Manager {
 
     /// - Parameters:
     ///   - ciRound: set for a fix round: the watch's round after it.
-    ///   - ciCommit: set for a CI fix round: the failed commit, which the round's new commits
-    ///     count from. Not `origin/<branch>`, which any later fetch moves to the round's own push.
+    ///   - ciCommit: set for a fix round: the commit that the round started from, which its new
+    ///     commits count from. Not `origin/<branch>`, which any later fetch moves to the round's own push.
     ///   - rebaseRound: the fix round rebases the branch, so its target must be an ancestor of HEAD.
     ///   - rebaseTarget: the commit that the rebase round targets; nil checks `origin/<base>`.
     ///   - rebases: the watch's rebase rounds after this round.
     ///   - plan: what the card waits for in `verifying`; nil moves it straight to `review`.
     func finishDone(
         _ spec: SlotSpec, card: Card, branch: String, base: String, title: String, body: String, guide: String?,
-        ciRound: Int? = nil, ciCommit: String? = nil, rebaseRound: Bool = false, rebases: Int = 0, rebaseTarget: String? = nil, plan: VerifyingPlan? = nil
+        replies: [String: String] = [:], round: Round, ciRound: Int? = nil, ciCommit: String? = nil, rebaseRound: Bool = false,
+        rebases: Int = 0, rebaseTarget: String? = nil, plan: VerifyingPlan? = nil
     ) async throws {
         let ahead = try await step("counting commits on \(branch)") {
             if let ciCommit { try await self.deps.git.commitsSince(spec.worktree, commit: ciCommit) }
@@ -649,7 +746,7 @@ extension Manager {
         guard ahead > 0 else {
             let blocker = rebaseRound
                 ? "The worker reported done for rebase round \(rebases), but `\(branch)` has no commits after `\(ciCommit?.prefix(12) ?? "")`."
-                : ciRound.map { "The worker reported done for CI fix round \($0 - rebases), but made no commits on `\(branch)` after the failed pipeline." }
+                : ciRound.map { "The worker reported done for CI fix round \($0 - rebases), but made no commits on `\(branch)` after the commit that the round started from." }
                     ?? "The worker reported done, but branch `\(branch)` has no commits ahead of `\(base)`."
             try await stuck(spec, card: card, blocker: blocker)
             return
@@ -682,11 +779,26 @@ extension Manager {
             log.warning("\(label(spec)): didn't attach \(r.path)\(resolved) to \(card.ref)'s review request: \(r.reason)")
             text += "\n\nLoopWorker didn't attach \(r.path.replacingOccurrences(of: "\n", with: " ")): \(r.reason)"
         }
+        let existing = try await step("looking for an open review request of \(branch)") {
+            try await forge.openReviewRequest(for: project, sourceBranch: branch)
+        }
+        if existing == nil, !replies.isEmpty {
+            let ids = replies.keys.sorted()
+            log.warning("\(label(spec)): \(card.ref)'s worker replied to threads \(ids.map { String($0.prefix(12)) }.joined(separator: ", ")), but \(branch) has no open review request; adding them to the new one's description")
+            text += "\n\nLoopWorker didn't post the worker's replies to threads " + ids.map(Self.inlineCode).joined(separator: ", ")
+                + ": the branch had no open review request.\n\n" + ids.map { "\(Self.inlineCode($0)):\n\n\(replies[$0]!)" }.joined(separator: "\n\n")
+        }
         let cardLine = card.url.map { "Card: [\(card.ref.display)](\($0.absoluteString))" } ?? "Card: \(card.ref.display)"
         let draft = ReviewRequestDraft(
             project: spec.project, card: card, sourceBranch: branch, targetBranch: base, title: title,
-            body: "\(text)\n\n---\n\(cardLine)\(guideLine)\n", draft: spec.project.finish.opensDraft, assignToOwner: true)
-        let review = try await step("opening the review request") { try await self.deps.forge.openReviewRequest(draft) }
+            body: "\(text)\n\n---\n\(cardLine)\(guideLine)\n", draft: spec.project.finish.opensDraft, assignToOwner: true,
+            marker: ReviewMarker.round(round.id, commit: commit, read: round.readAt))
+        // On an open one this only assigns the owner when it has no assignee.
+        let review = try await step("opening the review request") { try await forge.openReviewRequest(draft) }
+        if existing != nil {
+            try await postRound(spec, card: card, review: review, round: round, commit: commit,
+                                text: text + (guideLine.isEmpty ? "" : "\n" + guideLine), replies: replies)
+        }
         guard let plan else {
             try await step("moving \(card.ref) to review") { try await self.deps.backlog.markReview(card, review: review) }
             log.info("\(label(spec)): finished \(card.ref): \(review.display) \(review.url.absoluteString)")
@@ -706,9 +818,40 @@ extension Manager {
         log.info("\(label(spec)): \(card.ref) \(waits): \(review.display) \(review.url.absoluteString)")
     }
 
-    /// Pushes the card branch with a lease on the commit the Manager last pushed for this
-    /// card (none: the branch must not exist yet), so a branch that someone else made is never
-    /// overwritten, then records the new commit. Uploads the branch's LFS objects first.
+    /// Posts a round's replies into their threads, then `text` as a note on `review` under a
+    /// line naming `commit`. A reply that fails or names an unknown thread is logged and listed
+    /// under the note; a failed note throws, and a retry finds what was already posted.
+    func postRound(_ spec: SlotSpec, card: Card, review: ReviewRequest, round: Round, commit: String, text: String, replies: [String: String]) async throws {
+        let forge = deps.forge, project = spec.project
+        var problems: [String] = []
+        for (thread, reply) in replies.sorted(by: { $0.key < $1.key }) {
+            do {
+                switch try await forge.replyToThread(thread, text: reply, marker: ReviewMarker.reply(round.id, thread: thread), on: review, project: project) {
+                case .posted: log.info("\(label(spec)): replied in thread \(thread.prefix(12)) of \(review.display)")
+                case .alreadyPosted: log.info("\(label(spec)): thread \(thread) of \(review.display) already has this round's reply")
+                case .noSuchThread:
+                    log.warning("\(label(spec)): \(card.ref)'s worker replied to thread \(thread.prefix(12)), which \(review.display) doesn't have; listing it under the round's note")
+                    problems.append("LoopWorker didn't post the worker's reply to thread \(Self.inlineCode(thread)): \(review.display) has no such thread. The reply:\n\n\(reply)")
+                }
+            } catch {
+                log.error("\(label(spec)): replying in thread \(thread.prefix(12)) of \(review.display) failed: \(error)")
+                problems.append("LoopWorker couldn't post the worker's reply in thread \(Self.inlineCode(thread)); the Manager's log on \(hostName) has the error. The reply:\n\n\(reply)")
+            }
+        }
+        let note = "LoopWorker pushed `\(commit.prefix(12))` to this branch.\n\n\(text)" + problems.map { "\n\n" + $0 }.joined()
+        let posted = try await step("posting this round's note on \(review.display)") {
+            try await forge.postReviewNote(note, marker: ReviewMarker.round(round.id, commit: commit, read: round.readAt), on: review, project: project)
+        }
+        if !posted { log.info("\(label(spec)): \(review.display) already has this round's note; not posting it again") }
+    }
+
+    /// `text` as inline code on one line.
+    static func inlineCode(_ text: String) -> String { "`" + text.filter { $0 != "`" && !$0.isNewline } + "`" }
+
+    /// Pushes the card branch with a lease on the card's commit in the push ledger (the
+    /// Manager's last push, or the tip that a resumed card or fix round started from; none: the
+    /// branch must not exist yet), so a branch that someone else made, or a commit that someone
+    /// pushed while the worker ran, is never overwritten, then records the new commit. Uploads the branch's LFS objects first.
     @discardableResult
     func pushBranch(_ spec: SlotSpec, card: Card, branch: String) async throws -> String {
         let last = readPushes()[card.ref.id].flatMap { $0.branch == branch ? $0.commit : nil }
@@ -726,6 +869,20 @@ extension Manager {
         do { try writePushes(pushes) }
         catch { log.error("\(label(spec)): pushed \(branch) at \(commit.prefix(12)) but can't record it in \(pushLedger.path): \(error); the card's next push will be refused as someone else's branch") }
         return commit
+    }
+
+    /// Records `tip`, the forge's commit that a resumed card or a fix round starts from, as the
+    /// card's last push, so the finish's lease expects it even when someone else pushed to the
+    /// branch after the Manager did.
+    func leaseOnTip(_ spec: SlotSpec, card: Card, branch: String, tip: String) throws {
+        var pushes = readPushes()
+        let last = pushes[card.ref.id]
+        guard last != PushRecord(branch: branch, commit: tip) else { return }
+        if let last, last.branch == branch {
+            log.info("\(label(spec)): continuing \(card.ref) from \(tip.prefix(12)), which includes commits pushed after LoopWorker's last push \(last.commit.prefix(12))")
+        }
+        pushes[card.ref.id] = PushRecord(branch: branch, commit: tip)
+        try writePushes(pushes)
     }
 
     var pushLedger: URL { stateDir.appending(path: "pushes.json") }

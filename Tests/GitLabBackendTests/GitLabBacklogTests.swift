@@ -277,6 +277,24 @@ import Testing
             "comment 305 by @mallory at \(Fixture.t(10))",
             "comment 310 by @me at \(Fixture.t(20)): posted by LoopWorker",
         ])
+        #expect(snapshot.vouchedAt == Fixture.date(2))  // B203: the release keeps the human's cutoff
+    }
+
+    @Test("B209: an issue note's lastEditedAt without lastEditedBy is no edit, so a later resolve doesn't withhold it")
+    func snapshotIgnoresEditTimesWithoutAnEditor() async throws {
+        let w = World()
+        var bumped = Fixture.gqlNote(5, "said before the label", by: Fixture.mallory, at: 1)
+        bumped["lastEditedAt"] = Fixture.t(30)
+        var mine = Fixture.gqlNote(6, "mine, resolved later", by: Fixture.me, at: 1)
+        mine["lastEditedAt"] = Fixture.t(30)
+        w.gitlab.on("POST", "/api/graphql", bodyContains: "issue(iid", json: Fixture.gqlIssue(notes: [
+            bumped, mine, Fixture.gqlNote(7, "edited late", by: Fixture.mallory, at: 1, editedBy: Fixture.mallory, editedAt: 30),
+        ]))
+        let backlog = try w.backlog()
+        let card = try #require(try await backlog.workable(in: [World.app]).first)
+        let snapshot = try await backlog.snapshot(card)
+        #expect(snapshot.markdown.contains("said before the label") && snapshot.markdown.contains("mine, resolved later"))
+        #expect(snapshot.excluded == ["comment 7 by @mallory at \(Fixture.t(1)), edited by @mallory at \(Fixture.t(30))"])
     }
 
     @Test func snapshotFollowsNotePagesAndSendsTheIssueCoordinates() async throws {
@@ -465,7 +483,7 @@ import Testing
             == ["loopworker::review", "loopworker::stuck"])
     }
 
-    @Test("B211: markVerifying says what the Manager waits for, per plan")
+    @Test("B222: markVerifying says what the Manager waits for, per plan")
     func markVerifyingPerPlan() async throws {
         for (plan, text) in [(VerifyingPlan.ciThenReview, "Waiting for CI before review."),
                              (.ciThenMerge, "Waiting for CI before merging."), (.merge, "Merging into the base branch.")] {
@@ -476,7 +494,7 @@ import Testing
         }
     }
 
-    @Test("B211: the <prefix>merged label reads as review_merged; with another state label it is other")
+    @Test("B222: the <prefix>merged label reads as review_merged; with another state label it is other")
     func mergedLabelReads() async throws {
         #expect(try await world("loopworker::merged").backlog().card(World.ref)?.state == .reviewMerged)
         let both = World()
@@ -484,7 +502,7 @@ import Testing
         #expect(try await both.backlog().card(World.ref)?.state == .other)
     }
 
-    @Test("B211: markMerged posts the link and note, then swaps ci for merged; the issue stays open")
+    @Test("B222: markMerged posts the link and note, then swaps ci for merged; the issue stays open")
     func markMerged() async throws {
         let w = world("loopworker::ci")
         try await w.backlog().markMerged(card, review: review, note: "Merged into main as abc123.\n/close")
@@ -498,7 +516,7 @@ import Testing
         #expect(w.gitlab.requests.firstIndex { $0.method == "POST" }! < w.gitlab.requests.firstIndex { $0.method == "PUT" }!)
     }
 
-    @Test("B211: markMerged needs a verifying card and writes nothing otherwise")
+    @Test("B222: markMerged needs a verifying card and writes nothing otherwise")
     func markMergedOnlyFromVerifying() async throws {
         let w = world("loopworker::working")
         let e = await #expect(throws: GitLabError.self) { try await w.backlog().markMerged(card, review: review, note: nil) }
@@ -506,7 +524,7 @@ import Testing
         #expect(w.gitlab.requests.filter { $0.method != "GET" }.isEmpty)
     }
 
-    @Test("B211: in labels mode, merged carries the review status name")
+    @Test("B222: in labels mode, merged carries the review status name")
     func mergedLabelsMode() async throws {
         let backlog = try World(statusMode: "labels").backlog()
         #expect(await backlog.labelChange(to: .reviewMerged) == (

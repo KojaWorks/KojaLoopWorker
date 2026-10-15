@@ -27,7 +27,7 @@ import Testing
         try CIWatchRecord.read(stateDir: h.home.appending(path: "state"), cardID: id)
     }
 
-    @Test("B203, B204: finish = merge opens a ready review request and merges at the next tick without reading CI, even with wait_for_ci")
+    @Test("B214, B215: finish = merge opens a ready review request and merges at the next tick without reading CI, even with wait_for_ci")
     func mergeFinish() async throws {
         let h = try await finished("merge", manifest: ciManifest)
         #expect(h.forge.state.get.openCalls.map(\.draft) == [false])
@@ -41,7 +41,7 @@ import Testing
         #expect(h.log.contains("g/app#12: merged g/app!1 into main as merge-1; moved to review_merged", level: .info))
     }
 
-    @Test("B203: finish = ready opens a ready review request and moves the card to review")
+    @Test("B214: finish = ready opens a ready review request and moves the card to review")
     func readyFinish() async throws {
         let h = try await finished("ready")
         #expect(h.forge.state.get.openCalls.map(\.draft) == [false])
@@ -49,7 +49,7 @@ import Testing
         #expect(h.forge.state.get.mergeCalls.isEmpty)
     }
 
-    @Test("B205, B206: ci_then_merge merges after the pipeline passed, and the note links it")
+    @Test("B216, B217: ci_then_merge merges after the pipeline passed, and the note links it")
     func ciThenMergePassed() async throws {
         let h = try await finished("ci_then_merge")
         #expect(h.backlog.state.get.verifyingPlans["id-12"] == .ciThenMerge)
@@ -64,7 +64,7 @@ import Testing
         #expect(h.backlog.state.get.mergedNotes["id-12"] == "Merged into `main` as `merge-1`. CI passed on `commit-1`: \(pipelineURL.absoluteString)")
     }
 
-    @Test("B205: ci_then_merge moves a pipeline that fails only like the base branch to review without merging")
+    @Test("B216: ci_then_merge moves a pipeline that fails only like the base branch to review without merging")
     func ciThenMergePreexisting() async throws {
         let h = try await finished("ci_then_merge")
         h.forge.state {
@@ -78,7 +78,7 @@ import Testing
         #expect(h.forge.state.get.mergeCalls.isEmpty)
     }
 
-    @Test("B205: a project switched to draft mid-watch moves its card to review, without a CI note or a merge")
+    @Test("B216: a project switched to draft mid-watch moves its card to review, without a CI note or a merge")
     func switchedToDraft() async throws {
         let h = try await finished("ci_then_merge")
         try h.writeConfig(projects: "[[project]]\npath = \"g/app\"\nfinish = \"draft\"")
@@ -91,7 +91,7 @@ import Testing
         #expect(h.forge.state.get.pipelineCalls.isEmpty)
     }
 
-    @Test("B205: a watch of a project that left the config keeps reading CI and moves to review, never merging")
+    @Test("B216: a watch of a project that left the config keeps reading CI and moves to review, never merging")
     func projectLeftTheConfig() async throws {
         let h = try await finished("ci_then_merge")
         try h.writeConfig(projects: "")
@@ -107,7 +107,7 @@ import Testing
         #expect(h.forge.state.get.mergeCalls.isEmpty)
     }
 
-    @Test("B206: a failed markMerged backs off, and the retry merges again")
+    @Test("B217: a failed markMerged backs off, and the retry merges again")
     func markMergedFails() async throws {
         let h = try await finished("merge")
         h.backlog.state { $0.failMarkMerged = FakeError("502 Bad Gateway") }
@@ -121,7 +121,7 @@ import Testing
         #expect(h.backlog.card(id: "id-12")?.state == .reviewMerged)
     }
 
-    @Test("B206: two cards of one project merge one after the other")
+    @Test("B217: two cards of one project merge one after the other")
     func oneMergePerProject() async throws {
         let h = try await finished("merge", cards: [12, 13])
         #expect(h.backlog.card(id: "id-12")?.state == .verifying && h.backlog.card(id: "id-13")?.state == .verifying)
@@ -132,7 +132,7 @@ import Testing
         #expect(h.backlog.card(id: "id-12")?.state == .reviewMerged && h.backlog.card(id: "id-13")?.state == .reviewMerged)
     }
 
-    @Test("B207: pending tries again at the next poll, then merges")
+    @Test("B218: pending tries again at the next poll, then merges")
     func pendingThenMerged() async throws {
         let h = try await finished("merge")
         h.forge.state { $0.mergeResults = [.pending("checking")] }
@@ -146,7 +146,7 @@ import Testing
         #expect(h.backlog.card(id: "id-12")?.state == .reviewMerged)
     }
 
-    @Test("B207: still pending ci_timeout_minutes after the first pending marks the card stuck")
+    @Test("B218: still pending ci_timeout_minutes after the first pending marks the card stuck")
     func pendingTimesOut() async throws {
         let h = try await finished("merge", manifest: ciManifest)
         h.forge.state { $0.mergeResults = [.pending("ci_still_running"), .pending("ci_still_running"), .pending("ci_still_running")] }
@@ -160,7 +160,7 @@ import Testing
         #expect(try record(h) == nil)
     }
 
-    @Test("B207: a thrown merge error backs off; a BackendRejection marks the card stuck")
+    @Test("B218: a thrown merge error backs off; a BackendRejection marks the card stuck")
     func mergeErrors() async throws {
         let h = try await finished("merge")
         h.forge.state { $0.failMerge = FakeError("503 Service Unavailable") }
@@ -173,7 +173,7 @@ import Testing
         #expect(blocker(h)?.hasPrefix(#"The forge refused to merge g/app!1: PUT /merge: 404 \[gone\]"#) == true)
     }
 
-    @Test("B209: blocked marks the card stuck, naming the escaped reason and linking the review request")
+    @Test("B220: blocked marks the card stuck, naming the escaped reason and linking the review request")
     func blocked() async throws {
         let h = try await finished("merge")
         h.forge.state { $0.mergeResults = [.blocked("not_approved](https://evil.example)")] }
@@ -206,7 +206,7 @@ import Testing
         await h.cycle()
     }
 
-    @Test("B208: outdated runs a rebase round on the card branch, which pushes under the lease, returns to verifying and merges")
+    @Test("B219: outdated runs a rebase round on the card branch, which pushes under the lease, returns to verifying and merges")
     func rebaseRound() async throws {
         let h = try await rebasing()
         #expect(h.backlog.writes.contains(.resumeFix("id-12")))
@@ -235,7 +235,7 @@ import Testing
         #expect(h.backlog.card(id: "id-12")?.state == .reviewMerged)
     }
 
-    @Test("B208: outdated again after a rebase round marks the card stuck")
+    @Test("B219: outdated again after a rebase round marks the card stuck")
     func outdatedTwice() async throws {
         let h = try await rebasing(results: [.outdated("need_rebase"), .outdated("conflict")])
         try await finishRound(h)
@@ -244,7 +244,7 @@ import Testing
         #expect(h.backlog.writes.filter { $0 == .resumeFix("id-12") }.count == 1)
     }
 
-    @Test("B208: a rebase round whose branch isn't based on origin/<base> is stuck and pushes nothing")
+    @Test("B219: a rebase round whose branch isn't based on origin/<base> is stuck and pushes nothing")
     func rebaseNotBased() async throws {
         let h = try await rebasing()
         h.git.state { $0.ancestors["base-1"] = false }
@@ -253,7 +253,7 @@ import Testing
         #expect(h.git.state.get.pushes.count == 1)
     }
 
-    @Test("B208: origin/<base> moving during a rebase round doesn't fail a branch rebased onto the pinned commit")
+    @Test("B219: origin/<base> moving during a rebase round doesn't fail a branch rebased onto the pinned commit")
     func baseMovesDuringTheRound() async throws {
         let h = try await rebasing()
         h.git.state {
@@ -268,7 +268,7 @@ import Testing
         #expect(h.backlog.card(id: "id-12")?.state == .verifying)
     }
 
-    @Test("B208: a rebase round survives a Manager restart with its pinned target")
+    @Test("B219: a rebase round survives a Manager restart with its pinned target")
     func rebaseTargetSurvivesARestart() async throws {
         let h = try await rebasing()
         try h.restart()
@@ -279,7 +279,7 @@ import Testing
         #expect(h.git.calls.contains("isAncestor base-1"))
     }
 
-    @Test("B208: rebase rounds don't use up ci_fix_attempts")
+    @Test("B219: rebase rounds don't use up ci_fix_attempts")
     func rebaseIsNotACIFix() async throws {
         let h = try await rebasing("ci_then_merge", manifest: ciManifest)
         try await finishRound(h)
@@ -297,7 +297,7 @@ import Testing
         #expect(CardRecord.read(h.stateDir().appending(path: "card.json"))?.ciRound == 2)
     }
 
-    @Test("B208: watch and card records without the rebase fields still decode")
+    @Test("B219: watch and card records without the rebase fields still decode")
     func oldRecordsDecode() throws {
         let d = JSONDecoder()
         d.dateDecodingStrategy = .iso8601
@@ -315,7 +315,7 @@ import Testing
         #expect(c.rebaseRound == nil && c.rebases == nil && c.rebaseTarget == nil && c.ciRound == 1)
     }
 
-    @Test("B210: the status shows merging, merge pending, rebase queued and rebase starting")
+    @Test("B221: the status shows merging, merge pending, rebase queued and rebase starting")
     func statusStrings() async throws {
         let h = try await finished("merge")
         #expect(try h.status().ci?.first?.state == "merging")
@@ -335,7 +335,7 @@ import Testing
         #expect(text.contains("waiting for CI or merge:\n  g/app#12 round 0 at commit-1: rebase queued"))
     }
 
-    @Test("B202: the Manager logs a deprecated config key at start and when a reload changes the config")
+    @Test("B213: the Manager logs a deprecated config key at start and when a reload changes the config")
     func configWarningsAreLogged() async throws {
         let h = try ManagerHarness(projects: "[[project]]\npath = \"g/app\"\ndraft = true")
         try await h.boot()
@@ -349,7 +349,7 @@ import Testing
 }
 
 @Suite struct MergeDecisionTests {
-    @Test("B206, B207, B208, B209: the merge decision table")
+    @Test("B217, B218, B219, B220: the merge decision table")
     func table() {
         func d(_ r: MergeResult, pendingFor: TimeInterval? = nil, rebases: Int = 0) -> MergeDecision {
             Reconciler.decideMerge(r, pendingFor: pendingFor, rebases: rebases, timeout: 3600)

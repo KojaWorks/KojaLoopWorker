@@ -93,7 +93,7 @@ public actor Manager {
         var base: String?
         /// Set for a round that fixes the card's failed CI: that round's number, from 1.
         var ciRound: Int?
-        /// For a CI fix round: the pushed commit whose pipeline failed, where the round started.
+        /// For a CI fix round: the commit that the round started from; its own commits count from it.
         var ciCommit: String?
         /// For a fix round: it is a rebase round.
         var rebaseRound = false
@@ -173,6 +173,8 @@ public actor Manager {
     var ciWatches: [String: CIWatch] = [:]
     /// Keys of the projects with a `Forge.merge` call in flight; one per project at a time.
     var merging: Set<String> = []
+    /// Cards whose start failed before acquiring a slot, by card id: not claimed again until `until`.
+    var claimBackoff: [String: (until: Date, failures: Int)] = [:]
 
     public init(config: HostConfig, dependencies: ManagerDependencies, clock: any ManagerClock = SystemClock()) {
         self.config = config
