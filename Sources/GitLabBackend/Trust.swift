@@ -179,10 +179,7 @@ enum Trust {
         for note in notes.filter({ !$0.system }).sorted(by: { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }) {
             let id = note.numericID
             let by = "comment \(id) by \(name(note.author)) at \(time(note.createdAt))"
-            if note.body.contains(managerMarker) {
-                excluded.append("\(by): posted by LoopWorker")
-                continue
-            }
+            if note.body.contains(managerMarker) { continue }  // reaches the worker through managerNotes, not as withheld content
             let editedLate = note.contentEditedAt.map { $0 > cutoff } ?? false
             let mine = isMe(note.author) && (!editedLate || isMe(note.lastEditedBy))
             let early = note.createdAt <= cutoff && !editedLate

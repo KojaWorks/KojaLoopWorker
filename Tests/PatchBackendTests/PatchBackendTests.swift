@@ -713,7 +713,7 @@ private func make(_ fake: FakePatch, _ patchKeys: String = "", log: LogRecorder 
             (db-view block not shown)
 
             """)
-        #expect(snap.excluded == ["block b5, last edited by untrusted stranger", "LoopWorker note b6"])
+        #expect(snap.excluded == ["block b5, last edited by untrusted stranger"])
     }
 
     @Test func untrustedAuthorWithholdsTheTitle() {

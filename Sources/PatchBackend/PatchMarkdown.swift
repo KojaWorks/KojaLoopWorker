@@ -23,10 +23,7 @@ enum PatchMarkdown {
         func emit(_ parent: String) {
             for b in byParent[parent] ?? [] {
                 let id = b["id"]?.string ?? "?"
-                if b["content"]?[markerKey] != nil {
-                    excluded.append("LoopWorker note \(id)")
-                    continue
-                }
+                if b["content"]?[markerKey] != nil { continue }  // reaches the worker through managerNotes, not as withheld content
                 guard let editor = b["updated_by"]?.string, trusted.contains(editor) else {
                     let who = b["updated_by"]?.string ?? "(none)"
                     lines.append("(withheld: block \(id), last edited by \(who), who is not trusted)")

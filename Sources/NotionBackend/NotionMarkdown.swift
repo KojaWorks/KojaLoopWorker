@@ -179,8 +179,9 @@ enum NotionMarkdown {
 
     /// The worker's view of a card (B191): the vouched title, the blocks whose own last editor
     /// is trusted (a withheld block's children are judged one by one), and the comments that a
-    /// trusted user wrote. The integration's comments are left out; they reach the worker as
-    /// Manager notes. Every withheld block or comment is named in `excluded`, never with its text.
+    /// trusted user wrote. The integration's comments are left out without an `excluded` line; they
+    /// reach the worker as Manager notes. Every block or comment withheld for trust is named in
+    /// `excluded`, never with its text.
     /// - Parameters:
     ///   - vouchedTitle: The title that the newest claim comment records; nil withholds the title.
     ///   - pageTitle: The page's title now, untrusted; only compared with `vouchedTitle`.
@@ -204,7 +205,7 @@ enum NotionMarkdown {
         var commentParts: [String] = []
         for c in comments {
             if c.author == me {
-                excluded.append("LoopWorker comment \(c.id)")
+                continue  // reaches the worker through managerNotes, not as withheld content
             } else if trusted.contains(c.author) {
                 commentParts.append("**\(name(c.author))** (\(c.created.formatted(.iso8601))):\n\n\(text(c.richText))")
             } else {

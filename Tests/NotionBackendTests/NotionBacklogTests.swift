@@ -220,10 +220,10 @@ private let releaseText = "LoopWorker released this card:\n\nrestart"
         #expect(!snap.markdown.contains("evil"))
         #expect(!snap.markdown.contains("delete prod"))
         #expect(!snap.markdown.contains("restart"))
-        #expect(snap.excluded.count == 4)
+        #expect(snap.excluded.count == 2)
         #expect(snap.excluded.contains("bulleted_list_item block \(id(2, "bb")), last edited by Mallory, who is not a trusted user"))
         #expect(snap.excluded.contains { $0.hasPrefix("comment ") && $0.contains("by Mallory") })
-        #expect(snap.excluded.filter { $0.hasPrefix("LoopWorker comment ") }.count == 2)
+        #expect(!snap.excluded.contains { $0.hasPrefix("LoopWorker") })
         #expect(fake.requests.first?.url?.path == "/v1/users/me")
     }
 

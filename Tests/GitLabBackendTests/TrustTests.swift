@@ -158,6 +158,6 @@ import Testing
         ]))
         #expect(!s.markdown.contains("worker crashed"))
         #expect(!s.markdown.contains("## Comments"))
-        #expect(s.excluded == ["comment 40 by @me at \(Fixture.t(1)): posted by LoopWorker"])
+        #expect(s.excluded.isEmpty)  // Manager notes reach the worker through managerNotes, not as withheld
     }
 }
