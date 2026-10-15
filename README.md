@@ -321,6 +321,7 @@ and exits 1 when anything fails. `--json` prints the same as JSON. It checks:
 - claude answers `claude -p` headless, the same check that gates claims;
 - the container engine answers its probe (a warning only);
 - the backlog and forge accept their tokens, and whose they are;
+- on GitHub, that the token sees each project's repository and its user may push;
 - `$LOOPWORKER_HOME` is writable, and whether a Manager is running.
 
 ## Status, pause and stop

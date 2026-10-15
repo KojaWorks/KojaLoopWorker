@@ -598,3 +598,41 @@ private func graphQLBody(_ req: URLRequest) -> [String: Any] {
                 == "<!-- loopworker -->\n<!-- loopworker:reply=c2 thread=IC_1 -->\n\nIn reply to [@bob's comment](https://github.com/owner/app/pull/7#issuecomment-5):\n\nAdded.")
     }
 }
+
+@Suite struct GitHubDoctorTests {
+    private func answer(user: (Int, String) = (200, #"{"login": "octo"}"#), repo: (Int, String)) -> StubGitHub {
+        StubGitHub { req, _ in
+            req.url!.path.hasSuffix("/user") ? (user.0, [:], user.1) : (repo.0, [:], repo.1)
+        }
+    }
+
+    @Test("B235: the token's user and a pushable repository pass")
+    func passes() async throws {
+        let checks = try await forge(answer(repo: (200, #"{"permissions": {"push": true}}"#))).diagnose()
+        #expect(checks.map(\.name) == ["forge github", "forge github owner/app"])
+        #expect(checks.allSatisfy { $0.level == .ok })
+        #expect(checks[0].detail.contains("@octo"))
+    }
+
+    @Test("B235: a repository the token can't see fails with the access remedy")
+    func invisibleRepository() async throws {
+        let checks = try await forge(answer(repo: (404, #"{"message": "Not Found"}"#))).diagnose()
+        #expect(checks[1].level == .fail)
+        #expect(checks[1].remedy?.contains("fine-grained token needs the repository selected") == true)
+    }
+
+    @Test("B235: a repository the user may not push to fails")
+    func noPush() async throws {
+        let checks = try await forge(answer(repo: (200, #"{"permissions": {"push": false}}"#))).diagnose()
+        #expect(checks[1].level == .fail)
+        #expect(checks[1].detail == "@octo may not push to owner/app")
+    }
+
+    @Test("B235: a rejected token fails once and skips the repositories")
+    func badToken() async throws {
+        let checks = try await forge(answer(user: (401, #"{"message": "Bad credentials"}"#), repo: (200, "{}"))).diagnose()
+        #expect(checks.count == 1)
+        #expect(checks[0].level == .fail)
+        #expect(checks[0].remedy?.contains("GITHUB_TOKEN") == true)
+    }
+}
