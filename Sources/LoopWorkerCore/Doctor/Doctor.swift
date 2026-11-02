@@ -92,6 +92,7 @@ public struct Doctor: Sendable {
                 : DoctorCheck("config", .ok, "projects: \(c.projects.map(\.path).joined(separator: ", "))"))
             checks += c.warnings.map { DoctorCheck("config", .warn, $0, remedy: "edit \(home.appending(path: "config.toml").path)") }
             if let upload = Self.uploadCheck(c.uploadCommand) { checks.append(upload) }
+            checks += Self.instructionsAbove(clonesDir: c.clonesDir, home: environment["HOME"].map { URL(filePath: $0) })
         } catch {
             config = nil
             checks.append(DoctorCheck("config", .fail, "\(error)", remedy: "create or fix \(home.appending(path: "config.toml").path); README.md \"Configuration\" shows a complete one"))
@@ -142,6 +143,35 @@ public struct Doctor: Sendable {
             return DoctorCheck("upload_command", .fail, "\(program) is missing or not executable", remedy: "fix upload_command in config.toml, or remove it")
         }
         return DoctorCheck("upload_command", .ok, "\(program); anyone with a link that it prints can read the file")
+    }
+
+    /// B248: a warning per agent instruction file in `clonesDir` or any directory above it, up
+    /// to `root`: `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`, `.claude/rules` or
+    /// `AGENTS.md`. claude loads ancestor instructions into every worker, outside any project
+    /// contract, and an import in them that leaves the worktree makes claude ask at startup.
+    /// `home`'s `.claude` is the user's own setup and doesn't count. One `ok` when none exists.
+    static func instructionsAbove(clonesDir: URL, home: URL?, root: URL = URL(filePath: "/")) -> [DoctorCheck] {
+        let stops: Set = [root.standardizedFileURL.path, root.resolvingSymlinksInPath().path, "/"]
+        let homes: Set = home.map { [$0.standardizedFileURL.path, $0.resolvingSymlinksInPath().path] } ?? []
+        var seen: Set<String> = [], found: [(dir: URL, file: String)] = []
+        for start in [clonesDir.standardizedFileURL, clonesDir.resolvingSymlinksInPath()] {
+            var dir = start
+            while seen.insert(dir.path).inserted {
+                let names = ["CLAUDE.md", "CLAUDE.local.md", "AGENTS.md"] + (homes.contains(dir.path) ? [] : [".claude/CLAUDE.md", ".claude/rules"])
+                for name in names where FileManager.default.fileExists(atPath: dir.appending(path: name).path) {
+                    found.append((dir, dir.appending(path: name).path))
+                }
+                if stops.contains(dir.path) { break }
+                dir = dir.deletingLastPathComponent()
+            }
+        }
+        guard !found.isEmpty else {
+            return [DoctorCheck("clones_dir", .ok, "no agent instructions in or above \(clonesDir.path)")]
+        }
+        return found.map {
+            DoctorCheck("clones_dir", .warn, "\($0.file) is in or above clones_dir: claude loads it into every worker, outside any project contract, and an import in it that leaves the worktree makes claude ask at startup",
+                        remedy: "move clones_dir out of \($0.dir.path), or move that file")
+        }
     }
 
     public static func passed(_ checks: [DoctorCheck]) -> Bool {

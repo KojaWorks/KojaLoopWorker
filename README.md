@@ -332,6 +332,9 @@ and exits 1 when anything fails. `--json` prints the same as JSON. It checks:
 - the container engine answers its probe (a warning only);
 - the backlog and forge accept their tokens, and whose they are;
 - on GitHub, that the token sees each project's repository and its user may push;
+- no `CLAUDE.md`, `AGENTS.md` or `.claude/rules` sits in or above `clones_dir` (a warning):
+  claude loads those into every worker, and an import in them that points outside the worktree
+  makes claude ask at startup; move `clones_dir` out of that directory;
 - `$LOOPWORKER_HOME` is writable, and whether a Manager is running.
 
 ## Status, pause and stop

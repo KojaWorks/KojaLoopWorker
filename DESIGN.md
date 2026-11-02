@@ -625,6 +625,11 @@ worker_env = []                               # Manager variables forwarded to w
 The repo's own `.loopworker/` is read from the clone's working tree, which the Manager resets to
 `origin/<base>` after every fetch, so scripts and the brief always match the base branch.
 
+claude loads the CLAUDE.md files of every directory above a worker's worktree, so `clones_dir`
+belongs outside any tree that holds agent instructions: they would reach every worker without a
+project contract controlling them, and an import in them that leaves the worktree makes claude
+ask at startup. `doctor` warns about each such file.
+
 ## State on disk
 
 ```
