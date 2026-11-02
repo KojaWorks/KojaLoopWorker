@@ -136,6 +136,26 @@ import Testing
         #expect(!Pane.showsInputScreen(Self.imports))
     }
 
+    @Test("B247: a dialog's title is its question line above the options")
+    func dialogTitle() {
+        #expect(Pane.dialogTitle(Self.imports) == "Allow external CLAUDE.md file imports?")
+        let permission = """
+            ⏺ Bash(make clean)
+            ╭──────────────────────────────╮
+            │ Bash command                 │
+            │   make clean                 │
+            │ Do you want to proceed?      │
+            │ ❯ 1. Yes                     │
+            │   2. No, and tell Claude what to do differently (esc) │
+            ╰──────────────────────────────╯
+            """
+        #expect(Pane.dialogTitle(permission) == "Do you want to proceed?")
+        #expect(Pane.dialogTitle("Choose a theme\n❯ 1. Dark\n  2. Light") == "Choose a theme")
+        #expect(Pane.dialogTitle("⏺ Running swift test\n✻ Thinking… (12s · esc to interrupt)") == nil)
+        #expect(Pane.dialogTitle(Self.imports + "\n⏺ Reading\n  ⏵⏵ auto mode on (shift+tab to cycle)") == nil)
+        #expect(Pane.dialogTitle("❯ fix the bug") == nil)
+    }
+
     @Test("B18: activity line skips chrome and the tip below the thinking line")
     func activityLine() {
         let pane = """

@@ -174,6 +174,9 @@ extension Manager {
             $0.rebaseTarget = nil
             $0.spawnedAt = nil
             $0.pane = []
+            $0.paneText = nil
+            $0.paneChangedAt = nil
+            $0.frozenAlerted = false
             $0.finishFailures = 0
             $0.finishRetryAt = nil
             $0.finishError = nil
@@ -653,34 +656,59 @@ extension Manager {
         let spec = s.spec
         let alive: Bool
         let fresh: Card?
-        var pane = ""
+        let captured: String?
         do {
             alive = try await deps.tmux.isAlive(spec.session)
             // A dead pane is kept (remain-on-exit), so its last screen explains a crash.
-            pane = (try? await deps.tmux.capture(spec.session, lines: 40)) ?? ""
+            captured = try? await deps.tmux.capture(spec.session, lines: 40)
             fresh = try await deps.backlog.card(card.ref)
         } catch {
             log.error("\(label(spec)): can't observe \(card.ref): \(error); trying again next tick")
             return
         }
         guard let current = slot(ref), current.phase == .busy, current.task == nil, current.card?.ref == card.ref else { return }
+        let pane = captured ?? ""
         let outcomeAge = modificationDate(spec.outcomeFile).map { now.timeIntervalSince($0) }
         let lines = PaneReading.tail(pane, 15).map(deps.redact)
+        // A failed capture is no observation, so it neither changes the pane nor freezes it.
+        let changedAt = captured != nil && captured != current.paneText ? now : current.paneChangedAt ?? now
         update(ref) {
             if let fresh { $0.card = fresh }
             if !lines.isEmpty { $0.pane = lines }
+            if let captured { $0.paneText = captured }
+            $0.paneChangedAt = changedAt
         }
         let cap = (projects[ref.key]?.contract?.wallclockCapMinutes ?? 90) * 60
+        let unchanged = now.timeIntervalSince(changedAt)
         let observation = SlotObservation(
             cardState: fresh?.state, sessionAlive: alive, authFailed: deps.pane.showsAuthFailure(pane),
             outcomeAge: outcomeAge, runningFor: current.spawnedAt.map { now.timeIntervalSince($0) } ?? 0,
-            heldBy: fresh.flatMap(heldElsewhere))
-        let decision = Reconciler.decide(observation, policy: ReconcilePolicy(wallclockCap: cap))
+            heldBy: fresh.flatMap(heldElsewhere), paneUnchangedFor: unchanged, dialog: deps.pane.dialogTitle(pane).map(deps.redact))
+        let policy = ReconcilePolicy(wallclockCap: cap)
+        let decision = Reconciler.decide(observation, policy: policy)
         let target = fresh ?? card
 
         switch decision {
         case .keep:
-            return
+            guard unchanged >= policy.frozenPane, !current.frozenAlerted else { return }
+            update(ref) { $0.frozenAlerted = true }
+            let minutes = Int(unchanged / 60)
+            log.warning("\(label(spec)): \(card.ref)'s worker pane hasn't changed for \(minutes) min; it may wait for input (tmux -S \(stateDir.path)/tmux attach -t \(spec.session)). LoopWorker keeps it running. Its screen:\n\(lines.joined(separator: "\n"))")
+            notify(key: "frozen-\(card.ref.id)", "LoopWorker: the worker on \(card.ref) on \(hostName) has shown the same screen for \(minutes) min and may wait for input; see the Manager log")
+        case .stalledOnDialog(let title):
+            log.error("\(label(spec)): \(card.ref)'s worker shows a claude dialog that LoopWorker doesn't answer, unchanged for \(Int(unchanged / 60)) min: \(title); reaping it and marking the card stuck. Its screen:\n\(lines.joined(separator: "\n"))")
+            await reap(spec)
+            let blocker = "LoopWorker stopped the worker: claude showed a dialog that LoopWorker doesn't answer, unchanged for \(Int(policy.dialogStall / 60)) minutes: \(Self.inlineCode(title)). The Manager's log on \(hostName) has the screen. Make claude stop asking this, then move the card back to ready."
+            do {
+                // Written on the worker's behalf, so the finish pushes any commits and retries like any stuck outcome.
+                let data = try JSONSerialization.data(withJSONObject: ["outcome": "stuck", "blocker": blocker])
+                try data.write(to: spec.outcomeFile, options: .atomic)
+            } catch {
+                log.error("\(label(spec)): can't write the stuck outcome \(spec.outcomeFile.path): \(error); the next tick releases \(card.ref) as a crash")
+                return
+            }
+            update(ref) { $0.task = .finishing }
+            track { await self.finishTask(ref, card: target) }
         case .finish:
             if let retry = current.finishRetryAt, retry > now { return }
             await reap(spec)

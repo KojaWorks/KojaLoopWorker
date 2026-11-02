@@ -1167,6 +1167,61 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.backlog.writes.filter { if case .claim = $0 { true } else { false } }.count == claims + 1)
     }
 
+    @Test("B247: a dialog unchanged for 2 minutes reaps the worker, marks the card stuck uncounted and alerts")
+    func unknownDialogStallMarksStuck() async throws {
+        let h = try await spawned(top: "notify_command = \"x\"")
+        h.tmux.set("lw_g--app_0", pane: "⏺ working\nSECRET in view\nChoose a theme?\n❯ 1. Dark\n  2. Light\nEnter to confirm · Esc to cancel")
+        await h.cycle()
+        h.clock.advance(119)
+        await h.cycle()
+        #expect(h.tmux.exists("lw_g--app_0"))
+        #expect(try h.status().projects[0].slots[0].paneUnchangedFor == nil)
+        h.clock.advance(1)
+        await h.cycle()
+        #expect(!h.tmux.exists("lw_g--app_0"))
+        guard case .markStuck("id-12", let blocker)? = h.backlog.writes.last else {
+            Issue.record("expected markStuck, got \(h.backlog.writes)")
+            return
+        }
+        #expect(blocker.contains("unchanged for 2 minutes: `Choose a theme?`"))
+        #expect(!blocker.contains("Dark") && !blocker.contains("working"))
+        #expect(!h.backlog.writes.contains { if case .release = $0 { true } else { false } })
+        #expect(h.backlog.card(id: "id-12")?.attempts == 0)
+        #expect(h.log.contains("unchanged for 2 min: Choose a theme?; reaping it and marking the card stuck. Its screen:\n⏺ working\n[REDACTED] in view", level: .error))
+        #expect(h.runner.specs.get.contains { $0.environment["LOOPWORKER_ALERT"]??.contains("g/app#12 is stuck: LoopWorker stopped the worker") == true })
+        #expect(h.lifecycle.calls.last == "recycle g--app/0")
+    }
+
+    @Test("B247: a pane frozen for 15 minutes without a dialog alerts once and keeps the worker")
+    func frozenPaneAlertsOnce() async throws {
+        let h = try await spawned(top: "notify_command = \"x\"")
+        h.tmux.set("lw_g--app_0", pane: "⏺ Waiting for the build")
+        await h.cycle()
+        h.clock.advance(15 * 60)
+        await h.cycle()
+        h.clock.advance(10 * 60)
+        await h.cycle()
+        let alerts = h.runner.specs.get.filter { $0.environment["LOOPWORKER_ALERT"]??.contains("has shown the same screen for") == true }
+        #expect(alerts.count == 1)
+        #expect(h.log.messages.filter { $0.contains("pane hasn't changed for 15 min") }.count == 1)
+        #expect(h.tmux.exists("lw_g--app_0"))
+        #expect(try h.status().projects[0].slots[0].paneUnchangedFor == 25 * 60)
+        #expect(!h.backlog.writes.contains { if case .markStuck = $0 { true } else { false } })
+    }
+
+    @Test("B247: a pane that keeps changing never alerts, even with a dialog shape")
+    func changingPaneNeverAlerts() async throws {
+        let h = try await spawned(top: "notify_command = \"x\"")
+        for i in 0..<12 {
+            h.tmux.set("lw_g--app_0", pane: "✻ Thinking… (\(i * 100)s · esc to interrupt)\nEnter to confirm")
+            await h.cycle()
+            h.clock.advance(100)
+        }
+        #expect(!h.runner.specs.get.contains { $0.environment["LOOPWORKER_ALERT"]??.contains("same screen") == true })
+        #expect(h.tmux.exists("lw_g--app_0"))
+        #expect(try h.status().projects[0].slots[0].paneUnchangedFor == nil)
+    }
+
     @Test func aCleanFinishClearsTheAuthBackoff() async throws {  // B92, B98
         let h = try await spawned("[[project]]\npath = \"g/app\"\nslots = 2")
         h.addCard(13)

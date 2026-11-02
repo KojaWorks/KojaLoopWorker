@@ -56,6 +56,24 @@ public enum Pane {
         normalized(pane).contains(where: isInputScreen)
     }
 
+    /// The title line of the dialog that the bottom of the pane shows, or nil when it shows
+    /// none. A dialog is a line with `Enter to confirm` or `Esc to cancel`, or a numbered option
+    /// under the cursor (`❯ 1.`), among the last 15 non-empty lines and with no input screen
+    /// below it. Its title is the last line ending in `?` between the rule or box top above it
+    /// and that line, else the first line there; redact it before showing it anywhere, and cut
+    /// to 120 characters.
+    public static func dialogTitle(_ pane: String) -> String? {
+        let tail = Array(normalized(pane).filter { !$0.isEmpty }.suffix(15))
+        guard let marker = tail.lastIndex(where: { $0.contains("Enter to confirm") || $0.contains("Esc to cancel") || $0.contains(numberedCursor) }),
+              !tail[marker...].contains(where: isInputScreen)
+        else { return nil }
+        let above = tail[..<marker]
+        let start = above.lastIndex { $0.hasPrefix("─") || $0.hasPrefix("╭") }.map { $0 + 1 } ?? above.startIndex
+        let block = above[start...].isEmpty ? above : above[start...]
+        let title = block.last { $0.hasSuffix("?") } ?? block.first { !$0.hasPrefix("❯") } ?? tail[marker]
+        return String(title.prefix(120))
+    }
+
     /// What the worker is doing right now, for the status file: the most recent non-empty
     /// line that isn't claude's UI chrome (box drawing, the prompt, the mode footer), cut to
     /// 140 characters. Empty when there is no such line.
@@ -76,6 +94,8 @@ public enum Pane {
         KnownDialog(name: "folder trust", title: trustPrompt, answer: "Yes"),
         KnownDialog(name: "external CLAUDE.md imports", title: #/Allow external CLAUDE\.md file imports/#.ignoresCase(), answer: "No, disable external imports"),
     ]
+
+    nonisolated(unsafe) private static let numberedCursor = #/^❯\s*\d+\./#
 
     private struct KnownDialog {
         var name: String

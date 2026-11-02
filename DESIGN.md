@@ -512,8 +512,18 @@ decision:
 | Another Manager's claim of the card is newer | `abandon` |
 | Session dead, no outcome, card `working` | `release(crashed)` |
 | Pane shows claude's login or 401 screen | `release(auth)`, and the auth circuit breaker backs off |
+| Pane shows a dialog, unchanged for 2 minutes | `stalledOnDialog`: reap, mark the card `stuck` |
 | Running longer than the wall-clock cap | `release(hung)` |
 | Otherwise | `keep` |
+
+Reconcile records when each worker's pane last changed. claude's spinner and timer change the
+pane while it works, so a pane that stays the same means that claude waits for input. When it
+shows a dialog (`Enter to confirm`, `Esc to cancel` or a numbered `❯` option) for 2 minutes,
+nothing will answer it: the Manager logs the redacted screen, reaps the worker and writes a stuck
+outcome for it, so the normal finish pushes any commits and marks the card `stuck` with a blocker
+that names only the dialog's title line. That isn't a failed attempt. A pane that stays the same
+for 15 minutes without a dialog only raises an alert, once per worker, because a frozen pane
+isn't proof of waiting for every tool. `status` shows "pane unchanged for N min" from 2 minutes.
 
 A release for a crash or a hang counts as a failed attempt; an auth release doesn't, because
 the host failed, not the card. When a counted release would reach `max_attempts`, the Manager

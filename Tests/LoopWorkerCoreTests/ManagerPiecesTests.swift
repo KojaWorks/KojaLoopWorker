@@ -425,6 +425,13 @@ func temporaryDirectory() throws -> URL {
             """)
     }
 
+    @Test("B247: a running worker's frozen pane is shown on its slot line")
+    func frozenPaneIsShown() {
+        var s = status(updated: now)
+        s.projects[0].slots[0] = .init(index: 0, state: "busy", card: "g/app#12", runningFor: 600, port: 1, paneUnchangedFor: 185)
+        #expect(StatusReport.render(s, lockHolder: 7, now: now).text.contains("  slot 0: busy g/app#12 for 10m, pane unchanged for 3 min\n"))
+    }
+
     @Test("B230: cards held by other Managers are listed with their holder")
     func heldCardsAreListed() {
         var s = status(updated: now)

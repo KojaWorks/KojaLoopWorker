@@ -14,12 +14,19 @@ public struct SlotObservation: Sendable, Equatable {
     public var runningFor: TimeInterval
     /// The holder id of another Manager whose claim of the card is newer than this one's.
     public var heldBy: String?
+    /// Seconds since the worker's pane last changed.
+    public var paneUnchangedFor: TimeInterval
+    /// The title of the dialog that the pane shows (`Pane.dialogTitle`), redacted; nil for none.
+    public var dialog: String?
 
     public init(
         cardState: CardState?, sessionAlive: Bool, authFailed: Bool = false,
-        outcomeAge: TimeInterval? = nil, runningFor: TimeInterval, heldBy: String? = nil
+        outcomeAge: TimeInterval? = nil, runningFor: TimeInterval, heldBy: String? = nil,
+        paneUnchangedFor: TimeInterval = 0, dialog: String? = nil
     ) {
         self.heldBy = heldBy
+        self.paneUnchangedFor = paneUnchangedFor
+        self.dialog = dialog
         self.cardState = cardState
         self.sessionAlive = sessionAlive
         self.authFailed = authFailed
@@ -47,6 +54,9 @@ public enum SlotDecision: Sendable, Equatable {
     /// The worker failed without an outcome: reap, release the card (or mark it stuck at
     /// `max_attempts`) and recycle.
     case release(ReleaseReason)
+    /// The pane has shown a dialog, unchanged for `dialogStall`, that nothing answers: reap and
+    /// mark the card stuck, naming the dialog's title. Not a failed attempt.
+    case stalledOnDialog(String)
 }
 
 public struct ReconcilePolicy: Sendable {
@@ -54,10 +64,18 @@ public struct ReconcilePolicy: Sendable {
     /// finish printing before it is reaped.
     public var outcomeGrace: TimeInterval
     public var wallclockCap: TimeInterval
+    /// How long a pane may show a dialog unchanged before the worker counts as stalled on it.
+    public var dialogStall: TimeInterval
+    /// How long a pane may stay unchanged, without a dialog, before the Manager alerts once.
+    /// claude's spinner and timer change the pane while it works.
+    public var frozenPane: TimeInterval
 
-    public init(outcomeGrace: TimeInterval = 20, wallclockCap: TimeInterval = 90 * 60) {
+    public init(outcomeGrace: TimeInterval = 20, wallclockCap: TimeInterval = 90 * 60,
+                dialogStall: TimeInterval = 2 * 60, frozenPane: TimeInterval = 15 * 60) {
         self.outcomeGrace = outcomeGrace
         self.wallclockCap = wallclockCap
+        self.dialogStall = dialogStall
+        self.frozenPane = frozenPane
     }
 }
 
@@ -75,6 +93,7 @@ public enum Reconciler {
         }
         if !o.sessionAlive { return .release(.crashed) }
         if o.authFailed { return .release(.auth) }
+        if let dialog = o.dialog, o.paneUnchangedFor >= policy.dialogStall { return .stalledOnDialog(dialog) }
         if o.runningFor > policy.wallclockCap { return .release(.hung) }
         return .keep
     }

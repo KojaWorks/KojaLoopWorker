@@ -652,6 +652,9 @@ extension Manager {
             $0.rebaseTarget = nil
             $0.spawnedAt = nil
             $0.pane = []
+            $0.paneText = nil
+            $0.paneChangedAt = nil
+            $0.frozenAlerted = false
             $0.finishFailures = 0
             $0.finishRetryAt = nil
             $0.finishError = nil

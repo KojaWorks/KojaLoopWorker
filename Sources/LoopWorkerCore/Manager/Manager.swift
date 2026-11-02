@@ -111,6 +111,12 @@ public actor Manager {
         var finishError: String?
         /// The last redacted pane lines, newest last.
         var pane: [String] = []
+        /// The worker's last captured pane, unredacted, kept only to notice that it changed.
+        var paneText: String?
+        /// When reconcile last saw the pane change; nil before the worker's first observation.
+        var paneChangedAt: Date?
+        /// The frozen-pane alert went out for this worker.
+        var frozenAlerted = false
     }
 
     struct Project {
@@ -460,7 +466,10 @@ public actor Manager {
                               card: s.card?.ref.display, cardURL: s.card?.url, branch: s.branch,
                               runningFor: s.spawnedAt.map { now.timeIntervalSince($0).rounded() },
                               lastError: (s.finishError ?? s.lastError).map(deps.redact), port: s.spec.port, pane: Array(s.pane.suffix(5)),
-                              finishFailing: s.finishFailures >= 3, retiring: s.retiring)
+                              finishFailing: s.finishFailures >= 3, retiring: s.retiring,
+                              paneUnchangedFor: s.phase == .busy && s.task == nil && s.spawnedAt != nil
+                                ? s.paneChangedAt.map { now.timeIntervalSince($0).rounded() }.flatMap { $0 >= ReconcilePolicy().dialogStall ? $0 : nil }
+                                : nil)
                     })
             },
             ci: ciStatus(),

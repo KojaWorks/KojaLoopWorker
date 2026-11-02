@@ -9,15 +9,19 @@ public struct PaneReading: Sendable {
     public var startupDialog: @Sendable (String) -> Pane.DialogAnswer?
     /// True once claude shows its input screen or works on a turn, which ends the startup dialogs.
     public var showsInputScreen: @Sendable (String) -> Bool
+    /// The title line of any dialog at the bottom of the pane, unredacted. See `Pane.dialogTitle`.
+    public var dialogTitle: @Sendable (String) -> String?
 
     public init(
         showsAuthFailure: @escaping @Sendable (String) -> Bool = Pane.showsAuthFailure,
         startupDialog: @escaping @Sendable (String) -> Pane.DialogAnswer? = Pane.startupDialog,
-        showsInputScreen: @escaping @Sendable (String) -> Bool = Pane.showsInputScreen
+        showsInputScreen: @escaping @Sendable (String) -> Bool = Pane.showsInputScreen,
+        dialogTitle: @escaping @Sendable (String) -> String? = Pane.dialogTitle
     ) {
         self.showsAuthFailure = showsAuthFailure
         self.startupDialog = startupDialog
         self.showsInputScreen = showsInputScreen
+        self.dialogTitle = dialogTitle
     }
 
     /// The last `count` non-empty lines of `pane`, trimmed.

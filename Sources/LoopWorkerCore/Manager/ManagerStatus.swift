@@ -85,12 +85,17 @@ public struct ManagerStatus: Codable, Sendable, Equatable {
         public var finishFailing: Bool
         /// Shrunk out of its pool; retired after its card.
         public var retiring: Bool
+        /// Seconds that the running worker's pane has stayed the same, once that reaches the
+        /// 2-minute dialog stall threshold; nil before that. A worker that waits for input
+        /// shows a frozen pane. Nil from a Manager that predates it.
+        public var paneUnchangedFor: Double?
 
         public init(
             index: Int, state: String, task: String? = nil, card: String? = nil, cardURL: URL? = nil,
             branch: String? = nil, runningFor: Double? = nil, lastError: String? = nil, port: Int,
-            pane: [String] = [], finishFailing: Bool = false, retiring: Bool = false
+            pane: [String] = [], finishFailing: Bool = false, retiring: Bool = false, paneUnchangedFor: Double? = nil
         ) {
+            self.paneUnchangedFor = paneUnchangedFor
             self.index = index
             self.state = state
             self.task = task
