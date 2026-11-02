@@ -10,24 +10,50 @@ public enum Pane {
         pane.contains(authFailure)
     }
 
-    /// True when the pane shows claude's folder-trust dialog.
-    public static func showsTrustPrompt(_ pane: String) -> Bool {
-        pane.contains(trustPrompt)
+    /// A startup dialog that the pane shows, and the keys that answer it.
+    public struct DialogAnswer: Sendable, Equatable {
+        /// The dialog's name, for the log: `folder trust` or `external CLAUDE.md imports`.
+        public var dialog: String
+        /// Arrows from the highlighted option (`❯`) to the answer, then Enter. Nil when the pane
+        /// shows no recognizable answer option or cursor, so nothing may be pressed.
+        public var keys: [String]?
+
+        public init(dialog: String, keys: [String]?) {
+            self.dialog = dialog
+            self.keys = keys
+        }
     }
 
-    /// The keys that accept claude's folder-trust dialog shown in `pane`: arrows from the
-    /// highlighted option (`❯`) to the "Yes" option, then Enter. Claude's option order has
-    /// changed between versions, so plain Enter may pick "No, exit". Returns nil when the pane
-    /// shows no trust dialog, and `[]` when it shows one without a recognizable "Yes" option
-    /// or cursor, so the caller presses nothing.
-    public static func trustPromptKeys(_ pane: String) -> [String]? {
-        guard showsTrustPrompt(pane) else { return nil }
-        let lines = pane.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
-        guard let cursor = lines.lastIndex(where: { $0.hasPrefix("❯") }),
-              let yes = lines.lastIndex(where: { $0.drop(while: { $0 == "❯" || $0 == " " }).hasPrefix("Yes") })
-        else { return [] }
-        let arrows = Array(repeating: yes > cursor ? "Down" : "Up", count: abs(yes - cursor))
-        return arrows + ["Enter"]
+    /// The claude dialog that can appear before a worker's first turn and that `pane` shows,
+    /// with the keys that answer it:
+    ///
+    /// | Dialog | Answer |
+    /// | --- | --- |
+    /// | folder trust (B17) | the option starting `Yes` |
+    /// | `Allow external CLAUDE.md file imports?` | `No, disable external imports` |
+    ///
+    /// The keys always move to the answer from the highlighted option, because claude's option
+    /// order and default have changed between versions. When the pane holds more than one
+    /// dialog (an answered one in scrollback), the lowest one counts. Nil when the pane shows
+    /// none, or when claude's input screen is below the dialog, so it is scrollback.
+    public static func startupDialog(_ pane: String) -> DialogAnswer? {
+        let lines = normalized(pane)
+        func last(_ d: KnownDialog) -> Int? { lines.lastIndex { $0.contains(d.title) } }
+        guard let (dialog, title) = knownDialogs.compactMap({ d in last(d).map { (d, $0) } }).max(by: { $0.1 < $1.1 }),
+              !lines[title...].contains(where: isInputScreen)
+        else { return nil }
+        let start = knownDialogs.filter { $0.name != dialog.name }.compactMap(last).filter { $0 < title }.max().map { $0 + 1 } ?? 0
+        let region = lines[start...]
+        guard let cursor = region.lastIndex(where: { $0.hasPrefix("❯") }),
+              let answer = region.lastIndex(where: { option($0).hasPrefix(dialog.answer) })
+        else { return DialogAnswer(dialog: dialog.name, keys: nil) }
+        return DialogAnswer(dialog: dialog.name, keys: Array(repeating: answer > cursor ? "Down" : "Up", count: abs(answer - cursor)) + ["Enter"])
+    }
+
+    /// True when claude shows its input screen or works on a turn: its mode footer, shortcut
+    /// hint or interrupt hint is on screen.
+    public static func showsInputScreen(_ pane: String) -> Bool {
+        normalized(pane).contains(where: isInputScreen)
     }
 
     /// What the worker is doing right now, for the status file: the most recent non-empty
@@ -46,6 +72,31 @@ public enum Pane {
     // Regex isn't Sendable, but matching never mutates it (its compiled program is initialized atomically).
     nonisolated(unsafe) private static let authFailure = #/Please run /login\s*·\s*API Error|Not logged in\s*·\s*Please run /login/#.ignoresCase()
     nonisolated(unsafe) private static let trustPrompt = #/trust this folder|Accessing workspace|one you trust|do you trust|trust the files/#.ignoresCase()
+    nonisolated(unsafe) private static let knownDialogs = [
+        KnownDialog(name: "folder trust", title: trustPrompt, answer: "Yes"),
+        KnownDialog(name: "external CLAUDE.md imports", title: #/Allow external CLAUDE\.md file imports/#.ignoresCase(), answer: "No, disable external imports"),
+    ]
+
+    private struct KnownDialog {
+        var name: String
+        var title: Regex<Substring>
+        /// The start of the answer option's text.
+        var answer: String
+    }
+
+    /// The pane's lines without surrounding whitespace and box sides.
+    private static func normalized(_ pane: String) -> [String] {
+        pane.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "│").union(.whitespaces)) }
+    }
+
+    /// An option's text without the cursor and its number: `❯ 2. Yes, proceed` is `Yes, proceed`.
+    private static func option(_ line: String) -> Substring {
+        line.drop { $0 == "❯" || $0 == " " }.trimmingPrefix(#/\d+\.\s*/#)
+    }
+
+    private static func isInputScreen(_ line: String) -> Bool {
+        line.contains("mode on (shift+tab") || line.contains("esc to interrupt") || line.contains("? for shortcuts")
+    }
     // "⎿" prefixes claude's tool results and rotating tips, which sit below the real line.
     private static let chromePrefixes = ["─", "❯", "⏵", "│", "╭", "╰", "⎿"]
 }

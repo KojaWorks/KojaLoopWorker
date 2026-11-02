@@ -67,12 +67,11 @@ import Testing
         "Do you trust the files in this folder?",
     ])
     func trustPrompt(pane: String) {
-        #expect(Pane.showsTrustPrompt(pane))
+        #expect(Pane.startupDialog(pane)?.dialog == "folder trust")
     }
 
-    @Test func noTrustPromptInOrdinaryPane() {
-        #expect(!Pane.showsTrustPrompt("⏺ Running swift test"))
-        #expect(Pane.trustPromptKeys("⏺ Running swift test") == nil)
+    @Test func noStartupDialogInOrdinaryPane() {
+        #expect(Pane.startupDialog("⏺ Running swift test") == nil)
     }
 
     @Test("B17: the trust dialog is answered by moving to Yes, whatever the option order")
@@ -85,14 +84,56 @@ import Testing
                Yes, I trust this folder
              Enter to confirm · Esc to cancel
             """
-        #expect(Pane.trustPromptKeys(noFirst) == ["Down", "Enter"])
+        #expect(Pane.startupDialog(noFirst)?.keys == ["Down", "Enter"])
         let yesFirst = """
              Do you trust the files in this folder?
              ❯ Yes, proceed
                No, exit
             """
-        #expect(Pane.trustPromptKeys(yesFirst) == ["Enter"])
-        #expect(Pane.trustPromptKeys("Do you trust the files in this folder?\n  1. Maybe") == [])
+        #expect(Pane.startupDialog(yesFirst)?.keys == ["Enter"])
+        let numbered = """
+            │ Do you trust the files in this folder? │
+            │ ❯ 1. No, exit                          │
+            │   2. Yes, proceed                      │
+            """
+        #expect(Pane.startupDialog(numbered)?.keys == ["Down", "Enter"])
+        #expect(Pane.startupDialog("Do you trust the files in this folder?\n  1. Maybe") == .init(dialog: "folder trust", keys: nil))
+    }
+
+    static let imports = """
+        Allow external CLAUDE.md file imports?
+          This project's CLAUDE.md or .claude/rules imports files outside the current
+          working directory. Never allow this for third-party repositories.
+          External imports:
+            /Volumes/Disk/Dev/Parent/AGENTS.md
+          ❯ No, disable external imports
+            Yes, allow external imports
+          Enter to confirm · Esc to cancel
+        """
+
+    @Test("B246: the external-imports dialog is answered No, from wherever the cursor is")
+    func importsDialogKeys() {
+        #expect(Pane.startupDialog(Self.imports) == .init(dialog: "external CLAUDE.md imports", keys: ["Enter"]))
+        let cursorBelow = Self.imports.replacingOccurrences(of: "❯ No", with: "  No").replacingOccurrences(of: "  Yes, allow", with: "❯ Yes, allow")
+        #expect(Pane.startupDialog(cursorBelow)?.keys == ["Up", "Enter"])
+        let cursorAbove = """
+            Allow external CLAUDE.md file imports?
+              ❯ Ask me later
+                No, disable external imports
+            """
+        #expect(Pane.startupDialog(cursorAbove)?.keys == ["Down", "Enter"])
+        let noAnswer = Self.imports.replacingOccurrences(of: "No, disable external imports", with: "Never")
+        #expect(Pane.startupDialog(noAnswer) == .init(dialog: "external CLAUDE.md imports", keys: nil))
+    }
+
+    @Test("B246: an answered dialog in scrollback gives way to the next one, or to the input screen")
+    func dialogInScrollback() {
+        let trust = "Do you trust the files in this folder?\n❯ 1. Yes, proceed\n  2. No, exit\nEnter to confirm · Esc to cancel"
+        #expect(Pane.startupDialog(trust + "\n" + Self.imports) == .init(dialog: "external CLAUDE.md imports", keys: ["Enter"]))
+        let input = trust + "\n╭────╮\n│ ❯  │\n╰────╯\n  ⏵⏵ auto mode on (shift+tab to cycle)"
+        #expect(Pane.startupDialog(input) == nil)
+        #expect(Pane.showsInputScreen(input))
+        #expect(!Pane.showsInputScreen(Self.imports))
     }
 
     @Test("B18: activity line skips chrome and the tip below the thinking line")

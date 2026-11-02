@@ -1,17 +1,23 @@
 import Foundation
 
-/// How the Manager reads claude's state from a worker's tmux pane. The production values come
-/// from the tmux layer's pane parsing; tests pass simple substring checks.
+/// How the Manager reads claude's state from a worker's tmux pane. Defaults to `Pane`'s readers;
+/// a test may pass simpler ones.
 public struct PaneReading: Sendable {
     /// True when the pane shows claude's login or 401 screen.
     public var showsAuthFailure: @Sendable (String) -> Bool
-    /// The keys that accept claude's folder-trust dialog, nil when the pane shows none, `[]`
-    /// when it shows one that can't be accepted safely. See `Pane.trustPromptKeys`.
-    public var trustPromptKeys: @Sendable (String) -> [String]?
+    /// The startup dialog that the pane shows and the keys that answer it. See `Pane.startupDialog`.
+    public var startupDialog: @Sendable (String) -> Pane.DialogAnswer?
+    /// True once claude shows its input screen or works on a turn, which ends the startup dialogs.
+    public var showsInputScreen: @Sendable (String) -> Bool
 
-    public init(showsAuthFailure: @escaping @Sendable (String) -> Bool, trustPromptKeys: @escaping @Sendable (String) -> [String]?) {
+    public init(
+        showsAuthFailure: @escaping @Sendable (String) -> Bool = Pane.showsAuthFailure,
+        startupDialog: @escaping @Sendable (String) -> Pane.DialogAnswer? = Pane.startupDialog,
+        showsInputScreen: @escaping @Sendable (String) -> Bool = Pane.showsInputScreen
+    ) {
         self.showsAuthFailure = showsAuthFailure
-        self.trustPromptKeys = trustPromptKeys
+        self.startupDialog = startupDialog
+        self.showsInputScreen = showsInputScreen
     }
 
     /// The last `count` non-empty lines of `pane`, trimmed.

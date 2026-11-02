@@ -22,6 +22,8 @@ final class FakeTmux: TmuxDriving, @unchecked Sendable {
         var failIsAlive: Set<String> = []
         /// The pane a freshly spawned session shows.
         var spawnPane = ""
+        /// The panes that successive `sendKeys` calls leave; an empty pane once they run out.
+        var afterKeys: [String] = []
     }
 
     let state = Guarded(State())
@@ -64,7 +66,7 @@ final class FakeTmux: TmuxDriving, @unchecked Sendable {
     func sendKeys(_ session: String, _ keys: [String]) async throws {
         state {
             $0.keysSent.append((session, keys))
-            $0.sessions[session]?.pane = ""
+            $0.sessions[session]?.pane = $0.afterKeys.isEmpty ? "" : $0.afterKeys.removeFirst()
         }
     }
 

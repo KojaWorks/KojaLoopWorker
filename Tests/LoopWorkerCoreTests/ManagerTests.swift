@@ -67,13 +67,46 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(launch.contains("--model 'opus'"))
     }
 
-    @Test func folderTrustDialogIsAcceptedOnce() async throws {  // B85
+    static let trustDialog = "Do you trust the files in this folder?\n❯ 1. No, exit\n  2. Yes, proceed\nEnter to confirm · Esc to cancel"
+    static let importsDialog = "Allow external CLAUDE.md file imports?\n  ❯ Yes, allow external imports\n    No, disable external imports\n  Enter to confirm · Esc to cancel"
+
+    @Test("B85, B246: startup dialogs are answered in sequence until the input screen shows")
+    func startupDialogsAreAnsweredInSequence() async throws {
         let h = try ManagerHarness(projects: oneColdProject)
-        h.tmux.state { $0.spawnPane = "Yes, I trust this folder" }
+        h.tmux.state {
+            $0.spawnPane = Self.trustDialog
+            $0.afterKeys = [Self.importsDialog, "⏺ Reading the card\n  ⏵⏵ auto mode on (shift+tab to cycle)"]
+        }
         h.addCard(1)
         try await h.boot()
         await h.cycle()
-        #expect(h.tmux.state.get.keysSent.map(\.session) == ["lw_g--app_0"])
+        #expect(h.tmux.state.get.keysSent.map(\.keys) == [["Down", "Enter"], ["Down", "Enter"]])
+        #expect(h.log.contains("lw_g--app_0: answered claude's folder trust dialog (Down Enter)"))
+        #expect(h.log.contains("lw_g--app_0: answered claude's external CLAUDE.md imports dialog (Down Enter)"))
+    }
+
+    @Test("B246: a dialog still on screen after its answer is not answered twice")
+    func startupDialogIsAnsweredOnce() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        h.tmux.state {
+            $0.spawnPane = Self.trustDialog
+            $0.afterKeys = [Self.trustDialog]
+        }
+        h.addCard(1)
+        try await h.boot()
+        await h.cycle()
+        #expect(h.tmux.state.get.keysSent.count == 1)
+    }
+
+    @Test("B246: a known dialog without an answer is logged once and nothing is pressed")
+    func unanswerableStartupDialogIsLoggedOnce() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        h.tmux.state { $0.spawnPane = "Allow external CLAUDE.md file imports?\n  1. Maybe" }
+        h.addCard(1)
+        try await h.boot()
+        await h.cycle()
+        #expect(h.tmux.state.get.keysSent.isEmpty)
+        #expect(h.log.messages.filter { $0.contains("without a recognizable answer") }.count == 1)
     }
 
     @Test func lostClaimSkipsTheCardAndClearsTheRecord() async throws {  // B74

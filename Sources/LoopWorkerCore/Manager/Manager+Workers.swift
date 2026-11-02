@@ -400,7 +400,7 @@ extension Manager {
         claimBackoff[card.ref.id] = nil
         let round = fix.map { " for \($0.name)" } ?? (resuming ? " resuming its pushed branch" : "")
         log.info("\(label(spec)): spawned worker\(round) for \(card.ref) on \(branch) at \(baseCommit.prefix(12)), base \(base), model \(model ?? "default")")
-        watchFolderTrust(spec.session)
+        watchStartupDialogs(spec.session)
     }
 
     func writeWorkerFiles(_ spec: SlotSpec, card: Card, contract: ProjectContract, base: String, branch: String,
@@ -556,27 +556,36 @@ extension Manager {
         free(ref)
     }
 
-    /// Accepts claude's folder-trust dialog, which a fresh worktree shows once and which
-    /// would otherwise hang the unattended worker.
-    func watchFolderTrust(_ session: String) {
-        let tmux = deps.tmux, clock = self.clock, log = self.log, trustPromptKeys = deps.pane.trustPromptKeys
+    /// Answers each startup dialog (`Pane.startupDialog`) as claude shows it, once per dialog,
+    /// until claude reaches its input screen or `startupWindow` passes. A dialog without a
+    /// recognizable answer is logged and left to the dialog stall check in reconcile.
+    func watchStartupDialogs(_ session: String) {
+        let tmux = deps.tmux, clock = self.clock, log = self.log, reading = deps.pane
         track {
-            for _ in 0..<15 {
-                try? await clock.sleep(seconds: 2)
+            var answered: Set<String> = [], reported: Set<String> = []
+            for _ in 0..<Int(Self.startupWindow / Self.startupPoll) {
+                try? await clock.sleep(seconds: Self.startupPoll)
                 if Task.isCancelled { return }
                 guard let pane = try? await tmux.capture(session, lines: 40) else { return }
-                guard let keys = trustPromptKeys(pane) else { continue }
-                guard !keys.isEmpty else {
-                    log.warning("\(session): claude shows a folder-trust dialog without a recognizable Yes option; leaving it for a human (tmux -S <home>/state/tmux attach -t \(session))")
-                    return
+                guard let dialog = reading.startupDialog(pane) else {
+                    if reading.showsInputScreen(pane) { return }
+                    continue
                 }
+                // Still on screen right after the keys: the next poll may show the next dialog.
+                guard !answered.contains(dialog.dialog) else { continue }
+                guard let keys = dialog.keys else {
+                    if reported.insert(dialog.dialog).inserted {
+                        log.warning("\(session): claude shows its \(dialog.dialog) dialog without a recognizable answer or cursor; pressing nothing (tmux -S <home>/state/tmux attach -t \(session) to see it)")
+                    }
+                    continue
+                }
+                answered.insert(dialog.dialog)
                 do {
                     try await tmux.sendKeys(session, keys)
-                    log.info("\(session): accepted claude's folder-trust dialog (\(keys.joined(separator: " ")))")
+                    log.info("\(session): answered claude's \(dialog.dialog) dialog (\(keys.joined(separator: " ")))")
                 } catch {
-                    log.warning("\(session): couldn't answer claude's folder-trust dialog: \(error)")
+                    log.warning("\(session): couldn't answer claude's \(dialog.dialog) dialog: \(error)")
                 }
-                return
             }
         }
     }

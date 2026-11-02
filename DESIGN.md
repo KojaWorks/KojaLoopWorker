@@ -258,6 +258,13 @@ lost access to it, so a revoked connection never reaps running workers.
    LoopWorker's own output rather than content that the owner vouched for. The snapshot still
    leaves those notes out. When the resumed branch has an open review request, the card runs a
    review round (see "Review rounds").
+
+   For two minutes after the spawn, the Manager reads the pane every 2 s and answers claude's
+   startup dialogs that it knows, each once, by moving the cursor to the answer: folder trust
+   gets "Yes"; "Allow external CLAUDE.md file imports?" gets "No", because a file that an
+   ancestor directory's CLAUDE.md imports is text that no project contract controls. It stops
+   once claude shows its input screen. A dialog it doesn't know is left to the dialog stall
+   check (see "Reconcile").
 4. **Work.** The worker implements, runs `verify.sh`, reviews its own diff with fresh-context
    subagents, optionally writes a review guide, commits, and writes the outcome:
 

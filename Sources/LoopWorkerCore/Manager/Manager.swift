@@ -140,6 +140,9 @@ public actor Manager {
     static let sweepInterval: TimeInterval = 300
     static let reloadInterval: TimeInterval = 60
     static let reviveAfter: TimeInterval = 180
+    /// How long after spawn the Manager answers claude's startup dialogs, and how often it looks.
+    static let startupWindow: Double = 120
+    static let startupPoll: Double = 2
 
     var config: HostConfig
     let deps: ManagerDependencies
