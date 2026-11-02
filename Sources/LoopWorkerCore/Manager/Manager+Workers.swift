@@ -563,7 +563,7 @@ extension Manager {
     /// until claude reaches its input screen or `startupWindow` passes. A dialog without a
     /// recognizable answer is logged and left to the dialog stall check in reconcile.
     func watchStartupDialogs(_ session: String) {
-        let tmux = deps.tmux, clock = self.clock, log = self.log, reading = deps.pane
+        let tmux = deps.tmux, clock = self.clock, log = self.log, reading = deps.pane, socket = stateDir.appending(path: "tmux").path
         track {
             var answered: Set<String> = [], reported: Set<String> = []
             for _ in 0..<Int(Self.startupWindow / Self.startupPoll) {
@@ -574,11 +574,11 @@ extension Manager {
                     if reading.showsInputScreen(pane) { return }
                     continue
                 }
-                // Still on screen right after the keys: the next poll may show the next dialog.
+                // Still shown right after its keys: wait for claude to move on, never press twice.
                 guard !answered.contains(dialog.dialog) else { continue }
                 guard let keys = dialog.keys else {
                     if reported.insert(dialog.dialog).inserted {
-                        log.warning("\(session): claude shows its \(dialog.dialog) dialog without a recognizable answer or cursor; pressing nothing (tmux -S <home>/state/tmux attach -t \(session) to see it)")
+                        log.warning("\(session): claude shows its \(dialog.dialog) dialog without a recognizable answer or cursor; pressing nothing (tmux -S \(socket) attach -t \(session) to see it)")
                     }
                     continue
                 }

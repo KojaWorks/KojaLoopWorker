@@ -117,6 +117,7 @@ public enum Pane {
     private static func isInputScreen(_ line: String) -> Bool {
         line.contains("mode on (shift+tab") || line.contains("esc to interrupt") || line.contains("? for shortcuts")
     }
+
     // "⎿" prefixes claude's tool results and rotating tips, which sit below the real line.
     private static let chromePrefixes = ["─", "❯", "⏵", "│", "╭", "╰", "⎿"]
 }
