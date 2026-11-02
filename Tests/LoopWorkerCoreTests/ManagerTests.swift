@@ -31,7 +31,7 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(try String(contentsOf: dir.appending(path: "card.md"), encoding: .utf8) == "# Fix it\n")
         #expect(try String(contentsOf: dir.appending(path: "brief.md"), encoding: .utf8).contains("g/app#12 in g/app"))
         #expect(try String(contentsOf: dir.appending(path: "mcp.json"), encoding: .utf8) == #"{"mcpServers":{}}"#)
-        #expect(try String(contentsOf: dir.appending(path: "settings.json"), encoding: .utf8).contains("Write(~/.claude/**)"))
+        #expect(try String(contentsOf: dir.appending(path: "settings.json"), encoding: .utf8).contains("Edit(~/.claude/**)"))
 
         let env = dir.appending(path: "worker.env")
         #expect(try fileMode(env) == 0o600)

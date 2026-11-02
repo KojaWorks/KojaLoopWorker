@@ -25,6 +25,8 @@ learned the hard way, and which the port must keep or fix, is listed in
   CLAUDE.md, plugins, skills, hooks and memories, because that tuned setup is what makes their
   work good. They may not write under `~/.claude` or to the memory directory, so one bad card
   can't change what every later session loads; a worker reports what it learned in its outcome.
+  The `Edit` deny rules in the worker's `settings.json` restrict claude's file tools, not shell
+  commands, so they keep a worker's own tools out of `~/.claude`; they aren't a security boundary.
   The auth preflight is not an agent and runs in Claude Code's safe mode.
 - **A repo can't widen its own reach.** A project's `finish` (whether the Manager merges) and
   `worker_env` (which variables reach its workers) live only in the host config, never in the

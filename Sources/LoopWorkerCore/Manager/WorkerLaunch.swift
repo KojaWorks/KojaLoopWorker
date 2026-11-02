@@ -33,10 +33,11 @@ public enum WorkerLaunch {
         values.map { "\($0.name)=\(shellQuote($0.value))\n" }.joined()
     }
 
-    /// `settings.json`, added on top of the host user's Claude Code settings: it denies file
-    /// writes under `~/.claude` (memories, settings, hooks) and in the user's `autoMemoryDirectory`,
-    /// by its configured and its symlink-resolved path, so an unattended worker can't change what
-    /// every later session loads.
+    /// `settings.json`, added on top of the host user's Claude Code settings: it denies claude's
+    /// file-editing tools under `~/.claude` (memories, settings, hooks) and in the user's
+    /// `autoMemoryDirectory`, by its configured and its symlink-resolved path, so an unattended
+    /// worker can't change what every later session loads. One `Edit` rule per directory covers
+    /// every file-editing tool; shell commands aren't restricted.
     /// - Parameters:
     ///   - home: The worker's `HOME`; nil leaves only the `~/.claude` rules.
     ///   - userSettings: The contents of `~/.claude/settings.json`, if any.
@@ -53,7 +54,7 @@ public enum WorkerLaunch {
                 }
             }
         }
-        let deny = dirs.flatMap { ["Edit(\($0)/**)", "Write(\($0)/**)"] }
+        let deny = dirs.map { "Edit(\($0)/**)" }
         let data = try! JSONSerialization.data(withJSONObject: ["permissions": ["deny": deny]], options: [.sortedKeys, .withoutEscapingSlashes])
         return String(decoding: data, as: UTF8.self)
     }

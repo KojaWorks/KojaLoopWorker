@@ -378,7 +378,7 @@ func temporaryDirectory() throws -> URL {
         #expect(s.contains("--strict-mcp-config --mcp-config '/s/0/mcp.json' --settings '/s/0/settings.json'"))
     }
 
-    @Test func settingsDenyWritesUnderClaudeAndTheResolvedMemoryDirectory() throws {  // B243
+    @Test func settingsDenyEditsUnderClaudeAndTheResolvedMemoryDirectory() throws {  // B243
         let root = FileManager.default.temporaryDirectory.appending(path: "lw-settings-\(UUID().uuidString)").resolvingSymlinksInPath()
         let synced = root.appending(path: "Synced/automemory")
         try FileManager.default.createDirectory(at: synced, withIntermediateDirectories: true)
@@ -387,10 +387,11 @@ func temporaryDirectory() throws -> URL {
         let json = WorkerLaunch.settings(home: root.appending(path: "home"), userSettings: Data(#"{"autoMemoryDirectory": "~/.claude/automemory"}"#.utf8))
         let object = try #require(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: [String: [String]]])
         let deny = try #require(object["permissions"]?["deny"])
-        #expect(deny.contains("Edit(~/.claude/**)") && deny.contains("Write(~/.claude/**)"))
+        #expect(deny.contains("Edit(~/.claude/**)"))
         #expect(deny.contains("Edit(/\(root.path)/home/.claude/**)"))
-        #expect(deny.contains("Write(/\(synced.path)/**)"))
-        #expect(WorkerLaunch.settings(home: nil, userSettings: nil) == #"{"permissions":{"deny":["Edit(~/.claude/**)","Write(~/.claude/**)"]}}"#)
+        #expect(deny.contains("Edit(/\(synced.path)/**)"))
+        #expect(!deny.contains { $0.hasPrefix("Write(") })
+        #expect(WorkerLaunch.settings(home: nil, userSettings: nil) == #"{"permissions":{"deny":["Edit(~/.claude/**)"]}}"#)
     }
 }
 
