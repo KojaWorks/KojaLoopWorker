@@ -31,7 +31,7 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(try String(contentsOf: dir.appending(path: "card.md"), encoding: .utf8) == "# Fix it\n")
         #expect(try String(contentsOf: dir.appending(path: "brief.md"), encoding: .utf8).contains("g/app#12 in g/app"))
         #expect(try String(contentsOf: dir.appending(path: "mcp.json"), encoding: .utf8) == #"{"mcpServers":{}}"#)
-        #expect(try String(contentsOf: dir.appending(path: "settings.json"), encoding: .utf8).contains("Write(~/.claude/**)"))
+        #expect(try String(contentsOf: dir.appending(path: "settings.json"), encoding: .utf8).contains(#""Edit(~/.claude/**)","AskUserQuestion","EnterPlanMode""#))
 
         let env = dir.appending(path: "worker.env")
         #expect(try fileMode(env) == 0o600)
@@ -67,13 +67,67 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(launch.contains("--model 'opus'"))
     }
 
-    @Test func folderTrustDialogIsAcceptedOnce() async throws {  // B85
+    static let trustDialog = "Do you trust the files in this folder?\n❯ 1. No, exit\n  2. Yes, proceed\nEnter to confirm · Esc to cancel"
+    static let importsDialog = "Allow external CLAUDE.md file imports?\n  ❯ Yes, allow external imports\n    No, disable external imports\n  Enter to confirm · Esc to cancel"
+
+    @Test("B85, B246: startup dialogs are answered in sequence until the input screen shows")
+    func startupDialogsAreAnsweredInSequence() async throws {
         let h = try ManagerHarness(projects: oneColdProject)
-        h.tmux.state { $0.spawnPane = "Yes, I trust this folder" }
+        h.tmux.state {
+            $0.spawnPane = Self.trustDialog
+            $0.afterKeys = [Self.importsDialog, "⏺ Reading the card\n  ⏵⏵ auto mode on (shift+tab to cycle)"]
+        }
         h.addCard(1)
         try await h.boot()
         await h.cycle()
-        #expect(h.tmux.state.get.keysSent.map(\.session) == ["lw_g--app_0"])
+        #expect(h.tmux.state.get.keysSent.map(\.keys) == [["Down", "Enter"], ["Down", "Enter"]])
+        #expect(h.tmux.state.get.capturesAtKeys == [2, 4])
+        #expect(h.log.contains("lw_g--app_0: answered claude's folder trust dialog (Down Enter)"))
+        #expect(h.log.contains("lw_g--app_0: answered claude's external CLAUDE.md imports dialog (Down Enter)"))
+    }
+
+    @Test("B85: a dialog is answered only once two captures agree, and again two polls after keys that didn't take, at most 3 times")
+    func startupDialogRetriesAfterRefusedKeys() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        h.tmux.state {
+            $0.spawnPane = Self.trustDialog
+            $0.afterKeys = [Self.trustDialog, Self.trustDialog, Self.trustDialog]
+        }
+        h.addCard(1)
+        try await h.boot()
+        await h.cycle()
+        let sent = h.tmux.state.get
+        #expect(sent.keysSent.count == 3)
+        #expect(sent.capturesAtKeys == [2, 4, 6])
+        #expect(h.log.contains("answered claude's folder trust dialog (Down Enter), try 3"))
+        #expect(h.log.messages.filter { $0.contains("folder trust dialog after 3 answers; pressing nothing more") }.count == 1)
+    }
+
+    @Test("B85: a dialog that is still drawing isn't reported, and doesn't hide the later report after 3 answers")
+    func drawingDialogIsNotReported() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        let drawing = "Do you trust the files in this folder?\n❯ 1. No, exit"
+        h.tmux.state {
+            $0.capturePanes = [drawing, drawing, drawing, Self.trustDialog]
+            $0.afterKeys = [Self.trustDialog, Self.trustDialog, Self.trustDialog]
+        }
+        h.addCard(1)
+        try await h.boot()
+        await h.cycle()
+        #expect(h.tmux.state.get.keysSent.count == 3)
+        #expect(!h.log.messages.contains { $0.contains("without a recognizable answer") })
+        #expect(h.log.messages.filter { $0.contains("folder trust dialog after 3 answers") }.count == 1)
+    }
+
+    @Test("B246: a known dialog without an answer is logged once and nothing is pressed")
+    func unanswerableStartupDialogIsLoggedOnce() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        h.tmux.state { $0.spawnPane = "Allow external CLAUDE.md file imports?\n  1. Maybe\nEnter to confirm" }
+        h.addCard(1)
+        try await h.boot()
+        await h.cycle()
+        #expect(h.tmux.state.get.keysSent.isEmpty)
+        #expect(h.log.messages.filter { $0.contains("without a recognizable answer") }.count == 1)
     }
 
     @Test func lostClaimSkipsTheCardAndClearsTheRecord() async throws {  // B74
@@ -1132,6 +1186,176 @@ func fileMode(_ url: URL) throws -> Int {
         h.clock.advance(31)
         await h.cycle()
         #expect(h.backlog.writes.filter { if case .claim = $0 { true } else { false } }.count == claims + 1)
+    }
+
+    static let unknownDialog = "⏺ working\nSECRET in view\nChoose a theme?\n❯ 1. Dark\n  2. Light\nEnter to confirm · Esc to cancel"
+
+    @Test("B247: a dialog unchanged for 2 minutes reaps the worker, releases the card uncounted, pauses the host and alerts once")
+    func unknownDialogStallPausesTheHost() async throws {
+        let h = try await spawned("[[project]]\npath = \"g/app\"\nslots = 2", top: "notify_command = \"x\"")
+        h.addCard(13)
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 2)
+        for i in 0..<2 { h.tmux.set(h.session("g--app", i), pane: Self.unknownDialog) }
+        await h.cycle()
+        h.clock.advance(119)
+        await h.cycle()
+        #expect(h.tmux.exists("lw_g--app_0"))
+        #expect(try h.status().projects[0].slots[0].paneUnchangedFor == nil)
+        h.clock.advance(1)
+        await h.cycle()
+        #expect(!h.tmux.exists("lw_g--app_0") && !h.tmux.exists("lw_g--app_1"))
+        let releases = h.backlog.writes.compactMap { if case .release(let id, let note, let counted) = $0 { (id, note, counted) } else { nil } }
+        #expect(Set(releases.map(\.0)) == ["id-12", "id-13"])
+        #expect(releases.allSatisfy { !$0.2 && $0.1.contains("`Choose a theme?`") && !$0.1.contains("Dark") && $0.1.contains("loopworker resume") })
+        #expect(!h.backlog.writes.contains { if case .markStuck = $0 { true } else { false } })
+        #expect(!FileManager.default.fileExists(atPath: h.stateDir().appending(path: "outcome.json").path))
+        let status = try h.status()
+        #expect(status.paused && status.pauseReason == "claude showed 'Choose a theme?' and nothing answers it")
+        #expect(h.log.contains("unchanged for 2 min, before its first turn: Choose a theme?; reaping it, releasing the card and pausing new claims on this host. Its screen:\n⏺ working\n[REDACTED] in view", level: .error))
+        let alerts = h.runner.specs.get.filter { $0.environment["LOOPWORKER_ALERT"]??.contains("shows 'Choose a theme?'; new claims are paused") == true }
+        #expect(alerts.count == 1)
+
+        let claims = h.backlog.writes.filter { if case .claim = $0 { true } else { false } }.count
+        h.clock.advance(120)
+        await h.cycle()
+        #expect(h.backlog.writes.filter { if case .claim = $0 { true } else { false } }.count == claims)
+        try FileManager.default.removeItem(at: h.home.appending(path: "state/PAUSED"))
+        h.clock.advance(60)
+        await h.cycle()
+        #expect(h.backlog.writes.filter { if case .claim = $0 { true } else { false } }.count > claims)
+    }
+
+    static let permissionDialog = "⏺ Bash(make deploy)\nDo you want to proceed?\n❯ 1. Yes\n  2. No, and tell Claude what to do differently\nEsc to cancel"
+
+    @Test("B247: a dialog after the worker's first turn started marks the card stuck with its commits, without pausing the host")
+    func cardDialogAfterTheTurnStartedMarksStuck() async throws {
+        let h = try ManagerHarness(projects: oneColdProject, top: "notify_command = \"x\"")
+        h.tmux.state { $0.spawnPane = "⏺ Reading the card\n✻ Thinking… (3s · esc to interrupt)" }
+        h.addCard(12)
+        try await h.boot()
+        await h.cycle()
+        h.tmux.set("lw_g--app_0", pane: Self.permissionDialog)
+        await h.cycle()
+        h.clock.advance(120)
+        await h.cycle()
+        #expect(!h.tmux.exists("lw_g--app_0"))
+        guard case .markStuck("id-12", let blocker)? = h.backlog.writes.last else {
+            Issue.record("expected markStuck, got \(h.backlog.writes)")
+            return
+        }
+        #expect(blocker.contains("`Do you want to proceed?`") && !blocker.contains("make deploy"))
+        #expect(blocker.contains("The worker's commits are on branch `loopworker-12-fix-it`."))
+        #expect(!h.backlog.writes.contains { if case .release = $0 { true } else { false } })
+        #expect(h.backlog.card(id: "id-12")?.attempts == 0)
+        #expect(!FileManager.default.fileExists(atPath: h.home.appending(path: "state/PAUSED").path))
+        #expect(h.runner.specs.get.contains { $0.environment["LOOPWORKER_ALERT"]??.contains("g/app#12 is stuck: LoopWorker stopped the worker") == true })
+    }
+
+    @Test("B247: the usage-limit menu pauses the host even after the first turn started")
+    func usageLimitAfterTheTurnStartedPausesTheHost() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        h.tmux.state { $0.spawnPane = "✻ Thinking… (3s · esc to interrupt)" }
+        h.addCard(12)
+        try await h.boot()
+        await h.cycle()
+        h.tmux.set("lw_g--app_0", pane: PaneTests.usageLimit)
+        await h.cycle()
+        h.clock.advance(120)
+        await h.cycle()
+        #expect(try h.status().pauseReason == "claude showed 'What do you want to do?' and nothing answers it")
+        #expect(h.backlog.writes.contains { if case .release("id-12", _, false) = $0 { true } else { false } })
+        #expect(!h.backlog.writes.contains { if case .markStuck = $0 { true } else { false } })
+    }
+
+    @Test("B247: the same dialog stalling again soon after a resume alerts again")
+    func dialogStallAfterAQuickResumeAlertsAgain() async throws {
+        let h = try await spawned(top: "notify_command = \"x\"")
+        func stall() async {
+            h.tmux.set("lw_g--app_0", pane: Self.unknownDialog)
+            await h.cycle()
+            h.clock.advance(120)
+            await h.cycle()
+        }
+        await stall()
+        try FileManager.default.removeItem(at: h.home.appending(path: "state/PAUSED"))
+        h.addCard(13)
+        h.clock.advance(60)
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 2)
+        await stall()
+        let alerts = h.runner.specs.get.filter { $0.environment["LOOPWORKER_ALERT"]??.contains("shows 'Choose a theme?'; new claims are paused") == true }
+        #expect(alerts.count == 2)
+    }
+
+    @Test("B247: the tick that pauses the host for a dialog claims nothing")
+    func hostDialogStallClaimsNothingInTheSameTick() async throws {
+        let h = try await spawned("[[project]]\npath = \"g/app\"\nslots = 2")
+        h.tmux.set("lw_g--app_0", pane: Self.unknownDialog)
+        await h.cycle()
+        h.addCard(13)
+        h.clock.advance(120)
+        await h.cycle()
+        #expect(try h.status().paused)
+        #expect(!h.backlog.writes.contains { if case .claim("id-13") = $0 { true } else { false } })
+        #expect(h.tmux.spawned.count == 1)
+    }
+
+    @Test("B247: an outcome written while the stalled worker is reaped is finished, not released")
+    func stallReapRacesTheOutcome() async throws {
+        let h = try await spawned()
+        let outcome = h.stateDir().appending(path: "outcome.json")
+        h.tmux.state { $0.onKill = { _ in try? Data(#"{"outcome":"stuck","blocker":"Which endpoint?"}"#.utf8).write(to: outcome) } }
+        h.tmux.set("lw_g--app_0", pane: Self.unknownDialog)
+        await h.cycle()
+        h.clock.advance(120)
+        await h.cycle()
+        #expect(h.backlog.writes.contains { if case .markStuck("id-12", let b) = $0 { b.hasPrefix("Which endpoint?") } else { false } })
+        #expect(!h.backlog.writes.contains { if case .release = $0 { true } else { false } })
+        #expect(try h.status().paused)  // the dialog still came from the host's claude
+    }
+
+    @Test("B247: the dialog title is redacted before it is cut, so a cut never splits a secret")
+    func stallTitleIsRedactedBeforeTheCut() async throws {
+        let h = try await spawned()
+        let title = String(repeating: "x", count: 117) + "SECRET?"
+        h.tmux.set("lw_g--app_0", pane: "\(title)\n❯ 1. Yes\n  2. No\nEnter to confirm · Esc to cancel")
+        await h.cycle()
+        h.clock.advance(120)
+        await h.cycle()
+        let reason = try #require(try h.status().pauseReason)
+        #expect(reason.contains(String(repeating: "x", count: 117) + "[RE'"))
+        #expect(!reason.contains("SEC"))
+    }
+
+    @Test("B247: a pane frozen for 15 minutes without a dialog alerts once and keeps the worker")
+    func frozenPaneAlertsOnce() async throws {
+        let h = try await spawned(top: "notify_command = \"x\"")
+        h.tmux.set("lw_g--app_0", pane: "⏺ Waiting for the build")
+        await h.cycle()
+        h.clock.advance(15 * 60)
+        await h.cycle()
+        h.clock.advance(10 * 60)
+        await h.cycle()
+        let alerts = h.runner.specs.get.filter { $0.environment["LOOPWORKER_ALERT"]??.contains("has shown the same screen for") == true }
+        #expect(alerts.count == 1)
+        #expect(h.log.messages.filter { $0.contains("pane hasn't changed for 15 min") }.count == 1)
+        #expect(h.tmux.exists("lw_g--app_0"))
+        #expect(try h.status().projects[0].slots[0].paneUnchangedFor == 25 * 60)
+        #expect(!h.backlog.writes.contains { if case .markStuck = $0 { true } else { false } })
+    }
+
+    @Test("B247: a pane that keeps changing never alerts, even with a dialog shape")
+    func changingPaneNeverAlerts() async throws {
+        let h = try await spawned(top: "notify_command = \"x\"")
+        for i in 0..<12 {
+            h.tmux.set("lw_g--app_0", pane: "✻ Thinking… (\(i * 100)s · esc to interrupt)\nEnter to confirm")
+            await h.cycle()
+            h.clock.advance(100)
+        }
+        #expect(!h.runner.specs.get.contains { $0.environment["LOOPWORKER_ALERT"]??.contains("same screen") == true })
+        #expect(h.tmux.exists("lw_g--app_0"))
+        #expect(try h.status().projects[0].slots[0].paneUnchangedFor == nil)
     }
 
     @Test func aCleanFinishClearsTheAuthBackoff() async throws {  // B92, B98

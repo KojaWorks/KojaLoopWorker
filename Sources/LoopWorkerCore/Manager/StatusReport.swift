@@ -29,7 +29,7 @@ public enum StatusReport {
 
     static func summary(_ s: ManagerStatus, now: Date) -> [String] {
         var out: [String] = []
-        let flags = (s.paused ? ", PAUSED" : "") + (s.draining ? ", draining" : "")
+        let flags = (s.paused ? ", PAUSED" + (s.pauseReason.map { " (\($0); `loopworker resume` clears it)" } ?? "") : "") + (s.draining ? ", draining" : "")
         out.append("LoopWorker \(s.version) on \(s.host), pid \(s.pid), up \(duration(s.updated.timeIntervalSince(s.started)))\(flags)")
         var auth = "auth: \(s.auth.state)"
         if let detail = s.auth.detail { auth += " (\(detail))" }
@@ -52,6 +52,7 @@ public enum StatusReport {
                 if let task = slot.task { line += ", \(task)" }
                 if slot.finishFailing { line += ", FINISH FAILING" }
                 if slot.retiring { line += ", retiring" }
+                if let t = slot.paneUnchangedFor { line += ", pane unchanged for \(Int(t / 60)) min" }
                 out.append(line)
                 if let error = slot.lastError { out.append("    last error: \(error)") }
                 if let last = slot.pane.last { out.append("    > \(last)") }

@@ -18,10 +18,19 @@ final class FakeTmux: TmuxDriving, @unchecked Sendable {
         var spawned: [Spawned] = []
         var killed: [String] = []
         var keysSent: [(session: String, keys: [String])] = []
+        var captures = 0
+        /// `captures` at each `sendKeys`.
+        var capturesAtKeys: [Int] = []
         var failSpawn = false
         var failIsAlive: Set<String> = []
+        /// Runs inside `kill`, before the session goes, as a worker that acts while it is reaped.
+        var onKill: (@Sendable (String) -> Void)?
         /// The pane a freshly spawned session shows.
         var spawnPane = ""
+        /// The panes that successive `capture` calls show first; the last one stays.
+        var capturePanes: [String] = []
+        /// The panes that successive `sendKeys` calls leave; an empty pane once they run out.
+        var afterKeys: [String] = []
     }
 
     let state = Guarded(State())
@@ -58,17 +67,23 @@ final class FakeTmux: TmuxDriving, @unchecked Sendable {
     }
 
     func capture(_ session: String, lines: Int) async throws -> String {
-        state { $0.sessions[session]?.pane ?? "" }
+        state {
+            $0.captures += 1
+            if !$0.capturePanes.isEmpty { $0.sessions[session]?.pane = $0.capturePanes.removeFirst() }
+            return $0.sessions[session]?.pane ?? ""
+        }
     }
 
     func sendKeys(_ session: String, _ keys: [String]) async throws {
         state {
             $0.keysSent.append((session, keys))
-            $0.sessions[session]?.pane = ""
+            $0.capturesAtKeys.append($0.captures)
+            $0.sessions[session]?.pane = $0.afterKeys.isEmpty ? "" : $0.afterKeys.removeFirst()
         }
     }
 
     func kill(_ session: String) async throws {
+        state.get.onKill?(session)
         state {
             $0.killed.append(session)
             $0.sessions[session] = nil

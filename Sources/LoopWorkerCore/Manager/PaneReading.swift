@@ -1,17 +1,32 @@
 import Foundation
 
-/// How the Manager reads claude's state from a worker's tmux pane. The production values come
-/// from the tmux layer's pane parsing; tests pass simple substring checks.
+/// How the Manager reads claude's state from a worker's tmux pane. Defaults to `Pane`'s readers;
+/// a test may pass simpler ones.
 public struct PaneReading: Sendable {
     /// True when the pane shows claude's login or 401 screen.
     public var showsAuthFailure: @Sendable (String) -> Bool
-    /// The keys that accept claude's folder-trust dialog, nil when the pane shows none, `[]`
-    /// when it shows one that can't be accepted safely. See `Pane.trustPromptKeys`.
-    public var trustPromptKeys: @Sendable (String) -> [String]?
+    /// The startup dialog that the pane shows and the keys that answer it. See `Pane.startupDialog`.
+    public var startupDialog: @Sendable (String) -> Pane.DialogAnswer?
+    /// True once claude shows its input screen or works on a turn, which ends the startup dialogs.
+    public var showsInputScreen: @Sendable (String) -> Bool
+    /// The title line of any dialog at the bottom of the pane, unredacted. See `Pane.dialogTitle`.
+    public var dialogTitle: @Sendable (String) -> String?
+    /// True when the pane shows a dialog that comes from the host's claude, not from a card. See
+    /// `Pane.showsUsageLimitMenu`.
+    public var showsHostDialog: @Sendable (String) -> Bool
 
-    public init(showsAuthFailure: @escaping @Sendable (String) -> Bool, trustPromptKeys: @escaping @Sendable (String) -> [String]?) {
+    public init(
+        showsAuthFailure: @escaping @Sendable (String) -> Bool = Pane.showsAuthFailure,
+        startupDialog: @escaping @Sendable (String) -> Pane.DialogAnswer? = Pane.startupDialog,
+        showsInputScreen: @escaping @Sendable (String) -> Bool = Pane.showsInputScreen,
+        dialogTitle: @escaping @Sendable (String) -> String? = Pane.dialogTitle,
+        showsHostDialog: @escaping @Sendable (String) -> Bool = Pane.showsUsageLimitMenu
+    ) {
+        self.showsHostDialog = showsHostDialog
         self.showsAuthFailure = showsAuthFailure
-        self.trustPromptKeys = trustPromptKeys
+        self.startupDialog = startupDialog
+        self.showsInputScreen = showsInputScreen
+        self.dialogTitle = dialogTitle
     }
 
     /// The last `count` non-empty lines of `pane`, trimmed.

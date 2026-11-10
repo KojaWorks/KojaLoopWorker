@@ -63,16 +63,18 @@ import Testing
     }
 
     @Test("B17: folder-trust dialog", arguments: [
-        "Accessing workspace:", "Yes, I trust this folder", "is this a project you created or one you trust?",
+        "Accessing workspace:", "Quick safety check: Is this a project you created or one you trust?",
         "Do you trust the files in this folder?",
     ])
     func trustPrompt(pane: String) {
-        #expect(Pane.showsTrustPrompt(pane))
+        #expect(Pane.startupDialog(pane)?.dialog == "folder trust")
     }
 
-    @Test func noTrustPromptInOrdinaryPane() {
-        #expect(!Pane.showsTrustPrompt("⏺ Running swift test"))
-        #expect(Pane.trustPromptKeys("⏺ Running swift test") == nil)
+    @Test("B17: transcript text that mentions trust is no dialog", arguments: [
+        "⏺ Running swift test", "⏺ This is the one you trusted earlier", "Yes, I trust this folder", "⏺ Do you trust the files in this folder?",
+    ])
+    func noStartupDialogInOrdinaryPane(pane: String) {
+        #expect(Pane.startupDialog(pane) == nil)
     }
 
     @Test("B17: the trust dialog is answered by moving to Yes, whatever the option order")
@@ -85,14 +87,114 @@ import Testing
                Yes, I trust this folder
              Enter to confirm · Esc to cancel
             """
-        #expect(Pane.trustPromptKeys(noFirst) == ["Down", "Enter"])
+        #expect(Pane.startupDialog(noFirst)?.keys == ["Down", "Enter"])
         let yesFirst = """
              Do you trust the files in this folder?
              ❯ Yes, proceed
                No, exit
+             Enter to confirm · Esc to exit
             """
-        #expect(Pane.trustPromptKeys(yesFirst) == ["Enter"])
-        #expect(Pane.trustPromptKeys("Do you trust the files in this folder?\n  1. Maybe") == [])
+        #expect(Pane.startupDialog(yesFirst)?.keys == ["Enter"])
+        let numbered = """
+            │ Do you trust the files in this folder? │
+            │ ❯ 1. No, exit                          │
+            │   2. Yes, proceed                      │
+            │ Enter to confirm · Esc to exit         │
+            """
+        #expect(Pane.startupDialog(numbered)?.keys == ["Down", "Enter"])
+        #expect(Pane.startupDialog("Do you trust the files in this folder?\n  1. Maybe") == .init(dialog: "folder trust", keys: nil, drawing: true))
+    }
+
+    static let imports = """
+        Allow external CLAUDE.md file imports?
+          This project's CLAUDE.md or .claude/rules imports files outside the current
+          working directory. Never allow this for third-party repositories.
+          External imports:
+            /Volumes/Disk/Dev/Parent/AGENTS.md
+          ❯ No, disable external imports
+            Yes, allow external imports
+          Enter to confirm · Esc to cancel
+        """
+
+    @Test("B246: the external-imports dialog is answered No, from wherever the cursor is")
+    func importsDialogKeys() {
+        #expect(Pane.startupDialog(Self.imports) == .init(dialog: "external CLAUDE.md imports", keys: ["Enter"]))
+        let cursorBelow = Self.imports.replacingOccurrences(of: "❯ No", with: "  No").replacingOccurrences(of: "  Yes, allow", with: "❯ Yes, allow")
+        #expect(Pane.startupDialog(cursorBelow)?.keys == ["Up", "Enter"])
+        let cursorAbove = """
+            Allow external CLAUDE.md file imports?
+              ❯ Ask me later
+                No, disable external imports
+              Enter to confirm · Esc to cancel
+            """
+        #expect(Pane.startupDialog(cursorAbove)?.keys == ["Down", "Enter"])
+        let noAnswer = Self.imports.replacingOccurrences(of: "No, disable external imports", with: "Never")
+        #expect(Pane.startupDialog(noAnswer) == .init(dialog: "external CLAUDE.md imports", keys: nil))
+    }
+
+    @Test("B246: the cursor and answer must sit between the dialog's title and its footer; imports wins the block")
+    func dialogBlockScope() {
+        let cursorInTranscript = "❯ earlier prompt\nYes, from the transcript\nDo you trust the files in this folder?\n  1. Yes, proceed\n  2. No, exit\nEnter to confirm"
+        #expect(Pane.startupDialog(cursorInTranscript) == .init(dialog: "folder trust", keys: nil))
+        let answerBelowFooter = "Allow external CLAUDE.md file imports?\n❯ Yes, allow external imports\nEnter to confirm\n  No, disable external imports"
+        #expect(Pane.startupDialog(answerBelowFooter)?.keys == nil)
+        let quotesTrust = Self.imports.replacingOccurrences(of: "External imports:", with: "Accessing workspace notes:")
+        #expect(Pane.startupDialog(quotesTrust) == .init(dialog: "external CLAUDE.md imports", keys: ["Enter"]))
+        let stillDrawing = Self.imports + "\nDo you trust the files in this folder?"
+        #expect(Pane.startupDialog(stillDrawing) == .init(dialog: "folder trust", keys: nil, drawing: true))
+    }
+
+    static let usageLimit = """
+        You've hit your session limit · resets 4pm (Europe/Stockholm)
+        What do you want to do?
+        ❯ 1. Stop and wait for limit to reset
+          2. Upgrade your plan
+        Enter to confirm · Esc to cancel
+        """
+
+    @Test("B247: claude's usage-limit menu is a host dialog; another question with the same title isn't")
+    func usageLimitMenu() {
+        #expect(Pane.showsUsageLimitMenu(Self.usageLimit))
+        #expect(!Pane.showsUsageLimitMenu("What do you want to do?\n❯ 1. Retry the build\n  2. Skip it\nEnter to confirm · Esc to cancel"))
+        #expect(!Pane.showsUsageLimitMenu("⏺ Stop and wait for limit to reset\n✻ Thinking… (3s · esc to interrupt)"))
+    }
+
+    @Test("B18: the input screen is recognized whatever keys keybindings.json maps", arguments: [
+        "✻ Thinking… (12s · ctrl+g to interrupt)", "⏵⏵ auto mode on (meta+m to cycle)", "⏵⏵ accept edits on", "⏸ plan mode on",
+    ])
+    func inputScreenWithRemappedKeys(line: String) {
+        #expect(Pane.showsInputScreen("⏺ Reading\n\(line)"))
+        #expect(Pane.activityLine("⏺ Reading\n\(line)") == "⏺ Reading")
+    }
+
+    @Test("B246: an answered dialog in scrollback gives way to the next one, or to the input screen")
+    func dialogInScrollback() {
+        let trust = "Do you trust the files in this folder?\n❯ 1. Yes, proceed\n  2. No, exit\nEnter to confirm · Esc to cancel"
+        #expect(Pane.startupDialog(trust + "\n" + Self.imports) == .init(dialog: "external CLAUDE.md imports", keys: ["Enter"]))
+        let input = trust + "\n╭────╮\n│ ❯  │\n╰────╯\n  ⏵⏵ auto mode on (shift+tab to cycle)"
+        #expect(Pane.startupDialog(input) == nil)
+        #expect(Pane.showsInputScreen(input))
+        #expect(!Pane.showsInputScreen(Self.imports))
+    }
+
+    @Test("B247: a dialog's title is its question line above the options")
+    func dialogTitle() {
+        #expect(Pane.dialogTitle(Self.imports) == "Allow external CLAUDE.md file imports?")
+        let permission = """
+            ⏺ Bash(make clean)
+            ╭──────────────────────────────╮
+            │ Bash command                 │
+            │   make clean                 │
+            │ Do you want to proceed?      │
+            │ ❯ 1. Yes                     │
+            │   2. No, and tell Claude what to do differently (esc) │
+            ╰──────────────────────────────╯
+            """
+        #expect(Pane.dialogTitle(permission) == "Do you want to proceed?")
+        #expect(Pane.dialogTitle("⏺ Ran the build\nChoose a theme\n❯ 1. Dark\n  2. Light") == Pane.unrecognizedDialog)
+        #expect(Pane.dialogTitle("⏺ Running swift test\n✻ Thinking… (12s · esc to interrupt)") == nil)
+        #expect(Pane.dialogTitle(Self.imports + "\n⏺ Reading\n  ⏵⏵ auto mode on (shift+tab to cycle)") == nil)
+        #expect(Pane.dialogTitle("❯ fix the bug") == nil)
     }
 
     @Test("B18: activity line skips chrome and the tip below the thinking line")

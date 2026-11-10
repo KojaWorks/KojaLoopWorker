@@ -10,6 +10,9 @@ public struct ManagerStatus: Codable, Sendable, Equatable {
     public var updated: Date
     /// `state/PAUSED` exists: no new claims host-wide.
     public var paused: Bool
+    /// The reason in `state/PAUSED`, redacted, such as the dialog that a worker stalled on; nil
+    /// for none or for a pause without one.
+    public var pauseReason: String?
     /// The first SIGINT arrived: no new claims, exit when no worker runs.
     public var draining: Bool
     public var auth: Auth
@@ -85,12 +88,17 @@ public struct ManagerStatus: Codable, Sendable, Equatable {
         public var finishFailing: Bool
         /// Shrunk out of its pool; retired after its card.
         public var retiring: Bool
+        /// Seconds that the running worker's pane has stayed the same, once that reaches the
+        /// 2-minute dialog stall threshold; nil before that. A worker that waits for input
+        /// shows a frozen pane. Nil from a Manager that predates it.
+        public var paneUnchangedFor: Double?
 
         public init(
             index: Int, state: String, task: String? = nil, card: String? = nil, cardURL: URL? = nil,
             branch: String? = nil, runningFor: Double? = nil, lastError: String? = nil, port: Int,
-            pane: [String] = [], finishFailing: Bool = false, retiring: Bool = false
+            pane: [String] = [], finishFailing: Bool = false, retiring: Bool = false, paneUnchangedFor: Double? = nil
         ) {
+            self.paneUnchangedFor = paneUnchangedFor
             self.index = index
             self.state = state
             self.task = task
@@ -152,8 +160,10 @@ public struct ManagerStatus: Codable, Sendable, Equatable {
 
     public init(
         version: String = loopworkerVersion, pid: Int32, host: String, started: Date, updated: Date,
-        paused: Bool, draining: Bool, auth: Auth, projects: [Project], ci: [CI]? = nil, held: [Held]? = nil, log: [String]
+        paused: Bool, pauseReason: String? = nil, draining: Bool, auth: Auth, projects: [Project], ci: [CI]? = nil,
+        held: [Held]? = nil, log: [String]
     ) {
+        self.pauseReason = pauseReason
         self.version = version
         self.pid = pid
         self.host = host

@@ -111,6 +111,14 @@ public actor Manager {
         var finishError: String?
         /// The last redacted pane lines, newest last.
         var pane: [String] = []
+        /// The worker's last captured pane, unredacted, kept only to notice that it changed.
+        var paneText: String?
+        /// When reconcile last saw the pane change; nil before the worker's first observation.
+        var paneChangedAt: Date?
+        /// The frozen-pane alert went out for this worker.
+        var frozenAlerted = false
+        /// The worker's pane has shown claude's input screen or interrupt hint: its first turn started.
+        var turnStarted = false
     }
 
     struct Project {
@@ -140,6 +148,10 @@ public actor Manager {
     static let sweepInterval: TimeInterval = 300
     static let reloadInterval: TimeInterval = 60
     static let reviveAfter: TimeInterval = 180
+    /// How long after spawn the Manager answers claude's startup dialogs, and how often it looks.
+    static let startupWindow: Double = 120
+    static let startupPoll: Double = 2
+    static let startupTries = 3
 
     var config: HostConfig
     let deps: ManagerDependencies
@@ -444,7 +456,8 @@ public actor Manager {
 
     func writeStatus(_ now: Date) {
         let status = ManagerStatus(
-            pid: getpid(), host: hostName, started: started, updated: now, paused: hostPaused, draining: draining,
+            pid: getpid(), host: hostName, started: started, updated: now, paused: hostPaused,
+            pauseReason: KillSwitch.reason(KillSwitch.file(stateDir: stateDir)).map(deps.redact), draining: draining,
             auth: .init(state: authGate.health.rawValue, detail: authGate.detail.map(deps.redact),
                         backoffUntil: authGate.backoffUntil.flatMap { $0 > now ? $0 : nil }),
             projects: order.compactMap { key in
@@ -457,7 +470,10 @@ public actor Manager {
                               card: s.card?.ref.display, cardURL: s.card?.url, branch: s.branch,
                               runningFor: s.spawnedAt.map { now.timeIntervalSince($0).rounded() },
                               lastError: (s.finishError ?? s.lastError).map(deps.redact), port: s.spec.port, pane: Array(s.pane.suffix(5)),
-                              finishFailing: s.finishFailures >= 3, retiring: s.retiring)
+                              finishFailing: s.finishFailures >= 3, retiring: s.retiring,
+                              paneUnchangedFor: s.phase == .busy && s.task == nil && s.spawnedAt != nil
+                                ? s.paneChangedAt.map { now.timeIntervalSince($0).rounded() }.flatMap { $0 >= ReconcilePolicy().dialogStall ? $0 : nil }
+                                : nil)
                     })
             },
             ci: ciStatus(),

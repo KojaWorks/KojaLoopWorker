@@ -332,6 +332,9 @@ and exits 1 when anything fails. `--json` prints the same as JSON. It checks:
 - the container engine answers its probe (a warning only);
 - the backlog and forge accept their tokens, and whose they are;
 - on GitHub, that the token sees each project's repository and its user may push;
+- no `CLAUDE.md`, `AGENTS.md` or `.claude/rules` sits in or above `clones_dir` (a warning):
+  claude loads those into every worker, and an import in them that points outside the worktree
+  makes claude ask at startup; move `clones_dir` out of that directory;
 - `$LOOPWORKER_HOME` is writable, and whether a Manager is running.
 
 ## Status, pause and stop
@@ -343,7 +346,25 @@ loopworker pause [project]     # no new claims for the host or one project; runn
 loopworker resume [project]
 ```
 
-`status` also says when the Manager holds its lock but stopped updating (wedged).
+`status` also says when the Manager holds its lock but stopped updating (wedged), and when a
+worker's screen hasn't changed for 2 minutes or more ("pane unchanged for N min"), which
+usually means that claude waits for input. When a worker sits at a dialog that the Manager
+doesn't answer for 2 minutes, the Manager stops it and alerts:
+
+- A dialog before the worker started its first turn, or claude's usage-limit menu, comes from
+  the host's claude (a usage limit, an onboarding screen after an update), so every worker
+  would hit it. The Manager releases the card (not a failed attempt) and pauses new claims on
+  the host; `status` shows "PAUSED" with the dialog's title. Find out why claude asks (the
+  Manager log has the screen), make it stop asking, for example by running claude once on the
+  host or in its settings, then run `loopworker resume`.
+- Any other dialog came from the card's work, such as a permission prompt. The card becomes
+  stuck with the dialog's title in the blocker and the worker's commits pushed. Change the card,
+  then move it back to ready.
+
+A
+screen that stays the same for 15 minutes without a dialog only raises an alert: attach with
+`tmux -S $LOOPWORKER_HOME/state/tmux attach -t <session>` (the alert's log line names it) and
+look.
 
 One Manager serves each project. When a second one serves the same project with the same
 backlog (two hosts configured for it by mistake), each leaves the cards that the other claimed

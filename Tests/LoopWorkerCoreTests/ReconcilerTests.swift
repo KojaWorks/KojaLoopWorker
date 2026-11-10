@@ -56,4 +56,21 @@ import Testing
     @Test func overTheCapIsHung() {
         #expect(decide(.working, running: 3601) == .release(.hung))
     }
+
+    @Test("B247: a dialog unchanged for 2 minutes stalls the worker; a frozen pane without one doesn't")
+    func dialogStall() {
+        func stall(_ unchanged: Double, dialog: String?, outcomeAge: Double? = nil, auth: Bool = false,
+                   turnStarted: Bool = false, host: Bool = false) -> SlotDecision {
+            Reconciler.decide(SlotObservation(cardState: .working, sessionAlive: true, authFailed: auth, outcomeAge: outcomeAge,
+                                              runningFor: 4000, paneUnchangedFor: unchanged, dialog: dialog,
+                                              turnStarted: turnStarted, hostDialog: host), policy: policy)
+        }
+        #expect(stall(120, dialog: "Pick one?") == .stalledOnHostDialog("Pick one?"))
+        #expect(stall(120, dialog: "Pick one?", turnStarted: true) == .stalledOnCardDialog("Pick one?"))
+        #expect(stall(120, dialog: "What do you want to do?", turnStarted: true, host: true) == .stalledOnHostDialog("What do you want to do?"))
+        #expect(stall(119, dialog: "Pick one?") == .release(.hung))
+        #expect(stall(3600, dialog: nil) == .release(.hung))
+        #expect(stall(120, dialog: "Pick one?", outcomeAge: 30) == .finish)
+        #expect(stall(120, dialog: "Pick one?", auth: true) == .release(.auth))
+    }
 }

@@ -78,8 +78,7 @@ final class ManagerHarness: @unchecked Sendable {
             backlog: backlog, forge: forge, runner: runner, tmux: tmux, git: git, lifecycle: lifecycle,
             engine: engine, log: log, recentLines: { [log] in log.recentLines() },
             redact: { $0.replacingOccurrences(of: "SECRET", with: "[REDACTED]") },
-            pane: PaneReading(showsAuthFailure: { $0.contains("Please run /login · API Error") },
-                              trustPromptKeys: { $0.contains("trust this folder") ? ["Enter"] : nil }),
+            pane: PaneReading(),
             environment: environment)
         return Manager(config: config, dependencies: deps, clock: clock)
     }

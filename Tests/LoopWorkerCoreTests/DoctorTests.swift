@@ -248,4 +248,43 @@ private final class DiagnosableForge: Forge, Diagnosable, @unchecked Sendable {
         let checks = await d.run()
         #expect(check(checks, "home")?.level == .fail)
     }
+
+    @Test("B248: agent instructions in or above clones_dir warn, except the user's own ~/.claude")
+    func instructionsAboveClonesDir() throws {
+        let root = try temporaryDirectory()
+        let fm = FileManager.default
+        let clones = root.appending(path: "a/b/clones")
+        for dir in ["a/.claude/rules", "a/b/.claude/rules", "a/b/clones"] {
+            try fm.createDirectory(at: root.appending(path: dir), withIntermediateDirectories: true)
+        }
+        for file in ["AGENTS.md", "a/CLAUDE.md", "a/b/clones/CLAUDE.local.md"] { try Data("@AGENTS.md\n".utf8).write(to: root.appending(path: file)) }
+        let checks = Doctor.instructionsAbove(clonesDir: clones, home: root.appending(path: "a/b"), root: root)
+        #expect(checks.allSatisfy { $0.level == .warn && $0.name == "clones_dir" })
+        #expect(checks.map { $0.detail.components(separatedBy: " is in or above").first! }.sorted() == [
+            clones.appending(path: "CLAUDE.local.md").path, root.appending(path: "a/CLAUDE.md").path,
+            root.appending(path: "a/.claude/rules").path, root.appending(path: "AGENTS.md").path,
+        ].sorted())
+        #expect(checks.contains { $0.remedy == "move clones_dir out of \(root.appending(path: "a").path), or move that file" })
+
+        let clean = root.appending(path: "a/b/clones/sub")
+        try fm.removeItem(at: root.appending(path: "a/b/clones/CLAUDE.local.md"))
+        let ok = Doctor.instructionsAbove(clonesDir: clean, home: nil, root: root.appending(path: "a/b"))
+        #expect(ok.count == 1 && ok.first?.level == .warn && ok.first?.detail.hasPrefix(root.appending(path: "a/b/.claude/rules").path) == true)
+        #expect(Doctor.instructionsAbove(clonesDir: clean, home: root.appending(path: "a/b"), root: root.appending(path: "a/b"))
+                == [DoctorCheck("clones_dir", .ok, "no agent instructions in or above \(clean.path)")])
+    }
+
+    @Test("B248: a file reached through a symlinked clones_dir is reported once; .claude/AGENTS.md counts")
+    func instructionsAboveASymlinkedClonesDir() throws {
+        let root = try temporaryDirectory().resolvingSymlinksInPath()
+        let fm = FileManager.default
+        try fm.createDirectory(at: root.appending(path: "real/.claude"), withIntermediateDirectories: true)
+        try Data("x\n".utf8).write(to: root.appending(path: "real/CLAUDE.md"))
+        try Data("x\n".utf8).write(to: root.appending(path: "real/.claude/AGENTS.md"))
+        try fm.createSymbolicLink(at: root.appending(path: "link"), withDestinationURL: root.appending(path: "real"))
+        let checks = Doctor.instructionsAbove(clonesDir: root.appending(path: "link/clones"), home: nil, root: root)
+        #expect(checks.map { $0.detail.components(separatedBy: " is in or above").first! } == [
+            root.appending(path: "link/CLAUDE.md").path, root.appending(path: "link/.claude/AGENTS.md").path,
+        ])
+    }
 }

@@ -25,6 +25,9 @@ learned the hard way, and which the port must keep or fix, is listed in
   CLAUDE.md, plugins, skills, hooks and memories, because that tuned setup is what makes their
   work good. They may not write under `~/.claude` or to the memory directory, so one bad card
   can't change what every later session loads; a worker reports what it learned in its outcome.
+  The `Edit` deny rules in the worker's `settings.json` restrict claude's file tools, not shell
+  commands, so they keep a worker's own tools out of `~/.claude`; they aren't a security boundary.
+  The settings also deny `AskUserQuestion` and `EnterPlanMode`, whose dialogs nobody would answer.
   The auth preflight is not an agent and runs in Claude Code's safe mode.
 - **A repo can't widen its own reach.** A project's `finish` (whether the Manager merges) and
   `worker_env` (which variables reach its workers) live only in the host config, never in the
@@ -256,6 +259,15 @@ lost access to it, so a revoked connection never reaps running workers.
    LoopWorker's own output rather than content that the owner vouched for. The snapshot still
    leaves those notes out. When the resumed branch has an open review request, the card runs a
    review round (see "Review rounds").
+
+   For two minutes after the spawn, the Manager reads the pane every 2 s and answers claude's
+   startup dialogs that it knows by moving the cursor to the answer, once two reads in a row
+   agree (claude ignores keys that arrive just after a dialog appears), and again if the dialog
+   is still up two reads later, at most 3 times: folder trust
+   gets "Yes"; "Allow external CLAUDE.md file imports?" gets "No", because a file that an
+   ancestor directory's CLAUDE.md imports is text that no project contract controls. It stops
+   once claude shows its input screen. A dialog it doesn't know is left to the dialog stall
+   check (see "Reconcile").
 4. **Work.** The worker implements, runs `verify.sh`, reviews its own diff with fresh-context
    subagents, optionally writes a review guide, commits, and writes the outcome:
 
@@ -503,8 +515,35 @@ decision:
 | Another Manager's claim of the card is newer | `abandon` |
 | Session dead, no outcome, card `working` | `release(crashed)` |
 | Pane shows claude's login or 401 screen | `release(auth)`, and the auth circuit breaker backs off |
+| Pane shows a dialog, unchanged for 2 minutes, before the first turn, or the usage-limit menu | `stalledOnHostDialog`: reap, release (not counted), pause the host |
+| Pane shows another dialog, unchanged for 2 minutes | `stalledOnCardDialog`: reap, mark the card `stuck` (not counted) |
 | Running longer than the wall-clock cap | `release(hung)` |
 | Otherwise | `keep` |
+
+Reconcile records when each worker's pane last changed. claude's spinner and timer change the
+pane while it works, so a pane that stays the same means that claude waits for input. When it
+shows a dialog (`Enter to confirm`, `Esc to cancel` or a numbered `❯` option) for 2 minutes,
+nothing will answer it. The Manager logs the redacted screen and reaps the worker; what follows
+depends on where the dialog came from.
+
+A dialog before the worker's first turn (its pane never showed claude's input screen), or
+claude's usage-limit menu at any time, comes from the host's claude: a usage limit, an
+unavailable auto mode check, an onboarding screen after an update. Every worker would hit it,
+and marking each card stuck would drain the backlog one card per slot every few minutes. So the
+Manager releases the card without counting an attempt and pauses new claims on the host by
+writing the dialog's title as the reason into `state/PAUSED`. It alerts once per new reason;
+`status` shows the reason, and `loopworker resume` clears it once an operator made claude stop
+asking.
+
+Any other dialog appeared during the work, such as the permission prompt that auto mode falls
+back to after repeated classifier denials. The card caused it, and pausing the host would only
+loop it: released, claimed again after a resume, stalled again, its commits dropped each time.
+So the Manager writes a stuck outcome for the worker, and the finish pushes the worker's commits
+and marks the card `stuck` with a blocker that names only the dialog's title; that isn't a
+failed attempt, and the host keeps claiming. Workers can't open a dialog of their own: the slot
+settings deny `AskUserQuestion` and `EnterPlanMode`. A pane that stays the same
+for 15 minutes without a dialog only raises an alert, once per worker, because a frozen pane
+isn't proof of waiting for every tool. `status` shows "pane unchanged for N min" from 2 minutes.
 
 A release for a crash or a hang counts as a failed attempt; an auth release doesn't, because
 the host failed, not the card. When a counted release would reach `max_attempts`, the Manager
@@ -606,6 +645,11 @@ worker_env = []                               # Manager variables forwarded to w
 The repo's own `.loopworker/` is read from the clone's working tree, which the Manager resets to
 `origin/<base>` after every fetch, so scripts and the brief always match the base branch.
 
+claude loads the CLAUDE.md files of every directory above a worker's worktree, so `clones_dir`
+belongs outside any tree that holds agent instructions: they would reach every worker without a
+project contract controlling them, and an import in them that leaves the worktree makes claude
+ask at startup. `doctor` warns about each such file.
+
 ## State on disk
 
 ```
@@ -616,7 +660,7 @@ $LOOPWORKER_HOME/
   state/holder                the holder id that this install's claims record
   state/status.json           written atomically each tick; `loopworker status` reads it
   state/manager.log           redacted
-  state/PAUSED                host killswitch; state/projects/<key>/PAUSED per project
+  state/PAUSED                host killswitch, optionally holding its reason; state/projects/<key>/PAUSED per project
   state/tmux                  the Manager's own tmux server socket
   state/ci/<card id>.json     CI watch record of a verifying card (the id percent-encoded)
   state/pushes.json           legacy push ledger, read only (see "Push records and the lease")
