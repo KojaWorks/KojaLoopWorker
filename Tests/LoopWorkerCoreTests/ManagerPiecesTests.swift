@@ -325,6 +325,18 @@ func temporaryDirectory() throws -> URL {
     }
 }
 
+@Suite struct KillSwitchTests {
+    @Test("B72: pausing a paused host keeps the existing file and its reason")
+    func pauseKeepsAnExistingReason() throws {
+        let file = KillSwitch.file(stateDir: try temporaryDirectory())
+        #expect(try KillSwitch.pauseUnlessPaused(file))
+        #expect(KillSwitch.reason(file) == nil)
+        try KillSwitch.pause(file, reason: "claude showed 'Pick?' and nothing answers it")
+        #expect(try !KillSwitch.pauseUnlessPaused(file))
+        #expect(KillSwitch.reason(file) == "claude showed 'Pick?' and nothing answers it")
+    }
+}
+
 @Suite struct NotifierTests {
     @Test func sendsTheMessageOnStdinAndDedupesPerKey() async throws {  // B99, B100
         let dir = try temporaryDirectory()

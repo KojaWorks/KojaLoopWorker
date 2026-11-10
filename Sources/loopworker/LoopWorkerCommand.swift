@@ -114,8 +114,13 @@ struct Pause: ParsableCommand {
 
     func run() throws {
         let file = try killSwitch(project)
-        do { try KillSwitch.pause(file) } catch {
+        let created: Bool
+        do { created = try KillSwitch.pauseUnlessPaused(file) } catch {
             throw fail("can't create \(file.path): \(error.localizedDescription)")
+        }
+        guard created else {
+            print("\(project ?? "the host") was already paused\(KillSwitch.reason(file).map { " (\($0))" } ?? ""); left as it is")
+            return
         }
         print("paused \(project ?? "the host"): no new claims until `loopworker resume\(project.map { " \($0)" } ?? "")`")
     }

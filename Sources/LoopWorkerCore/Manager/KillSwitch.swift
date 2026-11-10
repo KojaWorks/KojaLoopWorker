@@ -16,6 +16,15 @@ public enum KillSwitch {
         try Data(reason.utf8).write(to: file, options: .atomic)
     }
 
+    /// Creates an empty PAUSED file unless one exists, which keeps its reason.
+    /// - Returns: false when the file already existed.
+    /// - Throws: the file system error, when the file can't be written.
+    public static func pauseUnlessPaused(_ file: URL) throws -> Bool {
+        guard !FileManager.default.fileExists(atPath: file.path) else { return false }
+        try pause(file)
+        return true
+    }
+
     /// The reason in the PAUSED file, trimmed; nil when the file is missing, unreadable or empty.
     public static func reason(_ file: URL) -> String? {
         guard let data = FileManager.default.contents(atPath: file.path) else { return nil }
