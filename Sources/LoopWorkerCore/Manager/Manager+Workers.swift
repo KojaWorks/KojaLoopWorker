@@ -146,7 +146,7 @@ extension Manager {
             log.error("the backlog returned \(card.ref) for project \(card.project), which wasn't asked for; not claiming it")
         }
         for c in candidates {
-            guard let p = projects[c.key], !draining, !forceRequested,
+            guard let p = projects[c.key], !draining, !forceRequested, !hostPaused,
                   let card = cards.first(where: { $0.project.lowercased() == p.spec.path.lowercased() && !(claimBackoff[$0.ref.id].map { $0.until > now } ?? false) }),
                   let slot = p.slots.first(where: { $0.id == c.slot }), isFree(slot) else { continue }
             startWorker(card, on: SlotRef(key: c.key, id: c.slot))
@@ -228,6 +228,12 @@ extension Manager {
             return
         }
 
+        guard !hostPaused else {
+            log.info("\(label(spec)): the host was paused while \(card.ref) was being started; not claiming it")
+            try? fm.removeItem(at: cardRecordFile(spec))
+            free(ref)
+            return
+        }
         var claimed: Bool
         do { claimed = try await deps.backlog.claim(card, holder: holder) }
         catch {
@@ -722,6 +728,7 @@ extension Manager {
             notify(key: "frozen-\(card.ref.id)", "LoopWorker: the worker on \(card.ref) on \(hostName) has shown the same screen for \(minutes) min and may wait for input; see the Manager log")
         case .stalledOnHostDialog(let title):
             log.error("\(label(spec)): \(card.ref)'s worker shows a claude dialog that LoopWorker doesn't answer, unchanged for \(Int(unchanged / 60)) min, \(turnStarted ? "one that the host's claude shows" : "before its first turn"): \(title); reaping it, releasing the card and pausing new claims on this host. Its screen:\n\(lines.joined(separator: "\n"))")
+            pauseForDialog(title)  // before any await, so this tick's fill sees it
             await reap(spec)
             if finishWrittenOutcome(ref, card: target) { return }
             update(ref) { $0.task = .releasing }
@@ -782,10 +789,8 @@ extension Manager {
         catch { log.error("\(label(spec)): can't reap \(spec.session): \(error)") }
     }
 
-    /// After a dialog stall: pauses the host with the dialog's title as the reason, alerting
-    /// when that reason is new, then releases the card without counting an attempt and recycles.
-    func releaseStalled(_ ref: SlotRef, card: Card, title: String) async {
-        guard let spec = slot(ref)?.spec else { return }
+    /// Pauses the host with `title` as the reason in `state/PAUSED`, alerting when that reason is new.
+    func pauseForDialog(_ title: String) {
         let file = KillSwitch.file(stateDir: stateDir)
         let reason = "claude showed '\(title)' and nothing answers it"
         if KillSwitch.reason(file) != reason {
@@ -797,6 +802,11 @@ extension Manager {
             }
             notify(key: "dialog-stall", "LoopWorker: claude on \(hostName) shows '\(title)'; new claims are paused. Make claude stop asking, then run `loopworker resume`")
         }
+    }
+
+    /// After a host dialog stall: releases the card without counting an attempt and recycles.
+    func releaseStalled(_ ref: SlotRef, card: Card, title: String) async {
+        guard let spec = slot(ref)?.spec else { return }
         let note = "LoopWorker released this card because claude on \(hostName) showed a dialog that LoopWorker doesn't answer: \(Self.inlineCode(title)). The card isn't at fault, so this isn't a failed attempt. New claims on \(hostName) are paused until an operator makes claude stop asking and runs `loopworker resume`."
         do {
             try await deps.backlog.release(card, reason: note, countsAsAttempt: false)

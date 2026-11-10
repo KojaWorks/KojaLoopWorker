@@ -1252,6 +1252,19 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(!h.backlog.writes.contains { if case .markStuck = $0 { true } else { false } })
     }
 
+    @Test("B247: the tick that pauses the host for a dialog claims nothing")
+    func hostDialogStallClaimsNothingInTheSameTick() async throws {
+        let h = try await spawned("[[project]]\npath = \"g/app\"\nslots = 2")
+        h.tmux.set("lw_g--app_0", pane: Self.unknownDialog)
+        await h.cycle()
+        h.addCard(13)
+        h.clock.advance(120)
+        await h.cycle()
+        #expect(try h.status().paused)
+        #expect(!h.backlog.writes.contains { if case .claim("id-13") = $0 { true } else { false } })
+        #expect(h.tmux.spawned.count == 1)
+    }
+
     @Test("B247: an outcome written while the stalled worker is reaped is finished, not released")
     func stallReapRacesTheOutcome() async throws {
         let h = try await spawned()
@@ -1263,7 +1276,7 @@ func fileMode(_ url: URL) throws -> Int {
         await h.cycle()
         #expect(h.backlog.writes.contains { if case .markStuck("id-12", let b) = $0 { b.hasPrefix("Which endpoint?") } else { false } })
         #expect(!h.backlog.writes.contains { if case .release = $0 { true } else { false } })
-        #expect(!FileManager.default.fileExists(atPath: h.home.appending(path: "state/PAUSED").path))
+        #expect(try h.status().paused)  // the dialog still came from the host's claude
     }
 
     @Test("B247: the dialog title is redacted before it is cut, so a cut never splits a secret")
