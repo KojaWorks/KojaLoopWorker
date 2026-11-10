@@ -144,6 +144,14 @@ import Testing
         #expect(Pane.startupDialog(stillDrawing) == .init(dialog: "folder trust", keys: nil))
     }
 
+    @Test("B18: the input screen is recognized whatever keys keybindings.json maps", arguments: [
+        "✻ Thinking… (12s · ctrl+g to interrupt)", "⏵⏵ auto mode on (meta+m to cycle)", "⏵⏵ accept edits on", "⏸ plan mode on",
+    ])
+    func inputScreenWithRemappedKeys(line: String) {
+        #expect(Pane.showsInputScreen("⏺ Reading\n\(line)"))
+        #expect(Pane.activityLine("⏺ Reading\n\(line)") == "⏺ Reading")
+    }
+
     @Test("B246: an answered dialog in scrollback gives way to the next one, or to the input screen")
     func dialogInScrollback() {
         let trust = "Do you trust the files in this folder?\n❯ 1. Yes, proceed\n  2. No, exit\nEnter to confirm · Esc to cancel"

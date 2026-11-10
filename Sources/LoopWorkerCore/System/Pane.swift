@@ -55,8 +55,10 @@ public enum Pane {
         return DialogAnswer(dialog: dialog.name, keys: Array(repeating: answer > cursor ? "Down" : "Up", count: abs(answer - cursor)) + ["Enter"])
     }
 
-    /// True when claude shows its input screen or works on a turn: its mode footer, shortcut
-    /// hint or interrupt hint is on screen.
+    /// True when claude shows its input screen or works on a turn: a line holds its interrupt
+    /// hint (` to interrupt`), its mode-cycle hint (` to cycle)`) or a mode label (`auto mode on`,
+    /// `accept edits on`, `plan mode on`, `bypass permissions on`). Key names aren't matched,
+    /// because keybindings.json can remap them.
     public static func showsInputScreen(_ pane: String) -> Bool {
         normalized(pane).contains(where: isInputScreen)
     }
@@ -86,7 +88,7 @@ public enum Pane {
         for line in pane.split(whereSeparator: \.isNewline).reversed() {
             let line = line.trimmingCharacters(in: .whitespaces)
             if line.isEmpty || chromePrefixes.contains(where: line.hasPrefix) { continue }
-            if line.contains("mode on (shift+tab") || line.contains("esc to interrupt") { continue }
+            if isInputScreen(line) { continue }
             return String(line.prefix(140))
         }
         return ""
@@ -131,8 +133,9 @@ public enum Pane {
         line.contains("Enter to confirm") || line.contains("Esc to cancel")
     }
 
+    /// claude's interrupt hint, mode-cycle hint or mode label. Key names stay out: keybindings.json remaps them.
     private static func isInputScreen(_ line: String) -> Bool {
-        line.contains("mode on (shift+tab") || line.contains("esc to interrupt") || line.contains("? for shortcuts")
+        [" to interrupt", " to cycle)", "auto mode on", "accept edits on", "plan mode on", "bypass permissions on"].contains(where: line.contains)
     }
 
     // "⎿" prefixes claude's tool results and rotating tips, which sit below the real line.
