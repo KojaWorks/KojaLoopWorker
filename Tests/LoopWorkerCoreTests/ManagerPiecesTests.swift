@@ -391,7 +391,7 @@ func temporaryDirectory() throws -> URL {
         #expect(deny.contains("Edit(/\(root.path)/home/.claude/**)"))
         #expect(deny.contains("Edit(/\(synced.path)/**)"))
         #expect(!deny.contains { $0.hasPrefix("Write(") })
-        #expect(WorkerLaunch.settings(home: nil, userSettings: nil) == #"{"permissions":{"deny":["Edit(~/.claude/**)"]}}"#)
+        #expect(WorkerLaunch.settings(home: nil, userSettings: nil) == #"{"permissions":{"deny":["Edit(~/.claude/**)","AskUserQuestion"]}}"#)
     }
 }
 
@@ -430,6 +430,13 @@ func temporaryDirectory() throws -> URL {
         var s = status(updated: now)
         s.projects[0].slots[0] = .init(index: 0, state: "busy", card: "g/app#12", runningFor: 600, port: 1, paneUnchangedFor: 185)
         #expect(StatusReport.render(s, lockHolder: 7, now: now).text.contains("  slot 0: busy g/app#12 for 10m, pane unchanged for 3 min\n"))
+    }
+
+    @Test("B72, B247: a host paused for a reason shows it with the way out")
+    func pauseReasonIsShown() {
+        var s = status(updated: now)
+        s.pauseReason = "claude showed 'Pick?' and nothing answers it"
+        #expect(StatusReport.render(s, lockHolder: 7, now: now).text.contains("up 1h 01m, PAUSED (claude showed 'Pick?' and nothing answers it; `loopworker resume` clears it)\n"))
     }
 
     @Test("B230: cards held by other Managers are listed with their holder")

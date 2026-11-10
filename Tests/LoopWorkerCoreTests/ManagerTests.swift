@@ -31,7 +31,7 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(try String(contentsOf: dir.appending(path: "card.md"), encoding: .utf8) == "# Fix it\n")
         #expect(try String(contentsOf: dir.appending(path: "brief.md"), encoding: .utf8).contains("g/app#12 in g/app"))
         #expect(try String(contentsOf: dir.appending(path: "mcp.json"), encoding: .utf8) == #"{"mcpServers":{}}"#)
-        #expect(try String(contentsOf: dir.appending(path: "settings.json"), encoding: .utf8).contains("Edit(~/.claude/**)"))
+        #expect(try String(contentsOf: dir.appending(path: "settings.json"), encoding: .utf8).contains(#""Edit(~/.claude/**)","AskUserQuestion""#))
 
         let env = dir.appending(path: "worker.env")
         #expect(try fileMode(env) == 0o600)
@@ -1167,10 +1167,15 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.backlog.writes.filter { if case .claim = $0 { true } else { false } }.count == claims + 1)
     }
 
-    @Test("B247: a dialog unchanged for 2 minutes reaps the worker, marks the card stuck uncounted and alerts")
-    func unknownDialogStallMarksStuck() async throws {
-        let h = try await spawned(top: "notify_command = \"x\"")
-        h.tmux.set("lw_g--app_0", pane: "⏺ working\nSECRET in view\nChoose a theme?\n❯ 1. Dark\n  2. Light\nEnter to confirm · Esc to cancel")
+    static let unknownDialog = "⏺ working\nSECRET in view\nChoose a theme?\n❯ 1. Dark\n  2. Light\nEnter to confirm · Esc to cancel"
+
+    @Test("B247: a dialog unchanged for 2 minutes reaps the worker, releases the card uncounted, pauses the host and alerts once")
+    func unknownDialogStallPausesTheHost() async throws {
+        let h = try await spawned("[[project]]\npath = \"g/app\"\nslots = 2", top: "notify_command = \"x\"")
+        h.addCard(13)
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 2)
+        for i in 0..<2 { h.tmux.set(h.session("g--app", i), pane: Self.unknownDialog) }
         await h.cycle()
         h.clock.advance(119)
         await h.cycle()
@@ -1178,18 +1183,26 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(try h.status().projects[0].slots[0].paneUnchangedFor == nil)
         h.clock.advance(1)
         await h.cycle()
-        #expect(!h.tmux.exists("lw_g--app_0"))
-        guard case .markStuck("id-12", let blocker)? = h.backlog.writes.last else {
-            Issue.record("expected markStuck, got \(h.backlog.writes)")
-            return
-        }
-        #expect(blocker.contains("unchanged for 2 minutes: `Choose a theme?`"))
-        #expect(!blocker.contains("Dark") && !blocker.contains("working"))
-        #expect(!h.backlog.writes.contains { if case .release = $0 { true } else { false } })
-        #expect(h.backlog.card(id: "id-12")?.attempts == 0)
-        #expect(h.log.contains("unchanged for 2 min: Choose a theme?; reaping it and marking the card stuck. Its screen:\n⏺ working\n[REDACTED] in view", level: .error))
-        #expect(h.runner.specs.get.contains { $0.environment["LOOPWORKER_ALERT"]??.contains("g/app#12 is stuck: LoopWorker stopped the worker") == true })
-        #expect(h.lifecycle.calls.last == "recycle g--app/0")
+        #expect(!h.tmux.exists("lw_g--app_0") && !h.tmux.exists("lw_g--app_1"))
+        let releases = h.backlog.writes.compactMap { if case .release(let id, let note, let counted) = $0 { (id, note, counted) } else { nil } }
+        #expect(Set(releases.map(\.0)) == ["id-12", "id-13"])
+        #expect(releases.allSatisfy { !$0.2 && $0.1.contains("`Choose a theme?`") && !$0.1.contains("Dark") && $0.1.contains("loopworker resume") })
+        #expect(!h.backlog.writes.contains { if case .markStuck = $0 { true } else { false } })
+        #expect(!FileManager.default.fileExists(atPath: h.stateDir().appending(path: "outcome.json").path))
+        let status = try h.status()
+        #expect(status.paused && status.pauseReason == "claude showed 'Choose a theme?' and nothing answers it")
+        #expect(h.log.contains("unchanged for 2 min: Choose a theme?; reaping it, releasing the card and pausing new claims on this host. Its screen:\n⏺ working\n[REDACTED] in view", level: .error))
+        let alerts = h.runner.specs.get.filter { $0.environment["LOOPWORKER_ALERT"]??.contains("shows 'Choose a theme?'; new claims are paused") == true }
+        #expect(alerts.count == 1)
+
+        let claims = h.backlog.writes.filter { if case .claim = $0 { true } else { false } }.count
+        h.clock.advance(120)
+        await h.cycle()
+        #expect(h.backlog.writes.filter { if case .claim = $0 { true } else { false } }.count == claims)
+        try FileManager.default.removeItem(at: h.home.appending(path: "state/PAUSED"))
+        h.clock.advance(60)
+        await h.cycle()
+        #expect(h.backlog.writes.filter { if case .claim = $0 { true } else { false } }.count > claims)
     }
 
     @Test("B247: a pane frozen for 15 minutes without a dialog alerts once and keeps the worker")

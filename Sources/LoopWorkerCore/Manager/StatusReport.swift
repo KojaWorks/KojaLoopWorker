@@ -29,7 +29,7 @@ public enum StatusReport {
 
     static func summary(_ s: ManagerStatus, now: Date) -> [String] {
         var out: [String] = []
-        let flags = (s.paused ? ", PAUSED" : "") + (s.draining ? ", draining" : "")
+        let flags = (s.paused ? ", PAUSED" + (s.pauseReason.map { " (\($0); `loopworker resume` clears it)" } ?? "") : "") + (s.draining ? ", draining" : "")
         out.append("LoopWorker \(s.version) on \(s.host), pid \(s.pid), up \(duration(s.updated.timeIntervalSince(s.started)))\(flags)")
         var auth = "auth: \(s.auth.state)"
         if let detail = s.auth.detail { auth += " (\(detail))" }

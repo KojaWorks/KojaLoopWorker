@@ -27,6 +27,7 @@ learned the hard way, and which the port must keep or fix, is listed in
   can't change what every later session loads; a worker reports what it learned in its outcome.
   The `Edit` deny rules in the worker's `settings.json` restrict claude's file tools, not shell
   commands, so they keep a worker's own tools out of `~/.claude`; they aren't a security boundary.
+  The settings also deny `AskUserQuestion`, whose dialog nobody would answer.
   The auth preflight is not an agent and runs in Claude Code's safe mode.
 - **A repo can't widen its own reach.** A project's `finish` (whether the Manager merges) and
   `worker_env` (which variables reach its workers) live only in the host config, never in the
@@ -512,16 +513,21 @@ decision:
 | Another Manager's claim of the card is newer | `abandon` |
 | Session dead, no outcome, card `working` | `release(crashed)` |
 | Pane shows claude's login or 401 screen | `release(auth)`, and the auth circuit breaker backs off |
-| Pane shows a dialog, unchanged for 2 minutes | `stalledOnDialog`: reap, mark the card `stuck` |
+| Pane shows a dialog, unchanged for 2 minutes | `stalledOnDialog`: reap, release (not counted), pause the host |
 | Running longer than the wall-clock cap | `release(hung)` |
 | Otherwise | `keep` |
 
 Reconcile records when each worker's pane last changed. claude's spinner and timer change the
 pane while it works, so a pane that stays the same means that claude waits for input. When it
 shows a dialog (`Enter to confirm`, `Esc to cancel` or a numbered `❯` option) for 2 minutes,
-nothing will answer it: the Manager logs the redacted screen, reaps the worker and writes a stuck
-outcome for it, so the normal finish pushes any commits and marks the card `stuck` with a blocker
-that names only the dialog's title line. That isn't a failed attempt. A pane that stays the same
+nothing will answer it. Such a dialog usually comes from the host's claude (a usage limit, an
+unavailable auto mode check, an onboarding screen after an update), so it would stop every
+worker, and marking each card stuck would drain the backlog one card per slot every few
+minutes. Instead the Manager logs the redacted screen, reaps the worker, releases the card
+without counting an attempt, and pauses new claims on the host by writing the dialog's title as
+the reason into `state/PAUSED`. It alerts once per new reason; `status` shows the reason, and
+`loopworker resume` clears it once an operator made claude stop asking. Workers can't open a
+dialog of their own: the slot settings deny `AskUserQuestion`. A pane that stays the same
 for 15 minutes without a dialog only raises an alert, once per worker, because a frozen pane
 isn't proof of waiting for every tool. `status` shows "pane unchanged for N min" from 2 minutes.
 
@@ -640,7 +646,7 @@ $LOOPWORKER_HOME/
   state/holder                the holder id that this install's claims record
   state/status.json           written atomically each tick; `loopworker status` reads it
   state/manager.log           redacted
-  state/PAUSED                host killswitch; state/projects/<key>/PAUSED per project
+  state/PAUSED                host killswitch, optionally holding its reason; state/projects/<key>/PAUSED per project
   state/tmux                  the Manager's own tmux server socket
   state/ci/<card id>.json     CI watch record of a verifying card (the id percent-encoded)
   state/pushes.json           legacy push ledger, read only (see "Push records and the lease")

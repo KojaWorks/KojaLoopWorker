@@ -114,10 +114,7 @@ struct Pause: ParsableCommand {
 
     func run() throws {
         let file = try killSwitch(project)
-        do {
-            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try Data().write(to: file)
-        } catch {
+        do { try KillSwitch.pause(file) } catch {
             throw fail("can't create \(file.path): \(error.localizedDescription)")
         }
         print("paused \(project ?? "the host"): no new claims until `loopworker resume\(project.map { " \($0)" } ?? "")`")

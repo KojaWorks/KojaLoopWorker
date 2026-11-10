@@ -453,7 +453,8 @@ public actor Manager {
 
     func writeStatus(_ now: Date) {
         let status = ManagerStatus(
-            pid: getpid(), host: hostName, started: started, updated: now, paused: hostPaused, draining: draining,
+            pid: getpid(), host: hostName, started: started, updated: now, paused: hostPaused,
+            pauseReason: KillSwitch.reason(KillSwitch.file(stateDir: stateDir)).map(deps.redact), draining: draining,
             auth: .init(state: authGate.health.rawValue, detail: authGate.detail.map(deps.redact),
                         backoffUntil: authGate.backoffUntil.flatMap { $0 > now ? $0 : nil }),
             projects: order.compactMap { key in

@@ -10,6 +10,9 @@ public struct ManagerStatus: Codable, Sendable, Equatable {
     public var updated: Date
     /// `state/PAUSED` exists: no new claims host-wide.
     public var paused: Bool
+    /// The reason in `state/PAUSED`, redacted, such as the dialog that a worker stalled on; nil
+    /// for none or for a pause without one.
+    public var pauseReason: String?
     /// The first SIGINT arrived: no new claims, exit when no worker runs.
     public var draining: Bool
     public var auth: Auth
@@ -157,8 +160,10 @@ public struct ManagerStatus: Codable, Sendable, Equatable {
 
     public init(
         version: String = loopworkerVersion, pid: Int32, host: String, started: Date, updated: Date,
-        paused: Bool, draining: Bool, auth: Auth, projects: [Project], ci: [CI]? = nil, held: [Held]? = nil, log: [String]
+        paused: Bool, pauseReason: String? = nil, draining: Bool, auth: Auth, projects: [Project], ci: [CI]? = nil,
+        held: [Held]? = nil, log: [String]
     ) {
+        self.pauseReason = pauseReason
         self.version = version
         self.pid = pid
         self.host = host

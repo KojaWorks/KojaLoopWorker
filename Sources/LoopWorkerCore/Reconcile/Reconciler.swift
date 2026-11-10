@@ -54,8 +54,9 @@ public enum SlotDecision: Sendable, Equatable {
     /// The worker failed without an outcome: reap, release the card (or mark it stuck at
     /// `max_attempts`) and recycle.
     case release(ReleaseReason)
-    /// The pane has shown a dialog, unchanged for `dialogStall`, that nothing answers: reap and
-    /// mark the card stuck, naming the dialog's title. Not a failed attempt.
+    /// The pane has shown a dialog, unchanged for `dialogStall`, that nothing answers: reap,
+    /// release the card without counting an attempt, and pause the host, because such a dialog
+    /// usually comes from the host's claude and would stop every worker.
     case stalledOnDialog(String)
 }
 

@@ -696,19 +696,10 @@ extension Manager {
             log.warning("\(label(spec)): \(card.ref)'s worker pane hasn't changed for \(minutes) min; it may wait for input (tmux -S \(stateDir.path)/tmux attach -t \(spec.session)). LoopWorker keeps it running. Its screen:\n\(lines.joined(separator: "\n"))")
             notify(key: "frozen-\(card.ref.id)", "LoopWorker: the worker on \(card.ref) on \(hostName) has shown the same screen for \(minutes) min and may wait for input; see the Manager log")
         case .stalledOnDialog(let title):
-            log.error("\(label(spec)): \(card.ref)'s worker shows a claude dialog that LoopWorker doesn't answer, unchanged for \(Int(unchanged / 60)) min: \(title); reaping it and marking the card stuck. Its screen:\n\(lines.joined(separator: "\n"))")
+            log.error("\(label(spec)): \(card.ref)'s worker shows a claude dialog that LoopWorker doesn't answer, unchanged for \(Int(unchanged / 60)) min: \(title); reaping it, releasing the card and pausing new claims on this host. Its screen:\n\(lines.joined(separator: "\n"))")
             await reap(spec)
-            let blocker = "LoopWorker stopped the worker: claude showed a dialog that LoopWorker doesn't answer, unchanged for \(Int(policy.dialogStall / 60)) minutes: \(Self.inlineCode(title)). The Manager's log on \(hostName) has the screen. Make claude stop asking this, then move the card back to ready."
-            do {
-                // Written on the worker's behalf, so the finish pushes any commits and retries like any stuck outcome.
-                let data = try JSONSerialization.data(withJSONObject: ["outcome": "stuck", "blocker": blocker])
-                try data.write(to: spec.outcomeFile, options: .atomic)
-            } catch {
-                log.error("\(label(spec)): can't write the stuck outcome \(spec.outcomeFile.path): \(error); the next tick releases \(card.ref) as a crash")
-                return
-            }
-            update(ref) { $0.task = .finishing }
-            track { await self.finishTask(ref, card: target) }
+            update(ref) { $0.task = .releasing }
+            track { await self.releaseStalled(ref, card: target, title: title) }
         case .finish:
             if let retry = current.finishRetryAt, retry > now { return }
             await reap(spec)
@@ -739,6 +730,31 @@ extension Manager {
     func reap(_ spec: SlotSpec) async {
         do { try await deps.tmux.kill(spec.session) }
         catch { log.error("\(label(spec)): can't reap \(spec.session): \(error)") }
+    }
+
+    /// After a dialog stall: pauses the host with the dialog's title as the reason, alerting
+    /// when that reason is new, then releases the card without counting an attempt and recycles.
+    func releaseStalled(_ ref: SlotRef, card: Card, title: String) async {
+        guard let spec = slot(ref)?.spec else { return }
+        let file = KillSwitch.file(stateDir: stateDir)
+        let reason = "claude showed '\(title)' and nothing answers it"
+        if KillSwitch.reason(file) != reason {
+            do {
+                try KillSwitch.pause(file, reason: reason)
+                log.error("paused new claims on this host: \(reason). Make claude stop asking, then run `loopworker resume`")
+            } catch {
+                log.error("can't pause new claims by writing \(file.path): \(error); workers that start will stall on '\(title)' too")
+            }
+            notify(key: "dialog-stall", "LoopWorker: claude on \(hostName) shows '\(title)'; new claims are paused. Make claude stop asking, then run `loopworker resume`")
+        }
+        let note = "LoopWorker released this card because claude on \(hostName) showed a dialog that LoopWorker doesn't answer: \(Self.inlineCode(title)). The card isn't at fault, so this isn't a failed attempt. New claims on \(hostName) are paused until an operator makes claude stop asking and runs `loopworker resume`."
+        do {
+            try await deps.backlog.release(card, reason: note, countsAsAttempt: false)
+            log.warning("\(label(spec)): released \(card.ref) after the dialog stall")
+        } catch {
+            log.error("\(label(spec)): can't release \(card.ref): \(error); the stranded-card sweep retries")
+        }
+        await recycle(ref, keepOutcome: false)
     }
 
     func releaseTask(_ ref: SlotRef, card: Card, reason: ReleaseReason, pane: [String], cap: TimeInterval) async {

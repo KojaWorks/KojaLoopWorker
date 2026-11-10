@@ -43,7 +43,7 @@ One term per concept. Code, docs, logs and commits use the term in the left colu
 | **Lifecycle script** | `provision.sh`, `reset.sh`, `verify.sh` or `teardown.sh` from the project contract. Always run in its own process group under a hard timeout. | hook |
 | **Reap** | Killing a worker's tmux session. | kill (in prose about workers) |
 | **Startup dialog** | A question that claude asks before a worker's first turn, such as folder trust or external CLAUDE.md imports. The Manager answers the ones it knows (`Pane.startupDialog`). | prompt, popup |
-| **Dialog stall** | A worker whose pane has shown a dialog, unchanged, for 2 minutes. The Manager reaps it and marks its card stuck. | hang (that is the wall-clock cap), wedge |
+| **Dialog stall** | A worker whose pane has shown a dialog, unchanged, for 2 minutes. The Manager reaps it, releases its card without counting an attempt and pauses the host. | hang (that is the wall-clock cap), wedge |
 | **Recycle** | Returning a slot to the pool after a card: reset for hot, teardown for cold. | release (that is for cards) |
 | **Retire** | Removing a slot from the pool for good (resize down, project removed). | recycle |
 | **Broken** | A slot whose lifecycle script failed. The Manager skips it and retries with backoff. | dead, failed |
