@@ -72,6 +72,22 @@ import Testing
         #expect(alerts(h, "reading working cards").isEmpty)
     }
 
+    @Test("B249: a project whose read starts failing later gets its own alert")
+    func laterProjectAlertsSeparately() async throws {
+        let h = try ManagerHarness(projects: oneColdProject + "\n[[project]]\npath = \"g/lib\"\nslots = 1", top: "notify_command = \"x\"")
+        let paused = KillSwitch.file(stateDir: h.home.appending(path: "state"), projectKey: "g--lib")
+        try FileManager.default.createDirectory(at: paused.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data().write(to: paused)
+        h.backlog.state { $0.failWorkable = true }
+        try await bootAndFill(h)
+        await minutes(h, 2)
+        try FileManager.default.removeItem(at: paused)
+        await minutes(h, 8)
+        #expect(alerts(h, "can't read workable cards").map { $0.contains("for g/app since") } == [true])
+        await minutes(h, 3)  // g/lib's first failure was the fill at minute 3
+        #expect(alerts(h, "can't read workable cards for g/lib since").count == 1)
+    }
+
     @Test("B249: a restarted Manager alerts again after its own 10 minutes")
     func restartStartsFresh() async throws {
         let h = try ManagerHarness(projects: oneColdProject, top: "notify_command = \"x\"")

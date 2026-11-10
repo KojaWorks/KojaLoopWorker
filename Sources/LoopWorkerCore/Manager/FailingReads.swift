@@ -79,7 +79,7 @@ extension Manager {
         let projects = due.keys.map(\.project).sorted().joined(separator: ", ")
         let summary = "can't read \(read.rawValue) cards for \(projects) since \(StatusReport.stamp(since)) (\(StatusReport.duration(now.timeIntervalSince(since)))): \(message)"
         log.error("backlog read failing: \(summary); retrying, and alerting again only after it recovers")
-        notify(key: "backlog-read-\(read.rawValue)", "LoopWorker on \(hostName): \(summary)")
+        notify(key: "backlog-read-\(read.rawValue) \(projects)", "LoopWorker on \(hostName): \(summary)")
     }
 
     /// Clears a backlog read's failures for `specs`; alerts once for each read that had alerted.
@@ -89,7 +89,7 @@ extension Manager {
         let projects = recovered.keys.map(\.project).sorted().joined(separator: ", ")
         let summary = "reading \(read.rawValue) cards for \(projects) recovered after failing for \(StatusReport.duration(clock.now().timeIntervalSince(since)))"
         log.info("backlog read \(summary)")
-        notify(key: "backlog-read-\(read.rawValue)-recovered", "LoopWorker on \(hostName): \(summary)")
+        notify(key: "backlog-read-\(read.rawValue)-recovered \(projects)", "LoopWorker on \(hostName): \(summary)")
     }
 
     /// Drops failing reads of projects that left the config, since no read clears them any more.
