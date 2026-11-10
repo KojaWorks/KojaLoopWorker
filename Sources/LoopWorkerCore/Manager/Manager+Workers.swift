@@ -559,33 +559,44 @@ extension Manager {
         free(ref)
     }
 
-    /// Answers each startup dialog (`Pane.startupDialog`) as claude shows it, once per dialog,
-    /// until claude reaches its input screen or `startupWindow` passes. A dialog without a
-    /// recognizable answer is logged and left to the dialog stall check in reconcile.
+    /// Answers each startup dialog (`Pane.startupDialog`) as claude shows it, until claude
+    /// reaches its input screen or `startupWindow` passes. A dialog is answered only when two
+    /// polls in a row show it the same, because claude ignores keys that arrive just after a
+    /// dialog appears. A dialog still up two polls after its keys is answered again from the
+    /// current capture, at most `startupTries` times in all. A dialog without a recognizable
+    /// answer, or one that outlasts its tries, is logged once and left to the dialog stall check.
     func watchStartupDialogs(_ session: String) {
         let tmux = deps.tmux, clock = self.clock, log = self.log, reading = deps.pane, socket = stateDir.appending(path: "tmux").path
         track {
-            var answered: Set<String> = [], reported: Set<String> = []
-            for _ in 0..<Int(Self.startupWindow / Self.startupPoll) {
+            var previous: Pane.DialogAnswer?
+            var tries: [String: Int] = [:], sentAt: [String: Int] = [:], reported: Set<String> = []
+            func report(_ dialog: String, _ why: String) {
+                if reported.insert(dialog).inserted {
+                    log.warning("\(session): claude shows its \(dialog) dialog \(why); pressing nothing more and leaving it to the dialog stall check (tmux -S \(socket) attach -t \(session) to see it)")
+                }
+            }
+            for poll in 0..<Int(Self.startupWindow / Self.startupPoll) {
                 try? await clock.sleep(seconds: Self.startupPoll)
                 if Task.isCancelled { return }
                 guard let pane = try? await tmux.capture(session, lines: 40) else { return }
-                guard let dialog = reading.startupDialog(pane) else {
+                let dialog = reading.startupDialog(pane)
+                defer { previous = dialog }
+                guard let dialog else {
                     if reading.showsInputScreen(pane) { return }
                     continue
                 }
-                // Still shown right after its keys: wait for claude to move on, never press twice.
-                guard !answered.contains(dialog.dialog) else { continue }
-                guard let keys = dialog.keys else {
-                    if reported.insert(dialog.dialog).inserted {
-                        log.warning("\(session): claude shows its \(dialog.dialog) dialog without a recognizable answer or cursor; pressing nothing (tmux -S \(socket) attach -t \(session) to see it)")
-                    }
+                guard dialog == previous else { continue }
+                if let sent = sentAt[dialog.dialog], poll - sent < 2 { continue }
+                guard let keys = dialog.keys else { report(dialog.dialog, "without a recognizable answer or cursor"); continue }
+                guard tries[dialog.dialog, default: 0] < Self.startupTries else {
+                    report(dialog.dialog, "after \(Self.startupTries) answers")
                     continue
                 }
-                answered.insert(dialog.dialog)
+                tries[dialog.dialog, default: 0] += 1
+                sentAt[dialog.dialog] = poll
                 do {
                     try await tmux.sendKeys(session, keys)
-                    log.info("\(session): answered claude's \(dialog.dialog) dialog (\(keys.joined(separator: " ")))")
+                    log.info("\(session): answered claude's \(dialog.dialog) dialog (\(keys.joined(separator: " ")))\(tries[dialog.dialog]! > 1 ? ", try \(tries[dialog.dialog]!)" : "")")
                 } catch {
                     log.warning("\(session): couldn't answer claude's \(dialog.dialog) dialog: \(error)")
                 }

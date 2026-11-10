@@ -149,6 +149,7 @@ public actor Manager {
     /// How long after spawn the Manager answers claude's startup dialogs, and how often it looks.
     static let startupWindow: Double = 120
     static let startupPoll: Double = 2
+    static let startupTries = 3
 
     var config: HostConfig
     let deps: ManagerDependencies

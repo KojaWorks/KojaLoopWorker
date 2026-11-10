@@ -261,7 +261,9 @@ lost access to it, so a revoked connection never reaps running workers.
    review round (see "Review rounds").
 
    For two minutes after the spawn, the Manager reads the pane every 2 s and answers claude's
-   startup dialogs that it knows, each once, by moving the cursor to the answer: folder trust
+   startup dialogs that it knows by moving the cursor to the answer, once two reads in a row
+   agree (claude ignores keys that arrive just after a dialog appears), and again if the dialog
+   is still up two reads later, at most 3 times: folder trust
    gets "Yes"; "Allow external CLAUDE.md file imports?" gets "No", because a file that an
    ancestor directory's CLAUDE.md imports is text that no project contract controls. It stops
    once claude shows its input screen. A dialog it doesn't know is left to the dialog stall

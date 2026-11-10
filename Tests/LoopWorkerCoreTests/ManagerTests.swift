@@ -81,21 +81,26 @@ func fileMode(_ url: URL) throws -> Int {
         try await h.boot()
         await h.cycle()
         #expect(h.tmux.state.get.keysSent.map(\.keys) == [["Down", "Enter"], ["Down", "Enter"]])
+        #expect(h.tmux.state.get.capturesAtKeys == [2, 4])
         #expect(h.log.contains("lw_g--app_0: answered claude's folder trust dialog (Down Enter)"))
         #expect(h.log.contains("lw_g--app_0: answered claude's external CLAUDE.md imports dialog (Down Enter)"))
     }
 
-    @Test("B246: a dialog still on screen after its answer is not answered twice")
-    func startupDialogIsAnsweredOnce() async throws {
+    @Test("B85: a dialog is answered only once two captures agree, and again two polls after keys that didn't take, at most 3 times")
+    func startupDialogRetriesAfterRefusedKeys() async throws {
         let h = try ManagerHarness(projects: oneColdProject)
         h.tmux.state {
             $0.spawnPane = Self.trustDialog
-            $0.afterKeys = [Self.trustDialog]
+            $0.afterKeys = [Self.trustDialog, Self.trustDialog, Self.trustDialog]
         }
         h.addCard(1)
         try await h.boot()
         await h.cycle()
-        #expect(h.tmux.state.get.keysSent.count == 1)
+        let sent = h.tmux.state.get
+        #expect(sent.keysSent.count == 3)
+        #expect(sent.capturesAtKeys == [2, 4, 6])
+        #expect(h.log.contains("answered claude's folder trust dialog (Down Enter), try 3"))
+        #expect(h.log.messages.filter { $0.contains("folder trust dialog after 3 answers; pressing nothing more") }.count == 1)
     }
 
     @Test("B246: a known dialog without an answer is logged once and nothing is pressed")
