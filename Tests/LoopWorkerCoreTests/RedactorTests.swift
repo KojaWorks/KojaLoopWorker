@@ -144,6 +144,21 @@ import Testing
         #expect(Pane.startupDialog(stillDrawing) == .init(dialog: "folder trust", keys: nil))
     }
 
+    static let usageLimit = """
+        You've hit your session limit · resets 4pm (Europe/Stockholm)
+        What do you want to do?
+        ❯ 1. Stop and wait for limit to reset
+          2. Upgrade your plan
+        Enter to confirm · Esc to cancel
+        """
+
+    @Test("B247: claude's usage-limit menu is a host dialog; another question with the same title isn't")
+    func usageLimitMenu() {
+        #expect(Pane.showsUsageLimitMenu(Self.usageLimit))
+        #expect(!Pane.showsUsageLimitMenu("What do you want to do?\n❯ 1. Retry the build\n  2. Skip it\nEnter to confirm · Esc to cancel"))
+        #expect(!Pane.showsUsageLimitMenu("⏺ Stop and wait for limit to reset\n✻ Thinking… (3s · esc to interrupt)"))
+    }
+
     @Test("B18: the input screen is recognized whatever keys keybindings.json maps", arguments: [
         "✻ Thinking… (12s · ctrl+g to interrupt)", "⏵⏵ auto mode on (meta+m to cycle)", "⏵⏵ accept edits on", "⏸ plan mode on",
     ])

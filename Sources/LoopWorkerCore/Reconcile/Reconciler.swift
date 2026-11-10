@@ -19,12 +19,18 @@ public struct SlotObservation: Sendable, Equatable {
     /// The title of the dialog that the pane shows (`Pane.dialogTitle`), redacted, then cut to
     /// 120 characters; nil for none.
     public var dialog: String?
+    /// The worker has shown claude's input screen or interrupt hint at least once.
+    public var turnStarted: Bool
+    /// The dialog is one that the host's claude shows whatever the card, such as the usage-limit menu.
+    public var hostDialog: Bool
 
     public init(
         cardState: CardState?, sessionAlive: Bool, authFailed: Bool = false,
         outcomeAge: TimeInterval? = nil, runningFor: TimeInterval, heldBy: String? = nil,
-        paneUnchangedFor: TimeInterval = 0, dialog: String? = nil
+        paneUnchangedFor: TimeInterval = 0, dialog: String? = nil, turnStarted: Bool = false, hostDialog: Bool = false
     ) {
+        self.turnStarted = turnStarted
+        self.hostDialog = hostDialog
         self.heldBy = heldBy
         self.paneUnchangedFor = paneUnchangedFor
         self.dialog = dialog
@@ -55,10 +61,15 @@ public enum SlotDecision: Sendable, Equatable {
     /// The worker failed without an outcome: reap, release the card (or mark it stuck at
     /// `max_attempts`) and recycle.
     case release(ReleaseReason)
-    /// The pane has shown a dialog, unchanged for `dialogStall`, that nothing answers: reap,
-    /// release the card without counting an attempt, and pause the host, because such a dialog
-    /// usually comes from the host's claude and would stop every worker.
-    case stalledOnDialog(String)
+    /// The pane has shown a dialog, unchanged for `dialogStall`, that nothing answers, before
+    /// the worker's first turn or a host-level one at any time: it comes from the host's claude
+    /// and would stop every worker. Pause the host, reap, and release the card without counting
+    /// an attempt.
+    case stalledOnHostDialog(String)
+    /// The pane has shown a dialog, unchanged for `dialogStall`, after the worker's first turn
+    /// started, such as a permission prompt that the card's work caused: reap and mark the card
+    /// stuck through the finish, which pushes its commits. Not a failed attempt.
+    case stalledOnCardDialog(String)
 }
 
 public struct ReconcilePolicy: Sendable {
@@ -95,7 +106,9 @@ public enum Reconciler {
         }
         if !o.sessionAlive { return .release(.crashed) }
         if o.authFailed { return .release(.auth) }
-        if let dialog = o.dialog, o.paneUnchangedFor >= policy.dialogStall { return .stalledOnDialog(dialog) }
+        if let dialog = o.dialog, o.paneUnchangedFor >= policy.dialogStall {
+            return o.turnStarted && !o.hostDialog ? .stalledOnCardDialog(dialog) : .stalledOnHostDialog(dialog)
+        }
         if o.runningFor > policy.wallclockCap { return .release(.hung) }
         return .keep
     }

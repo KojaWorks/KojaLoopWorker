@@ -117,6 +117,8 @@ public actor Manager {
         var paneChangedAt: Date?
         /// The frozen-pane alert went out for this worker.
         var frozenAlerted = false
+        /// The worker's pane has shown claude's input screen or interrupt hint: its first turn started.
+        var turnStarted = false
     }
 
     struct Project {

@@ -83,6 +83,16 @@ public enum Pane {
         return block.last { $0.hasSuffix("?") } ?? unrecognizedDialog
     }
 
+    /// True when the dialog at the bottom of the pane is claude's usage-limit menu: its title is
+    /// `What do you want to do?` and an option starts with one of claude's usage-limit choices
+    /// (`Stop and wait for limit to reset`, `Wait for limit to reset`, `Upgrade your plan`,
+    /// `Ask your admin for more usage`, `Add funds to continue`), as in claude 2.1.316 and
+    /// 2.1.322. It comes from the host's account, not from any card.
+    public static func showsUsageLimitMenu(_ pane: String) -> Bool {
+        guard dialogTitle(pane) == "What do you want to do?" else { return false }
+        return normalized(pane).suffix(15).contains { line in usageLimitOptions.contains { option(line).hasPrefix($0) } }
+    }
+
     /// What the worker is doing right now, for the status file: the most recent non-empty
     /// line that isn't claude's UI chrome (box drawing, the prompt, the mode footer), cut to
     /// 140 characters. Empty when there is no such line.
@@ -105,6 +115,10 @@ public enum Pane {
     ]
 
     nonisolated(unsafe) private static let numberedCursor = #/^❯\s*\d+\./#
+
+    private static let usageLimitOptions = [
+        "Stop and wait for limit to reset", "Wait for limit to reset", "Upgrade your plan", "Ask your admin for more usage", "Add funds to continue",
+    ]
 
     private struct KnownDialog {
         var name: String

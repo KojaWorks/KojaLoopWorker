@@ -177,6 +177,7 @@ extension Manager {
             $0.paneText = nil
             $0.paneChangedAt = nil
             $0.frozenAlerted = false
+            $0.turnStarted = false
             $0.finishFailures = 0
             $0.finishRetryAt = nil
             $0.finishError = nil
@@ -395,15 +396,16 @@ extension Manager {
         }
 
         let model = card.model ?? spec.project.model
+        let spawnedAt = clock.now()
         update(ref) {
             $0.task = nil
-            $0.spawnedAt = clock.now()
+            $0.spawnedAt = spawnedAt
         }
         if fix != nil { unwatch(card.ref.id) }
         claimBackoff[card.ref.id] = nil
         let round = fix.map { " for \($0.name)" } ?? (resuming ? " resuming its pushed branch" : "")
         log.info("\(label(spec)): spawned worker\(round) for \(card.ref) on \(branch) at \(baseCommit.prefix(12)), base \(base), model \(model ?? "default")")
-        watchStartupDialogs(spec.session)
+        watchStartupDialogs(ref, session: spec.session, spawnedAt: spawnedAt)
     }
 
     func writeWorkerFiles(_ spec: SlotSpec, card: Card, contract: ProjectContract, base: String, branch: String,
@@ -565,7 +567,8 @@ extension Manager {
     /// dialog appears. A dialog still up two polls after its keys is answered again from the
     /// current capture, at most `startupTries` times in all. A dialog without a recognizable
     /// answer, or one that outlasts its tries, is logged once and left to the dialog stall check.
-    func watchStartupDialogs(_ session: String) {
+    /// Seeing the input screen marks the worker's first turn as started.
+    func watchStartupDialogs(_ ref: SlotRef, session: String, spawnedAt: Date) {
         let tmux = deps.tmux, clock = self.clock, log = self.log, reading = deps.pane, socket = stateDir.appending(path: "tmux").path
         track {
             var previous: Pane.DialogAnswer?
@@ -582,7 +585,10 @@ extension Manager {
                 let dialog = reading.startupDialog(pane)
                 defer { previous = dialog }
                 guard let dialog else {
-                    if reading.showsInputScreen(pane) { return }
+                    if reading.showsInputScreen(pane) {
+                        await self.noteTurnStarted(ref, spawnedAt: spawnedAt)
+                        return
+                    }
                     continue
                 }
                 guard dialog == previous else { continue }
@@ -602,6 +608,11 @@ extension Manager {
                 }
             }
         }
+    }
+
+    /// Marks the worker spawned at `spawnedAt` as past its first turn's start; a later worker on the slot is left alone.
+    func noteTurnStarted(_ ref: SlotRef, spawnedAt: Date) {
+        update(ref) { if $0.spawnedAt == spawnedAt { $0.turnStarted = true } }
     }
 
     /// Returns a slot to idle and lets fill use it again, or retires it when a shrink or a
@@ -683,7 +694,9 @@ extension Manager {
         let lines = PaneReading.tail(pane, 15).map(deps.redact)
         // A failed capture is no observation, so it neither changes the pane nor freezes it.
         let changedAt = captured != nil && captured != current.paneText ? now : current.paneChangedAt ?? now
+        let turnStarted = current.turnStarted || deps.pane.showsInputScreen(pane)
         update(ref) {
+            $0.turnStarted = turnStarted
             if let fresh { $0.card = fresh }
             if !lines.isEmpty { $0.pane = lines }
             if let captured { $0.paneText = captured }
@@ -694,7 +707,8 @@ extension Manager {
         let observation = SlotObservation(
             cardState: fresh?.state, sessionAlive: alive, authFailed: deps.pane.showsAuthFailure(pane),
             outcomeAge: outcomeAge, runningFor: current.spawnedAt.map { now.timeIntervalSince($0) } ?? 0,
-            heldBy: fresh.flatMap(heldElsewhere), paneUnchangedFor: unchanged, dialog: deps.pane.dialogTitle(pane).map { String(deps.redact($0).prefix(120)) })
+            heldBy: fresh.flatMap(heldElsewhere), paneUnchangedFor: unchanged, dialog: deps.pane.dialogTitle(pane).map { String(deps.redact($0).prefix(120)) },
+            turnStarted: turnStarted, hostDialog: deps.pane.showsHostDialog(pane))
         let policy = ReconcilePolicy(wallclockCap: cap)
         let decision = Reconciler.decide(observation, policy: policy)
         let target = fresh ?? card
@@ -706,17 +720,26 @@ extension Manager {
             let minutes = Int(unchanged / 60)
             log.warning("\(label(spec)): \(card.ref)'s worker pane hasn't changed for \(minutes) min; it may wait for input (tmux -S \(stateDir.path)/tmux attach -t \(spec.session)). LoopWorker keeps it running. Its screen:\n\(lines.joined(separator: "\n"))")
             notify(key: "frozen-\(card.ref.id)", "LoopWorker: the worker on \(card.ref) on \(hostName) has shown the same screen for \(minutes) min and may wait for input; see the Manager log")
-        case .stalledOnDialog(let title):
-            log.error("\(label(spec)): \(card.ref)'s worker shows a claude dialog that LoopWorker doesn't answer, unchanged for \(Int(unchanged / 60)) min: \(title); reaping it, releasing the card and pausing new claims on this host. Its screen:\n\(lines.joined(separator: "\n"))")
+        case .stalledOnHostDialog(let title):
+            log.error("\(label(spec)): \(card.ref)'s worker shows a claude dialog that LoopWorker doesn't answer, unchanged for \(Int(unchanged / 60)) min, \(turnStarted ? "one that the host's claude shows" : "before its first turn"): \(title); reaping it, releasing the card and pausing new claims on this host. Its screen:\n\(lines.joined(separator: "\n"))")
             await reap(spec)
-            if FileManager.default.fileExists(atPath: spec.outcomeFile.path) {
-                log.info("\(label(spec)): \(card.ref)'s worker wrote its outcome before the reap; finishing it instead")
-                update(ref) { $0.task = .finishing }
-                track { await self.finishTask(ref, card: target) }
-                return
-            }
+            if finishWrittenOutcome(ref, card: target) { return }
             update(ref) { $0.task = .releasing }
             track { await self.releaseStalled(ref, card: target, title: title) }
+        case .stalledOnCardDialog(let title):
+            log.error("\(label(spec)): \(card.ref)'s worker shows a claude dialog that LoopWorker doesn't answer, unchanged for \(Int(unchanged / 60)) min, after its first turn started: \(title); reaping it and marking the card stuck. Its screen:\n\(lines.joined(separator: "\n"))")
+            await reap(spec)
+            if finishWrittenOutcome(ref, card: target) { return }
+            let blocker = "LoopWorker stopped the worker: during the work, claude showed a dialog that LoopWorker doesn't answer, unchanged for \(Int(policy.dialogStall / 60)) minutes: \(Self.inlineCode(title)). The Manager's log on \(hostName) has the screen. Change the card so that the work doesn't make claude ask this, then move it back to ready."
+            do {
+                // Written on the worker's behalf, so the finish pushes its commits and retries like any stuck outcome.
+                try JSONSerialization.data(withJSONObject: ["outcome": "stuck", "blocker": blocker]).write(to: spec.outcomeFile, options: .atomic)
+            } catch {
+                log.error("\(label(spec)): can't write the stuck outcome \(spec.outcomeFile.path): \(error); the next tick releases \(card.ref) as a crash")
+                return
+            }
+            update(ref) { $0.task = .finishing }
+            track { await self.finishTask(ref, card: target) }
         case .finish:
             if let retry = current.finishRetryAt, retry > now { return }
             await reap(spec)
@@ -742,6 +765,16 @@ extension Manager {
             update(ref) { $0.task = .releasing }
             track { await self.releaseTask(ref, card: target, reason: reason, pane: tail, cap: cap) }
         }
+    }
+
+    /// After a stall's reap: finishes the outcome that the worker wrote meanwhile, if any.
+    /// Returns whether one existed.
+    func finishWrittenOutcome(_ ref: SlotRef, card: Card) -> Bool {
+        guard let spec = slot(ref)?.spec, FileManager.default.fileExists(atPath: spec.outcomeFile.path) else { return false }
+        log.info("\(label(spec)): \(card.ref)'s worker wrote its outcome before the reap; finishing it instead")
+        update(ref) { $0.task = .finishing }
+        track { await self.finishTask(ref, card: card) }
+        return true
     }
 
     func reap(_ spec: SlotSpec) async {

@@ -391,7 +391,7 @@ func temporaryDirectory() throws -> URL {
         #expect(deny.contains("Edit(/\(root.path)/home/.claude/**)"))
         #expect(deny.contains("Edit(/\(synced.path)/**)"))
         #expect(!deny.contains { $0.hasPrefix("Write(") })
-        #expect(WorkerLaunch.settings(home: nil, userSettings: nil) == #"{"permissions":{"deny":["Edit(~/.claude/**)","AskUserQuestion"]}}"#)
+        #expect(WorkerLaunch.settings(home: nil, userSettings: nil) == #"{"permissions":{"deny":["Edit(~/.claude/**)","AskUserQuestion","EnterPlanMode"]}}"#)
     }
 }
 

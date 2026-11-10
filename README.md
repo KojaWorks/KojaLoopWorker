@@ -349,12 +349,19 @@ loopworker resume [project]
 `status` also says when the Manager holds its lock but stopped updating (wedged), and when a
 worker's screen hasn't changed for 2 minutes or more ("pane unchanged for N min"), which
 usually means that claude waits for input. When a worker sits at a dialog that the Manager
-doesn't answer for 2 minutes, the Manager stops it, releases its card (not a failed attempt),
-pauses new claims on the host, and alerts. Such a dialog usually comes from the host's claude
-(a usage limit, an onboarding screen after an update), so every worker would hit it. `status`
-shows "PAUSED" with the dialog's title. Find out why claude asks (the Manager log has the
-screen), make it stop asking, for example by running claude once on the host or in its
-settings, then run `loopworker resume`. A
+doesn't answer for 2 minutes, the Manager stops it and alerts:
+
+- A dialog before the worker started its first turn, or claude's usage-limit menu, comes from
+  the host's claude (a usage limit, an onboarding screen after an update), so every worker
+  would hit it. The Manager releases the card (not a failed attempt) and pauses new claims on
+  the host; `status` shows "PAUSED" with the dialog's title. Find out why claude asks (the
+  Manager log has the screen), make it stop asking, for example by running claude once on the
+  host or in its settings, then run `loopworker resume`.
+- Any other dialog came from the card's work, such as a permission prompt. The card becomes
+  stuck with the dialog's title in the blocker and the worker's commits pushed. Change the card,
+  then move it back to ready.
+
+A
 screen that stays the same for 15 minutes without a dialog only raises an alert: attach with
 `tmux -S $LOOPWORKER_HOME/state/tmux attach -t <session>` (the alert's log line names it) and
 look.

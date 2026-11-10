@@ -31,7 +31,7 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(try String(contentsOf: dir.appending(path: "card.md"), encoding: .utf8) == "# Fix it\n")
         #expect(try String(contentsOf: dir.appending(path: "brief.md"), encoding: .utf8).contains("g/app#12 in g/app"))
         #expect(try String(contentsOf: dir.appending(path: "mcp.json"), encoding: .utf8) == #"{"mcpServers":{}}"#)
-        #expect(try String(contentsOf: dir.appending(path: "settings.json"), encoding: .utf8).contains(#""Edit(~/.claude/**)","AskUserQuestion""#))
+        #expect(try String(contentsOf: dir.appending(path: "settings.json"), encoding: .utf8).contains(#""Edit(~/.claude/**)","AskUserQuestion","EnterPlanMode""#))
 
         let env = dir.appending(path: "worker.env")
         #expect(try fileMode(env) == 0o600)
@@ -1196,7 +1196,7 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(!FileManager.default.fileExists(atPath: h.stateDir().appending(path: "outcome.json").path))
         let status = try h.status()
         #expect(status.paused && status.pauseReason == "claude showed 'Choose a theme?' and nothing answers it")
-        #expect(h.log.contains("unchanged for 2 min: Choose a theme?; reaping it, releasing the card and pausing new claims on this host. Its screen:\n⏺ working\n[REDACTED] in view", level: .error))
+        #expect(h.log.contains("unchanged for 2 min, before its first turn: Choose a theme?; reaping it, releasing the card and pausing new claims on this host. Its screen:\n⏺ working\n[REDACTED] in view", level: .error))
         let alerts = h.runner.specs.get.filter { $0.environment["LOOPWORKER_ALERT"]??.contains("shows 'Choose a theme?'; new claims are paused") == true }
         #expect(alerts.count == 1)
 
@@ -1208,6 +1208,48 @@ func fileMode(_ url: URL) throws -> Int {
         h.clock.advance(60)
         await h.cycle()
         #expect(h.backlog.writes.filter { if case .claim = $0 { true } else { false } }.count > claims)
+    }
+
+    static let permissionDialog = "⏺ Bash(make deploy)\nDo you want to proceed?\n❯ 1. Yes\n  2. No, and tell Claude what to do differently\nEsc to cancel"
+
+    @Test("B247: a dialog after the worker's first turn started marks the card stuck with its commits, without pausing the host")
+    func cardDialogAfterTheTurnStartedMarksStuck() async throws {
+        let h = try ManagerHarness(projects: oneColdProject, top: "notify_command = \"x\"")
+        h.tmux.state { $0.spawnPane = "⏺ Reading the card\n✻ Thinking… (3s · esc to interrupt)" }
+        h.addCard(12)
+        try await h.boot()
+        await h.cycle()
+        h.tmux.set("lw_g--app_0", pane: Self.permissionDialog)
+        await h.cycle()
+        h.clock.advance(120)
+        await h.cycle()
+        #expect(!h.tmux.exists("lw_g--app_0"))
+        guard case .markStuck("id-12", let blocker)? = h.backlog.writes.last else {
+            Issue.record("expected markStuck, got \(h.backlog.writes)")
+            return
+        }
+        #expect(blocker.contains("`Do you want to proceed?`") && !blocker.contains("make deploy"))
+        #expect(blocker.contains("The worker's commits are on branch `loopworker-12-fix-it`."))
+        #expect(!h.backlog.writes.contains { if case .release = $0 { true } else { false } })
+        #expect(h.backlog.card(id: "id-12")?.attempts == 0)
+        #expect(!FileManager.default.fileExists(atPath: h.home.appending(path: "state/PAUSED").path))
+        #expect(h.runner.specs.get.contains { $0.environment["LOOPWORKER_ALERT"]??.contains("g/app#12 is stuck: LoopWorker stopped the worker") == true })
+    }
+
+    @Test("B247: the usage-limit menu pauses the host even after the first turn started")
+    func usageLimitAfterTheTurnStartedPausesTheHost() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        h.tmux.state { $0.spawnPane = "✻ Thinking… (3s · esc to interrupt)" }
+        h.addCard(12)
+        try await h.boot()
+        await h.cycle()
+        h.tmux.set("lw_g--app_0", pane: PaneTests.usageLimit)
+        await h.cycle()
+        h.clock.advance(120)
+        await h.cycle()
+        #expect(try h.status().pauseReason == "claude showed 'What do you want to do?' and nothing answers it")
+        #expect(h.backlog.writes.contains { if case .release("id-12", _, false) = $0 { true } else { false } })
+        #expect(!h.backlog.writes.contains { if case .markStuck = $0 { true } else { false } })
     }
 
     @Test("B247: an outcome written while the stalled worker is reaped is finished, not released")

@@ -11,13 +11,18 @@ public struct PaneReading: Sendable {
     public var showsInputScreen: @Sendable (String) -> Bool
     /// The title line of any dialog at the bottom of the pane, unredacted. See `Pane.dialogTitle`.
     public var dialogTitle: @Sendable (String) -> String?
+    /// True when the pane shows a dialog that comes from the host's claude, not from a card. See
+    /// `Pane.showsUsageLimitMenu`.
+    public var showsHostDialog: @Sendable (String) -> Bool
 
     public init(
         showsAuthFailure: @escaping @Sendable (String) -> Bool = Pane.showsAuthFailure,
         startupDialog: @escaping @Sendable (String) -> Pane.DialogAnswer? = Pane.startupDialog,
         showsInputScreen: @escaping @Sendable (String) -> Bool = Pane.showsInputScreen,
-        dialogTitle: @escaping @Sendable (String) -> String? = Pane.dialogTitle
+        dialogTitle: @escaping @Sendable (String) -> String? = Pane.dialogTitle,
+        showsHostDialog: @escaping @Sendable (String) -> Bool = Pane.showsUsageLimitMenu
     ) {
+        self.showsHostDialog = showsHostDialog
         self.showsAuthFailure = showsAuthFailure
         self.startupDialog = startupDialog
         self.showsInputScreen = showsInputScreen

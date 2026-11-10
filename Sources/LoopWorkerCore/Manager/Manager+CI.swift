@@ -655,6 +655,7 @@ extension Manager {
             $0.paneText = nil
             $0.paneChangedAt = nil
             $0.frozenAlerted = false
+            $0.turnStarted = false
             $0.finishFailures = 0
             $0.finishRetryAt = nil
             $0.finishError = nil

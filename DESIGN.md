@@ -27,7 +27,7 @@ learned the hard way, and which the port must keep or fix, is listed in
   can't change what every later session loads; a worker reports what it learned in its outcome.
   The `Edit` deny rules in the worker's `settings.json` restrict claude's file tools, not shell
   commands, so they keep a worker's own tools out of `~/.claude`; they aren't a security boundary.
-  The settings also deny `AskUserQuestion`, whose dialog nobody would answer.
+  The settings also deny `AskUserQuestion` and `EnterPlanMode`, whose dialogs nobody would answer.
   The auth preflight is not an agent and runs in Claude Code's safe mode.
 - **A repo can't widen its own reach.** A project's `finish` (whether the Manager merges) and
   `worker_env` (which variables reach its workers) live only in the host config, never in the
@@ -515,21 +515,33 @@ decision:
 | Another Manager's claim of the card is newer | `abandon` |
 | Session dead, no outcome, card `working` | `release(crashed)` |
 | Pane shows claude's login or 401 screen | `release(auth)`, and the auth circuit breaker backs off |
-| Pane shows a dialog, unchanged for 2 minutes | `stalledOnDialog`: reap, release (not counted), pause the host |
+| Pane shows a dialog, unchanged for 2 minutes, before the first turn, or the usage-limit menu | `stalledOnHostDialog`: reap, release (not counted), pause the host |
+| Pane shows another dialog, unchanged for 2 minutes | `stalledOnCardDialog`: reap, mark the card `stuck` (not counted) |
 | Running longer than the wall-clock cap | `release(hung)` |
 | Otherwise | `keep` |
 
 Reconcile records when each worker's pane last changed. claude's spinner and timer change the
 pane while it works, so a pane that stays the same means that claude waits for input. When it
 shows a dialog (`Enter to confirm`, `Esc to cancel` or a numbered `❯` option) for 2 minutes,
-nothing will answer it. Such a dialog usually comes from the host's claude (a usage limit, an
-unavailable auto mode check, an onboarding screen after an update), so it would stop every
-worker, and marking each card stuck would drain the backlog one card per slot every few
-minutes. Instead the Manager logs the redacted screen, reaps the worker, releases the card
-without counting an attempt, and pauses new claims on the host by writing the dialog's title as
-the reason into `state/PAUSED`. It alerts once per new reason; `status` shows the reason, and
-`loopworker resume` clears it once an operator made claude stop asking. Workers can't open a
-dialog of their own: the slot settings deny `AskUserQuestion`. A pane that stays the same
+nothing will answer it. The Manager logs the redacted screen and reaps the worker; what follows
+depends on where the dialog came from.
+
+A dialog before the worker's first turn (its pane never showed claude's input screen), or
+claude's usage-limit menu at any time, comes from the host's claude: a usage limit, an
+unavailable auto mode check, an onboarding screen after an update. Every worker would hit it,
+and marking each card stuck would drain the backlog one card per slot every few minutes. So the
+Manager releases the card without counting an attempt and pauses new claims on the host by
+writing the dialog's title as the reason into `state/PAUSED`. It alerts once per new reason;
+`status` shows the reason, and `loopworker resume` clears it once an operator made claude stop
+asking.
+
+Any other dialog appeared during the work, such as the permission prompt that auto mode falls
+back to after repeated classifier denials. The card caused it, and pausing the host would only
+loop it: released, claimed again after a resume, stalled again, its commits dropped each time.
+So the Manager writes a stuck outcome for the worker, and the finish pushes the worker's commits
+and marks the card `stuck` with a blocker that names only the dialog's title; that isn't a
+failed attempt, and the host keeps claiming. Workers can't open a dialog of their own: the slot
+settings deny `AskUserQuestion` and `EnterPlanMode`. A pane that stays the same
 for 15 minutes without a dialog only raises an alert, once per worker, because a frozen pane
 isn't proof of waiting for every tool. `status` shows "pane unchanged for N min" from 2 minutes.
 

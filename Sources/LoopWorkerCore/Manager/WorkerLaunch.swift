@@ -37,8 +37,8 @@ public enum WorkerLaunch {
     /// file-editing tools under `~/.claude` (memories, settings, hooks) and in the user's
     /// `autoMemoryDirectory`, by its configured and its symlink-resolved path, so an unattended
     /// worker can't change what every later session loads. One `Edit` rule per directory covers
-    /// every file-editing tool; shell commands aren't restricted. It also denies `AskUserQuestion`,
-    /// whose dialog nobody would answer.
+    /// every file-editing tool; shell commands aren't restricted. It also denies `AskUserQuestion`
+    /// and `EnterPlanMode`, whose dialogs nobody would answer.
     /// - Parameters:
     ///   - home: The worker's `HOME`; nil leaves only the `~/.claude` rules.
     ///   - userSettings: The contents of `~/.claude/settings.json`, if any.
@@ -55,7 +55,7 @@ public enum WorkerLaunch {
                 }
             }
         }
-        let deny = dirs.map { "Edit(\($0)/**)" } + ["AskUserQuestion"]
+        let deny = dirs.map { "Edit(\($0)/**)" } + ["AskUserQuestion", "EnterPlanMode"]
         let data = try! JSONSerialization.data(withJSONObject: ["permissions": ["deny": deny]], options: [.sortedKeys, .withoutEscapingSlashes])
         return String(decoding: data, as: UTF8.self)
     }
