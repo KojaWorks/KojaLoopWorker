@@ -13,7 +13,9 @@ public enum BacklogRead: String, Sendable, Codable, CaseIterable {
 /// The backlog reads that are failing, per read and project, and when each one is due an alert.
 /// Pure: the Manager feeds it every read's result and sends the alerts that it returns.
 struct FailingReads {
-    /// A read that has failed for this long without a success is alerted.
+    /// A read that has failed for this long without a success is alerted. A failure that comes
+    /// longer than this after the previous one starts a new run, since the read wasn't retried
+    /// meanwhile (fill skips reads while paused, draining or at capacity).
     static let alertAfter: TimeInterval = 600
 
     struct Key: Hashable {
@@ -24,6 +26,7 @@ struct FailingReads {
     struct Failure: Equatable {
         /// The first failure of the current run of failures.
         var since: Date
+        var lastFailed: Date
         /// The latest failure's error, redacted.
         var error: String
         var alerted = false
@@ -38,7 +41,9 @@ struct FailingReads {
         var due: [Key: Failure] = [:]
         for project in projects {
             let key = Key(read: read, project: project)
-            var f = failing[key] ?? Failure(since: now, error: error)
+            var f = failing[key] ?? Failure(since: now, lastFailed: now, error: error)
+            if !f.alerted && now.timeIntervalSince(f.lastFailed) > Self.alertAfter { f.since = now }
+            f.lastFailed = now
             f.error = error
             if !f.alerted && now.timeIntervalSince(f.since) >= Self.alertAfter {
                 f.alerted = true

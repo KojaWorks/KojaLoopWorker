@@ -54,6 +54,26 @@ import Testing
         #expect(alerts(h, "workable").isEmpty)
     }
 
+    @Test("B249: a failure long after the previous one starts a new run instead of alerting at once")
+    func staleFailureStartsANewRun() async throws {
+        let h = try ManagerHarness(projects: oneColdProject, top: "notify_command = \"x\"")
+        let paused = KillSwitch.file(stateDir: h.home.appending(path: "state"), projectKey: "g--app")
+        h.backlog.state { $0.failWorkable = true }
+        try await bootAndFill(h)
+        try FileManager.default.createDirectory(at: paused.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data().write(to: paused)
+        await minutes(h, 120)
+        try FileManager.default.removeItem(at: paused)
+        await minutes(h, 1)
+        let restart = h.clock.now()
+        let since = try #require(try h.status().failingReads?.only?.since)
+        #expect(abs(since.timeIntervalSince(restart)) < 1)
+        await minutes(h, 9)
+        #expect(alerts(h, "workable").isEmpty)
+        await minutes(h, 1)
+        #expect(alerts(h, "can't read workable cards").first?.contains("(10m)") == true)
+    }
+
     @Test("B249: each read is tracked separately")
     func readsAreTrackedSeparately() async throws {
         let h = try ManagerHarness(projects: oneColdProject, top: "notify_command = \"x\"")
