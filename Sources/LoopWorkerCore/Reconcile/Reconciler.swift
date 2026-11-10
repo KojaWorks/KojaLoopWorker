@@ -16,7 +16,8 @@ public struct SlotObservation: Sendable, Equatable {
     public var heldBy: String?
     /// Seconds since the worker's pane last changed.
     public var paneUnchangedFor: TimeInterval
-    /// The title of the dialog that the pane shows (`Pane.dialogTitle`), redacted; nil for none.
+    /// The title of the dialog that the pane shows (`Pane.dialogTitle`), redacted, then cut to
+    /// 120 characters; nil for none.
     public var dialog: String?
 
     public init(

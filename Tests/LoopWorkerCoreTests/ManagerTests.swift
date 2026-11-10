@@ -1224,6 +1224,19 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(!FileManager.default.fileExists(atPath: h.home.appending(path: "state/PAUSED").path))
     }
 
+    @Test("B247: the dialog title is redacted before it is cut, so a cut never splits a secret")
+    func stallTitleIsRedactedBeforeTheCut() async throws {
+        let h = try await spawned()
+        let title = String(repeating: "x", count: 117) + "SECRET?"
+        h.tmux.set("lw_g--app_0", pane: "\(title)\n❯ 1. Yes\n  2. No\nEnter to confirm · Esc to cancel")
+        await h.cycle()
+        h.clock.advance(120)
+        await h.cycle()
+        let reason = try #require(try h.status().pauseReason)
+        #expect(reason.contains(String(repeating: "x", count: 117) + "[RE'"))
+        #expect(!reason.contains("SEC"))
+    }
+
     @Test("B247: a pane frozen for 15 minutes without a dialog alerts once and keeps the worker")
     func frozenPaneAlertsOnce() async throws {
         let h = try await spawned(top: "notify_command = \"x\"")

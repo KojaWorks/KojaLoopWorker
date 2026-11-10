@@ -176,7 +176,7 @@ import Testing
             ╰──────────────────────────────╯
             """
         #expect(Pane.dialogTitle(permission) == "Do you want to proceed?")
-        #expect(Pane.dialogTitle("Choose a theme\n❯ 1. Dark\n  2. Light") == "Choose a theme")
+        #expect(Pane.dialogTitle("⏺ Ran the build\nChoose a theme\n❯ 1. Dark\n  2. Light") == Pane.unrecognizedDialog)
         #expect(Pane.dialogTitle("⏺ Running swift test\n✻ Thinking… (12s · esc to interrupt)") == nil)
         #expect(Pane.dialogTitle(Self.imports + "\n⏺ Reading\n  ⏵⏵ auto mode on (shift+tab to cycle)") == nil)
         #expect(Pane.dialogTitle("❯ fix the bug") == nil)

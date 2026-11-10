@@ -694,7 +694,7 @@ extension Manager {
         let observation = SlotObservation(
             cardState: fresh?.state, sessionAlive: alive, authFailed: deps.pane.showsAuthFailure(pane),
             outcomeAge: outcomeAge, runningFor: current.spawnedAt.map { now.timeIntervalSince($0) } ?? 0,
-            heldBy: fresh.flatMap(heldElsewhere), paneUnchangedFor: unchanged, dialog: deps.pane.dialogTitle(pane).map(deps.redact))
+            heldBy: fresh.flatMap(heldElsewhere), paneUnchangedFor: unchanged, dialog: deps.pane.dialogTitle(pane).map { String(deps.redact($0).prefix(120)) })
         let policy = ReconcilePolicy(wallclockCap: cap)
         let decision = Reconciler.decide(observation, policy: policy)
         let target = fresh ?? card
