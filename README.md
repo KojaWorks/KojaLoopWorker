@@ -331,6 +331,8 @@ and exits 1 when anything fails. `--json` prints the same as JSON. It checks:
 - claude answers `claude -p` headless, the same check that gates claims;
 - the container engine answers its probe (a warning only);
 - the backlog and forge accept their tokens, and whose they are;
+- the backlog answers the card query that the Manager makes, per project; a rejection fails with
+  the server's status and message;
 - on GitHub, that the token sees each project's repository and its user may push;
 - no `CLAUDE.md`, `AGENTS.md` or `.claude/rules` sits in or above `clones_dir` (a warning):
   claude loads those into every worker, and an import in them that points outside the worktree
@@ -365,6 +367,12 @@ A
 screen that stays the same for 15 minutes without a dialog only raises an alert: attach with
 `tmux -S $LOOPWORKER_HOME/state/tmux attach -t <session>` (the alert's log line names it) and
 look.
+
+`status` prints a `backlog:` line under `auth:`. It says `ok`, or which card read fails for
+which projects, since when, and the latest error. A failing read claims nothing; it is retried
+at each fill or sweep. When one has failed for 10 minutes, the Manager sends an alert through
+`notify_command` (one per error, however many reads and projects it hits), and another when
+they all recover.
 
 One Manager serves each project. When a second one serves the same project with the same
 backlog (two hosts configured for it by mistake), each leaves the cards that the other claimed

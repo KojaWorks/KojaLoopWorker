@@ -403,8 +403,10 @@ extension Manager {
             do { cards = try await backlog.working(in: specs) }
             catch {
                 log.warning("stranded-card sweep: can't read working cards: \(error); changing nothing")
+                await self.readFailed(.working, specs, error)
                 return
             }
+            await self.readSucceeded(.working, specs)
             var held: [Card] = []
             for card in cards {
                 if await self.heldElsewhere(card) != nil {

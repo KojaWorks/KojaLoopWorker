@@ -61,6 +61,7 @@ private final class DiagnosableForge: Forge, Diagnosable, @unchecked Sendable {
         git: FakeGit = FakeGit(),
         forgeCheck: DoctorCheck = DoctorCheck("forge fake", .ok, "token belongs to @me"),
         backends: Error? = nil,
+        backlog: FakeBacklog = FakeBacklog(),
         quarantined: Set<String> = []
     ) -> Doctor {
         Doctor(
@@ -70,7 +71,7 @@ private final class DiagnosableForge: Forge, Diagnosable, @unchecked Sendable {
             makeBackends: { _, env in
                 if let backends { throw backends }
                 #expect(env["GL_TOKEN"] == Self.token)
-                return (FakeBacklog(), DiagnosableForge(forgeCheck))
+                return (backlog, DiagnosableForge(forgeCheck))
             },
             executable: bin.appending(path: "loopworker"),
             isQuarantined: { quarantined.contains($0.lastPathComponent) })
@@ -86,6 +87,24 @@ private final class DiagnosableForge: Forge, Diagnosable, @unchecked Sendable {
         #expect(check(checks, "backlog gitlab")?.level == .warn)
         #expect(check(checks, "manager")?.detail == "not running")
         #expect(check(checks, "tool claude")?.detail == bin.appending(path: "claude").path)
+    }
+
+    @Test("B251: doctor runs the card query per project and fails with its error")
+    func cardQueryRunsPerProject() async throws {
+        let backlog = FakeBacklog()
+        backlog.add(Card(ref: CardRef(id: "1", display: "g/app#1"), project: "g/app", number: "1", title: "t", state: .ready))
+        #expect(check(await doctor(backlog: backlog).run(), "backlog gitlab cards g/app")?.detail == "the card query answered: 1 ready")
+        #expect(backlog.state.get.workableCalls == [["g/app"]])
+
+        backlog.state {
+            $0.failWorkable = true
+            $0.workableError = "GET /issues: 400 scope is invalid"
+        }
+        let checks = await doctor(backlog: backlog).run()
+        let c = try #require(check(checks, "backlog gitlab cards g/app"))
+        #expect(c.level == .fail && c.detail == "the card query failed: GET /issues: 400 scope is invalid")
+        #expect(!Doctor.passed(checks))
+        #expect(backlog.writes.isEmpty)
     }
 
     @Test func aMalformedConfigFailsAsMalformedAndSkipsTheBackends() async throws {  // B123

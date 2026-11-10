@@ -314,10 +314,36 @@ public struct Doctor: Sendable {
         let made: (backlog: any Backlog, forge: any Forge)
         do { made = try makeBackends(config, overlaid) }
         catch { return [DoctorCheck("backends", .fail, "\(error)", remedy: "fix config.toml or secrets.env as named")] }
-        var checks: [DoctorCheck] = []
-        for (role, kind, backend) in [("backlog", config.backlogKind, made.backlog as Any), ("forge", config.forgeKind, made.forge as Any)] {
-            if let d = backend as? any Diagnosable { checks += await d.diagnose() }
-            else { checks.append(DoctorCheck("\(role) \(kind)", .warn, "built, but this kind has no connection check", remedy: "watch the Manager log for its first read")) }
+        var checks = await Self.backlogChecks(made.backlog, kind: config.backlogKind, projects: config.projects)
+        if let d = made.forge as? any Diagnosable { checks += await d.diagnose() }
+        else { checks.append(Self.unchecked("forge \(config.forgeKind)")) }
+        return checks
+    }
+
+    private static func unchecked(_ name: String) -> DoctorCheck {
+        DoctorCheck(name, .warn, "built, but this kind has no connection check", remedy: "watch the Manager log for its first read")
+    }
+
+    /// The backlog's own checks (`Diagnosable.diagnose`), then, per project, the `workable` read
+    /// that the Manager's fill makes, which only reads: a token that the identity check accepts
+    /// can still have its card query rejected. The card queries are skipped when the identity
+    /// check (the one named `backlog <kind>`) failed, since each would fail the same way.
+    /// - Returns: The backlog's checks, or a warning when it has none, followed by one check
+    ///   per project named `backlog <kind> cards <path>`: `ok` with the number of ready cards,
+    ///   or `fail` with the error, which names the request and the server's status and message.
+    public static func backlogChecks(_ backlog: any Backlog, kind: String, projects: [ProjectSpec]) async -> [DoctorCheck] {
+        let identity = "backlog \(kind)"
+        var checks = await (backlog as? any Diagnosable)?.diagnose() ?? [unchecked(identity)]
+        if checks.contains(where: { $0.name == identity && $0.level == .fail }) { return checks }
+        for p in projects {
+            let name = "backlog \(kind) cards \(p.path)"
+            do {
+                let ready = try await backlog.workable(in: [p]).count
+                checks.append(DoctorCheck(name, .ok, "the card query answered: \(ready) ready"))
+            } catch {
+                checks.append(DoctorCheck(name, .fail, "the card query failed: \(error)",
+                                          remedy: "the Manager claims nothing for \(p.path) while this fails; fix what the message names, in config.toml's backlog section or the token's access to the project"))
+            }
         }
         return checks
     }
