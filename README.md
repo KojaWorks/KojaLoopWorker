@@ -348,8 +348,8 @@ loopworker resume [project]
 `status` also says when the Manager holds its lock but stopped updating (wedged). Its
 `backlog:` line, under `auth:`, says `ok`, or which card read fails for which projects, since
 when, and the latest error. A failing read claims nothing; it is retried at each fill or sweep.
-When one has failed for 10 minutes, the Manager sends an alert through `notify_command`, and
-another when it recovers.
+When one has failed for 10 minutes, the Manager sends an alert through `notify_command` (one per
+error, however many reads and projects it hits), and another when they all recover.
 
 One Manager serves each project. When a second one serves the same project with the same
 backlog (two hosts configured for it by mistake), each leaves the cards that the other claimed

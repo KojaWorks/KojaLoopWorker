@@ -523,12 +523,22 @@ A failed `workable`, `working` or `verifying` read changes nothing: fill claims 
 sweeps release or resume nothing, and the next fill or sweep tries again. A backlog can reject
 one of these reads for days (a query that the server stopped accepting) while the token check
 still passes, so the Manager tracks each read per project from its first failure in a row. A
-read that has failed for 10 minutes runs `notify_command` once, with the projects, the redacted
-error and since when; its next success for those projects notifies once that it recovered and
-for how long it failed. `status.json` lists every failing read, and `loopworker status` prints
-it on the `backlog:` line. The tracking lives in memory: a restarted Manager alerts after its
-own 10 minutes. `loopworker doctor` runs the same `workable` query per project, so it fails on
-such a rejection too.
+failure that comes more than 10 minutes after the previous one starts a new run, because fill
+doesn't read while it is paused, draining or at capacity.
+
+One root cause, such as a rejected query or a revoked token, fails every read and project at
+once, so failures with the same redacted error share one alert. When a read has failed for 10
+minutes, `notify_command` gets one message that lists every read and project failing with that
+error, the error and since when, and tells the human to run `loopworker doctor`: a backend that
+reads several projects in one call can't say which project's query broke, while doctor queries
+each project on its own. When all of them succeed again, one message says that the reads
+recovered and for how long they failed. `status.json` lists every failing read separately, and
+`loopworker status` prints them on the `backlog:` line. The tracking lives in memory: a
+restarted Manager alerts after its own 10 minutes.
+
+Known gaps: a read that fails intermittently, never for 10 minutes in a row, doesn't alert.
+Removing a failing project from the config closes its alert with a log line only, without a
+recovery message.
 
 ### Two Managers on one project
 

@@ -22,6 +22,8 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
         var failCard: Set<String> = []
         var failWorkable = false
         var workableError = "workable failed"
+        var workingError = "working failed"
+        var verifyingError = "verifying failed"
         var failWorking = false
         var failRelease = false
         var failMarkReview: (any Error)?
@@ -97,7 +99,7 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
 
     func working(in projects: [ProjectSpec]) async throws -> [Card] {
         try state {
-            if $0.failWorking { throw FakeError("working failed") }
+            if $0.failWorking { throw FakeError($0.workingError) }
             let keys = Set(projects.map { $0.path.lowercased() })
             return $0.cards.values.filter { $0.state == .working && keys.contains($0.project.lowercased()) }
         }
@@ -105,7 +107,7 @@ final class FakeBacklog: Backlog, @unchecked Sendable {
 
     func verifying(in projects: [ProjectSpec]) async throws -> [Card] {
         try state {
-            if $0.failVerifying { throw FakeError("verifying failed") }
+            if $0.failVerifying { throw FakeError($0.verifyingError) }
             let keys = Set(projects.map { $0.path.lowercased() })
             return $0.cards.values.filter { $0.state == .verifying && keys.contains($0.project.lowercased()) }
         }
