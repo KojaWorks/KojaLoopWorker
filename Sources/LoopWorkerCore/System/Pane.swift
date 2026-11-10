@@ -33,19 +33,24 @@ public enum Pane {
     /// | `Allow external CLAUDE.md file imports?` | `No, disable external imports` |
     ///
     /// The keys always move to the answer from the highlighted option, because claude's option
-    /// order and default have changed between versions. When the pane holds more than one
-    /// dialog (an answered one in scrollback), the lowest one counts. Nil when the pane shows
-    /// none, or when claude's input screen is below the dialog, so it is scrollback.
+    /// order and default have changed between versions. The dialog is the block between the
+    /// last footer line (`Enter to confirm` or `Esc to cancel`) and the footer before it; the
+    /// cursor and the answer must sit below the dialog's title and above that footer. When the
+    /// block holds both titles, external imports wins. A title below the last footer belongs to a
+    /// dialog that is still drawing, so it has no keys yet. Nil when the pane shows no known
+    /// dialog, or when claude's input screen is below it, so it is scrollback.
     public static func startupDialog(_ pane: String) -> DialogAnswer? {
         let lines = normalized(pane)
-        func last(_ d: KnownDialog) -> Int? { lines.lastIndex { $0.contains(d.title) } }
-        guard let (dialog, title) = knownDialogs.compactMap({ d in last(d).map { (d, $0) } }).max(by: { $0.1 < $1.1 }),
-              !lines[title...].contains(where: isInputScreen)
+        let footers = lines.indices.filter { isFooter(lines[$0]) }
+        if let (dialog, title) = knownTitle(in: (footers.last.map { $0 + 1 } ?? 0)..<lines.count, lines) {
+            return lines[title...].contains(where: isInputScreen) ? nil : DialogAnswer(dialog: dialog.name, keys: nil)
+        }
+        guard let footer = footers.last, !lines[footer...].contains(where: isInputScreen),
+              let (dialog, title) = knownTitle(in: (footers.dropLast().last.map { $0 + 1 } ?? 0)..<footer, lines)
         else { return nil }
-        let start = knownDialogs.filter { $0.name != dialog.name }.compactMap(last).filter { $0 < title }.max().map { $0 + 1 } ?? 0
-        let region = lines[start...]
-        guard let cursor = region.lastIndex(where: { $0.hasPrefix("❯") }),
-              let answer = region.lastIndex(where: { option($0).hasPrefix(dialog.answer) })
+        let options = lines[(title + 1)..<footer]
+        guard let cursor = options.lastIndex(where: { $0.hasPrefix("❯") }),
+              let answer = options.lastIndex(where: { option($0).hasPrefix(dialog.answer) })
         else { return DialogAnswer(dialog: dialog.name, keys: nil) }
         return DialogAnswer(dialog: dialog.name, keys: Array(repeating: answer > cursor ? "Down" : "Up", count: abs(answer - cursor)) + ["Enter"])
     }
@@ -64,7 +69,7 @@ public enum Pane {
     /// to 120 characters.
     public static func dialogTitle(_ pane: String) -> String? {
         let tail = Array(normalized(pane).filter { !$0.isEmpty }.suffix(15))
-        guard let marker = tail.lastIndex(where: { $0.contains("Enter to confirm") || $0.contains("Esc to cancel") || $0.contains(numberedCursor) }),
+        guard let marker = tail.lastIndex(where: { isFooter($0) || $0.contains(numberedCursor) }),
               !tail[marker...].contains(where: isInputScreen)
         else { return nil }
         let above = tail[..<marker]
@@ -89,10 +94,10 @@ public enum Pane {
 
     // Regex isn't Sendable, but matching never mutates it (its compiled program is initialized atomically).
     nonisolated(unsafe) private static let authFailure = #/Please run /login\s*·\s*API Error|Not logged in\s*·\s*Please run /login/#.ignoresCase()
-    nonisolated(unsafe) private static let trustPrompt = #/trust this folder|Accessing workspace|one you trust|do you trust|trust the files/#.ignoresCase()
+    // In priority order: an imports dialog's body may quote anything, including a trust line.
     nonisolated(unsafe) private static let knownDialogs = [
-        KnownDialog(name: "folder trust", title: trustPrompt, answer: "Yes"),
-        KnownDialog(name: "external CLAUDE.md imports", title: #/Allow external CLAUDE\.md file imports/#.ignoresCase(), answer: "No, disable external imports"),
+        KnownDialog(name: "external CLAUDE.md imports", title: #/^Allow external CLAUDE\.md file imports\?/#.ignoresCase(), answer: "No, disable external imports"),
+        KnownDialog(name: "folder trust", title: #/^(?:Accessing workspace|Quick safety check|Do you trust the files in this folder)/#.ignoresCase(), answer: "Yes"),
     ]
 
     nonisolated(unsafe) private static let numberedCursor = #/^❯\s*\d+\./#
@@ -112,6 +117,18 @@ public enum Pane {
     /// An option's text without the cursor and its number: `❯ 2. Yes, proceed` is `Yes, proceed`.
     private static func option(_ line: String) -> Substring {
         line.drop { $0 == "❯" || $0 == " " }.trimmingPrefix(#/\d+\.\s*/#)
+    }
+
+    /// The first known dialog whose title is in `range` of `lines`, with its title's last line there.
+    private static func knownTitle(in range: Range<Int>, _ lines: [String]) -> (KnownDialog, Int)? {
+        for d in knownDialogs {
+            if let t = lines[range].lastIndex(where: { $0.contains(d.title) }) { return (d, t) }
+        }
+        return nil
+    }
+
+    private static func isFooter(_ line: String) -> Bool {
+        line.contains("Enter to confirm") || line.contains("Esc to cancel")
     }
 
     private static func isInputScreen(_ line: String) -> Bool {

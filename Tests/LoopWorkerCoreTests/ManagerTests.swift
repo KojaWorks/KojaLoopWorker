@@ -106,7 +106,7 @@ func fileMode(_ url: URL) throws -> Int {
     @Test("B246: a known dialog without an answer is logged once and nothing is pressed")
     func unanswerableStartupDialogIsLoggedOnce() async throws {
         let h = try ManagerHarness(projects: oneColdProject)
-        h.tmux.state { $0.spawnPane = "Allow external CLAUDE.md file imports?\n  1. Maybe" }
+        h.tmux.state { $0.spawnPane = "Allow external CLAUDE.md file imports?\n  1. Maybe\nEnter to confirm" }
         h.addCard(1)
         try await h.boot()
         await h.cycle()
