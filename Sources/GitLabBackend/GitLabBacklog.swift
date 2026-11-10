@@ -49,7 +49,7 @@ public actor GitLabBacklog: Backlog {
         for p in projects { knownProjects[p.key] = p }
         let me = try await client.me()
         let issues: [GLIssue] = try await client.getAll("/issues", query: [
-            ("scope", "all"), ("state", "opened"), ("assignee_username", me.username),
+            ("scope", "assigned_to_me"), ("state", "opened"),  // gitlab.com rejects scope=all on this endpoint
             ("labels", settings.label(state)!),
         ])
         let served = Set(projects.map(\.key))
