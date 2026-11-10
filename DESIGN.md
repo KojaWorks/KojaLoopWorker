@@ -517,6 +517,19 @@ outcome file) or stranded (released with reason "Manager restarted", not counted
 attempt). `verifying` cards hold no slot and are never released; see "Waiting for CI and
 merging".
 
+### Persistent read failures
+
+A failed `workable`, `working` or `verifying` read changes nothing: fill claims nothing and the
+sweeps release or resume nothing, and the next fill or sweep tries again. A backlog can reject
+one of these reads for days (a query that the server stopped accepting) while the token check
+still passes, so the Manager tracks each read per project from its first failure in a row. A
+read that has failed for 10 minutes runs `notify_command` once, with the projects, the redacted
+error and since when; its next success for those projects notifies once that it recovered and
+for how long it failed. `status.json` lists every failing read, and `loopworker status` prints
+it on the `backlog:` line. The tracking lives in memory: a restarted Manager alerts after its
+own 10 minutes. `loopworker doctor` runs the same `workable` query per project, so it fails on
+such a rejection too.
+
 ### Two Managers on one project
 
 One Manager serves each project of a backlog. Two that overlap (two hosts configured for one

@@ -46,4 +46,5 @@ One term per concept. Code, docs, logs and commits use the term in the left colu
 | **Retire** | Removing a slot from the pool for good (resize down, project removed). | recycle |
 | **Broken** | A slot whose lifecycle script failed. The Manager skips it and retries with backoff. | dead, failed |
 | **Tick** | One pass of the Manager loop: reconcile every busy slot, then fill free slots. | poll, cycle |
+| **Failing read** | A backlog list read (`workable`, `working` or `verifying`) that failed at its last attempt for a project. The Manager retries it, lists it on the status `backlog:` line, and alerts once it has failed for 10 minutes. | read error, backlog outage |
 | **Drain** | Stop claiming, let running workers finish, then exit. The first SIGINT. | graceful shutdown |

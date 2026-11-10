@@ -331,6 +331,8 @@ and exits 1 when anything fails. `--json` prints the same as JSON. It checks:
 - claude answers `claude -p` headless, the same check that gates claims;
 - the container engine answers its probe (a warning only);
 - the backlog and forge accept their tokens, and whose they are;
+- the backlog answers the card query that the Manager makes, per project; a rejection fails with
+  the server's status and message;
 - on GitHub, that the token sees each project's repository and its user may push;
 - `$LOOPWORKER_HOME` is writable, and whether a Manager is running.
 
@@ -343,7 +345,11 @@ loopworker pause [project]     # no new claims for the host or one project; runn
 loopworker resume [project]
 ```
 
-`status` also says when the Manager holds its lock but stopped updating (wedged).
+`status` also says when the Manager holds its lock but stopped updating (wedged). Its
+`backlog:` line, under `auth:`, says `ok`, or which card read fails for which projects, since
+when, and the latest error. A failing read claims nothing; it is retried at each fill or sweep.
+When one has failed for 10 minutes, the Manager sends an alert through `notify_command`, and
+another when it recovers.
 
 One Manager serves each project. When a second one serves the same project with the same
 backlog (two hosts configured for it by mistake), each leaves the cards that the other claimed
