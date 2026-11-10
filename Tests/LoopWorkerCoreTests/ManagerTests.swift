@@ -103,6 +103,22 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.log.messages.filter { $0.contains("folder trust dialog after 3 answers; pressing nothing more") }.count == 1)
     }
 
+    @Test("B85: a dialog that is still drawing isn't reported, and doesn't hide the later report after 3 answers")
+    func drawingDialogIsNotReported() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        let drawing = "Do you trust the files in this folder?\n❯ 1. No, exit"
+        h.tmux.state {
+            $0.capturePanes = [drawing, drawing, drawing, Self.trustDialog]
+            $0.afterKeys = [Self.trustDialog, Self.trustDialog, Self.trustDialog]
+        }
+        h.addCard(1)
+        try await h.boot()
+        await h.cycle()
+        #expect(h.tmux.state.get.keysSent.count == 3)
+        #expect(!h.log.messages.contains { $0.contains("without a recognizable answer") })
+        #expect(h.log.messages.filter { $0.contains("folder trust dialog after 3 answers") }.count == 1)
+    }
+
     @Test("B246: a known dialog without an answer is logged once and nothing is pressed")
     func unanswerableStartupDialogIsLoggedOnce() async throws {
         let h = try ManagerHarness(projects: oneColdProject)

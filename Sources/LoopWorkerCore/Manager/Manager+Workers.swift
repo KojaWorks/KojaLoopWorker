@@ -580,7 +580,7 @@ extension Manager {
             var previous: Pane.DialogAnswer?
             var tries: [String: Int] = [:], sentAt: [String: Int] = [:], reported: Set<String> = []
             func report(_ dialog: String, _ why: String) {
-                if reported.insert(dialog).inserted {
+                if reported.insert("\(dialog)|\(why)").inserted {
                     log.warning("\(session): claude shows its \(dialog) dialog \(why); pressing nothing more and leaving it to the dialog stall check (tmux -S \(socket) attach -t \(session) to see it)")
                 }
             }
@@ -599,7 +599,10 @@ extension Manager {
                 }
                 guard dialog == previous else { continue }
                 if let sent = sentAt[dialog.dialog], poll - sent < 2 { continue }
-                guard let keys = dialog.keys else { report(dialog.dialog, "without a recognizable answer or cursor"); continue }
+                guard let keys = dialog.keys else {
+                    if !dialog.drawing { report(dialog.dialog, "without a recognizable answer or cursor") }
+                    continue
+                }
                 guard tries[dialog.dialog, default: 0] < Self.startupTries else {
                     report(dialog.dialog, "after \(Self.startupTries) answers")
                     continue

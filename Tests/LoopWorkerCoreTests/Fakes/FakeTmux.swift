@@ -27,6 +27,8 @@ final class FakeTmux: TmuxDriving, @unchecked Sendable {
         var onKill: (@Sendable (String) -> Void)?
         /// The pane a freshly spawned session shows.
         var spawnPane = ""
+        /// The panes that successive `capture` calls show first; the last one stays.
+        var capturePanes: [String] = []
         /// The panes that successive `sendKeys` calls leave; an empty pane once they run out.
         var afterKeys: [String] = []
     }
@@ -67,6 +69,7 @@ final class FakeTmux: TmuxDriving, @unchecked Sendable {
     func capture(_ session: String, lines: Int) async throws -> String {
         state {
             $0.captures += 1
+            if !$0.capturePanes.isEmpty { $0.sessions[session]?.pane = $0.capturePanes.removeFirst() }
             return $0.sessions[session]?.pane ?? ""
         }
     }

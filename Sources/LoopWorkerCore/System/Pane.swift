@@ -15,12 +15,15 @@ public enum Pane {
         /// The dialog's name, for the log: `folder trust` or `external CLAUDE.md imports`.
         public var dialog: String
         /// Arrows from the highlighted option (`❯`) to the answer, then Enter. Nil when the pane
-        /// shows no recognizable answer option or cursor, so nothing may be pressed.
+        /// shows no recognizable answer option or cursor, or while `drawing`, so nothing may be pressed.
         public var keys: [String]?
+        /// The dialog's footer isn't on screen yet, so its options may still be drawing.
+        public var drawing: Bool
 
-        public init(dialog: String, keys: [String]?) {
+        public init(dialog: String, keys: [String]?, drawing: Bool = false) {
             self.dialog = dialog
             self.keys = keys
+            self.drawing = drawing
         }
     }
 
@@ -43,7 +46,7 @@ public enum Pane {
         let lines = normalized(pane)
         let footers = lines.indices.filter { isFooter(lines[$0]) }
         if let (dialog, title) = knownTitle(in: (footers.last.map { $0 + 1 } ?? 0)..<lines.count, lines) {
-            return lines[title...].contains(where: isInputScreen) ? nil : DialogAnswer(dialog: dialog.name, keys: nil)
+            return lines[title...].contains(where: isInputScreen) ? nil : DialogAnswer(dialog: dialog.name, keys: nil, drawing: true)
         }
         guard let footer = footers.last, !lines[footer...].contains(where: isInputScreen),
               let (dialog, title) = knownTitle(in: (footers.dropLast().last.map { $0 + 1 } ?? 0)..<footer, lines)

@@ -102,7 +102,7 @@ import Testing
             │ Enter to confirm · Esc to exit         │
             """
         #expect(Pane.startupDialog(numbered)?.keys == ["Down", "Enter"])
-        #expect(Pane.startupDialog("Do you trust the files in this folder?\n  1. Maybe") == .init(dialog: "folder trust", keys: nil))
+        #expect(Pane.startupDialog("Do you trust the files in this folder?\n  1. Maybe") == .init(dialog: "folder trust", keys: nil, drawing: true))
     }
 
     static let imports = """
@@ -141,7 +141,7 @@ import Testing
         let quotesTrust = Self.imports.replacingOccurrences(of: "External imports:", with: "Accessing workspace notes:")
         #expect(Pane.startupDialog(quotesTrust) == .init(dialog: "external CLAUDE.md imports", keys: ["Enter"]))
         let stillDrawing = Self.imports + "\nDo you trust the files in this folder?"
-        #expect(Pane.startupDialog(stillDrawing) == .init(dialog: "folder trust", keys: nil))
+        #expect(Pane.startupDialog(stillDrawing) == .init(dialog: "folder trust", keys: nil, drawing: true))
     }
 
     static let usageLimit = """
