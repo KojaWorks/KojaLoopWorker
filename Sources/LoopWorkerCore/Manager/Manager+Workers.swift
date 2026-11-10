@@ -709,6 +709,12 @@ extension Manager {
         case .stalledOnDialog(let title):
             log.error("\(label(spec)): \(card.ref)'s worker shows a claude dialog that LoopWorker doesn't answer, unchanged for \(Int(unchanged / 60)) min: \(title); reaping it, releasing the card and pausing new claims on this host. Its screen:\n\(lines.joined(separator: "\n"))")
             await reap(spec)
+            if FileManager.default.fileExists(atPath: spec.outcomeFile.path) {
+                log.info("\(label(spec)): \(card.ref)'s worker wrote its outcome before the reap; finishing it instead")
+                update(ref) { $0.task = .finishing }
+                track { await self.finishTask(ref, card: target) }
+                return
+            }
             update(ref) { $0.task = .releasing }
             track { await self.releaseStalled(ref, card: target, title: title) }
         case .finish:

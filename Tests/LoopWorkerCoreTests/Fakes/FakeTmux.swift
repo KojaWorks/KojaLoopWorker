@@ -23,6 +23,8 @@ final class FakeTmux: TmuxDriving, @unchecked Sendable {
         var capturesAtKeys: [Int] = []
         var failSpawn = false
         var failIsAlive: Set<String> = []
+        /// Runs inside `kill`, before the session goes, as a worker that acts while it is reaped.
+        var onKill: (@Sendable (String) -> Void)?
         /// The pane a freshly spawned session shows.
         var spawnPane = ""
         /// The panes that successive `sendKeys` calls leave; an empty pane once they run out.
@@ -78,6 +80,7 @@ final class FakeTmux: TmuxDriving, @unchecked Sendable {
     }
 
     func kill(_ session: String) async throws {
+        state.get.onKill?(session)
         state {
             $0.killed.append(session)
             $0.sessions[session] = nil

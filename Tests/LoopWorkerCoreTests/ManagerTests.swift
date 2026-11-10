@@ -1210,6 +1210,20 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(h.backlog.writes.filter { if case .claim = $0 { true } else { false } }.count > claims)
     }
 
+    @Test("B247: an outcome written while the stalled worker is reaped is finished, not released")
+    func stallReapRacesTheOutcome() async throws {
+        let h = try await spawned()
+        let outcome = h.stateDir().appending(path: "outcome.json")
+        h.tmux.state { $0.onKill = { _ in try? Data(#"{"outcome":"stuck","blocker":"Which endpoint?"}"#.utf8).write(to: outcome) } }
+        h.tmux.set("lw_g--app_0", pane: Self.unknownDialog)
+        await h.cycle()
+        h.clock.advance(120)
+        await h.cycle()
+        #expect(h.backlog.writes.contains { if case .markStuck("id-12", let b) = $0 { b.hasPrefix("Which endpoint?") } else { false } })
+        #expect(!h.backlog.writes.contains { if case .release = $0 { true } else { false } })
+        #expect(!FileManager.default.fileExists(atPath: h.home.appending(path: "state/PAUSED").path))
+    }
+
     @Test("B247: a pane frozen for 15 minutes without a dialog alerts once and keeps the worker")
     func frozenPaneAlertsOnce() async throws {
         let h = try await spawned(top: "notify_command = \"x\"")
