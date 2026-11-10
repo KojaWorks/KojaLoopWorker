@@ -13,7 +13,7 @@ import Testing
             ref: World.ref, project: "mygroup/app", number: "12", title: "Fix it", state: .ready,
             url: URL(string: "https://gitlab.example.com/mygroup/app/-/issues/12"))])
         let list = w.gitlab.requests("GET", "/api/v4/issues")[0].query
-        #expect(list["scope"] == "all" && list["state"] == "opened" && list["assignee_username"] == "me" && list["labels"] == "loopworker::next")
+        #expect(list["scope"] == "assigned_to_me" && list["state"] == "opened" && list["labels"] == "loopworker::next")
     }
 
     @Test func B124_assignedBySomeoneElseIsSkippedAndLoggedOnce() async throws {
