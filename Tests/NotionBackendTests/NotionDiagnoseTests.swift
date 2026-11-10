@@ -87,8 +87,8 @@ import Testing
         let fake = FakeNotion()
         fake.addDatabase()
         fake.addPage(1)
-        let checks = await Doctor.cardQueries(try make(fake), kind: "notion", projects: [app])
-        #expect(checks == [DoctorCheck("backlog notion cards owner/app", .ok, "the card query answered: 1 ready")])
+        let checks = await Doctor.backlogChecks(try make(fake), kind: "notion", projects: [app])
+        #expect(checks.last == DoctorCheck("backlog notion cards owner/app", .ok, "the card query answered: 1 ready"))
     }
 
     @Test("B251: doctor's card query fails with the server's status and message")
@@ -96,7 +96,7 @@ import Testing
         let fake = FakeNotion()
         fake.addDatabase()
         fake.queued["POST /v1/data_sources/\(dataSourceID)/query"] = [(400, [:], .object(["message": "body.filter.property should be defined"]))]
-        let check = try #require(await Doctor.cardQueries(try make(fake), kind: "notion", projects: [app]).first)
+        let check = try #require(await Doctor.backlogChecks(try make(fake), kind: "notion", projects: [app]).last)
         #expect(check.level == .fail)
         #expect(check.detail.contains("query: 400 body.filter.property should be defined"))
         #expect(fake.writes.isEmpty)
