@@ -136,11 +136,14 @@ extension Manager {
         lastFill = now
         fillSoon = false
         let cards: [Card]
-        do { cards = try await deps.backlog.workable(in: candidates.compactMap { projects[$0.key]?.spec }) }
+        let specs = candidates.compactMap { projects[$0.key]?.spec }
+        do { cards = try await deps.backlog.workable(in: specs) }
         catch {
             log.error("can't read workable cards: \(error); claiming nothing this tick")
+            readFailed(.workable, specs, error)
             return
         }
+        readSucceeded(.workable, specs)
         let keys = Set(candidates.compactMap { projects[$0.key]?.spec.path.lowercased() })
         for card in cards where !keys.contains(card.project.lowercased()) {
             log.error("the backlog returned \(card.ref) for project \(card.project), which wasn't asked for; not claiming it")

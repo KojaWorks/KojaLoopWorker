@@ -183,6 +183,7 @@ public actor Manager {
     var heldElsewhereCards: [CardState: [Card]] = [:]
     /// `<card id>|<holder>` of each held-elsewhere card already logged.
     var loggedHeld: Set<String> = []
+    var failingReads = FailingReads()
 
     public init(config: HostConfig, dependencies: ManagerDependencies, clock: any ManagerClock = SystemClock()) {
         self.config = config
@@ -323,6 +324,7 @@ public actor Manager {
         }
         authReleasedThisTick = false
         cleanFinishPending = false
+        pruneFailingReads()
         writeStatus(now)
     }
 

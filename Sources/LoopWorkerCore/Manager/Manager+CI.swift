@@ -560,8 +560,10 @@ extension Manager {
             do { cards = try await backlog.verifying(in: specs) }
             catch {
                 log.warning("CI sweep: can't read verifying cards: \(error); changing nothing")
+                await self.readFailed(.verifying, specs, error)
                 return
             }
+            await self.readSucceeded(.verifying, specs)
             var held: [Card] = []
             for card in cards {
                 if await self.heldElsewhere(card) != nil { held.append(card) } else { await self.resumeWatch(card) }
