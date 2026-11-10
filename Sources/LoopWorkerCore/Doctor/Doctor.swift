@@ -146,20 +146,22 @@ public struct Doctor: Sendable {
     }
 
     /// B248: a warning per agent instruction file in `clonesDir` or any directory above it, up
-    /// to `root`: `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`, `.claude/rules` or
-    /// `AGENTS.md`. claude loads ancestor instructions into every worker, outside any project
+    /// to `root`: `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `.claude/CLAUDE.md`,
+    /// `.claude/AGENTS.md` or `.claude/rules`, by the configured and the symlink-resolved path;
+    /// a file that both reach is reported once. claude loads ancestor instructions into every worker, outside any project
     /// contract, and an import in them that leaves the worktree makes claude ask at startup.
     /// `home`'s `.claude` is the user's own setup and doesn't count. One `ok` when none exists.
     static func instructionsAbove(clonesDir: URL, home: URL?, root: URL = URL(filePath: "/")) -> [DoctorCheck] {
         let stops: Set = [root.standardizedFileURL.path, root.resolvingSymlinksInPath().path, "/"]
         let homes: Set = home.map { [$0.standardizedFileURL.path, $0.resolvingSymlinksInPath().path] } ?? []
-        var seen: Set<String> = [], found: [(dir: URL, file: String)] = []
+        var seen: Set<String> = [], reported: Set<String> = [], found: [(dir: URL, file: String)] = []
         for start in [clonesDir.standardizedFileURL, clonesDir.resolvingSymlinksInPath()] {
             var dir = start
             while seen.insert(dir.path).inserted {
-                let names = ["CLAUDE.md", "CLAUDE.local.md", "AGENTS.md"] + (homes.contains(dir.path) ? [] : [".claude/CLAUDE.md", ".claude/rules"])
+                let names = ["CLAUDE.md", "CLAUDE.local.md", "AGENTS.md"] + (homes.contains(dir.path) ? [] : [".claude/CLAUDE.md", ".claude/AGENTS.md", ".claude/rules"])
                 for name in names where FileManager.default.fileExists(atPath: dir.appending(path: name).path) {
-                    found.append((dir, dir.appending(path: name).path))
+                    let file = dir.appending(path: name)
+                    if reported.insert(file.resolvingSymlinksInPath().path).inserted { found.append((dir, file.path)) }
                 }
                 if stops.contains(dir.path) { break }
                 dir = dir.deletingLastPathComponent()
