@@ -1252,6 +1252,26 @@ func fileMode(_ url: URL) throws -> Int {
         #expect(!h.backlog.writes.contains { if case .markStuck = $0 { true } else { false } })
     }
 
+    @Test("B247: the same dialog stalling again soon after a resume alerts again")
+    func dialogStallAfterAQuickResumeAlertsAgain() async throws {
+        let h = try await spawned(top: "notify_command = \"x\"")
+        func stall() async {
+            h.tmux.set("lw_g--app_0", pane: Self.unknownDialog)
+            await h.cycle()
+            h.clock.advance(120)
+            await h.cycle()
+        }
+        await stall()
+        try FileManager.default.removeItem(at: h.home.appending(path: "state/PAUSED"))
+        h.addCard(13)
+        h.clock.advance(60)
+        await h.cycle()
+        #expect(h.tmux.spawned.count == 2)
+        await stall()
+        let alerts = h.runner.specs.get.filter { $0.environment["LOOPWORKER_ALERT"]??.contains("shows 'Choose a theme?'; new claims are paused") == true }
+        #expect(alerts.count == 2)
+    }
+
     @Test("B247: the tick that pauses the host for a dialog claims nothing")
     func hostDialogStallClaimsNothingInTheSameTick() async throws {
         let h = try await spawned("[[project]]\npath = \"g/app\"\nslots = 2")

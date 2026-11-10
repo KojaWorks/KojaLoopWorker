@@ -800,7 +800,8 @@ extension Manager {
             } catch {
                 log.error("can't pause new claims by writing \(file.path): \(error); workers that start will stall on '\(title)' too")
             }
-            notify(key: "dialog-stall", "LoopWorker: claude on \(hostName) shows '\(title)'; new claims are paused. Make claude stop asking, then run `loopworker resume`")
+            // Unique per pause: the reason check above dedupes, and a stall right after a resume must alert again.
+            notify(key: "dialog-stall-\(reason)-\(clock.now().timeIntervalSince1970)", "LoopWorker: claude on \(hostName) shows '\(title)'; new claims are paused. Make claude stop asking, then run `loopworker resume`")
         }
     }
 
