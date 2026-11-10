@@ -116,6 +116,12 @@ One term per concept. Code, docs, logs and commits use the term in bold.
 **Reap**: Killing a worker's tmux session.
 *Avoid:* kill (in prose about workers).
 
+**Startup dialog**: A question that claude asks before a worker's first turn, such as folder trust or external CLAUDE.md imports. The Manager answers the ones it knows (`Pane.startupDialog`).
+*Avoid:* prompt, popup.
+
+**Dialog stall**: A worker whose pane has shown a dialog, unchanged, for 2 minutes. The Manager reaps it; before the worker's first turn or on the usage-limit menu it releases the card and pauses the host, otherwise it marks the card stuck. Neither counts as a failed attempt.
+*Avoid:* hang (that is the wall-clock cap), wedge.
+
 **Recycle**: Returning a slot to the pool after a card: reset for hot, teardown for cold.
 *Avoid:* release (that is for cards).
 

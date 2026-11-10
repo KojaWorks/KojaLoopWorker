@@ -325,6 +325,18 @@ func temporaryDirectory() throws -> URL {
     }
 }
 
+@Suite struct KillSwitchTests {
+    @Test("B72: pausing a paused host keeps the existing file and its reason")
+    func pauseKeepsAnExistingReason() throws {
+        let file = KillSwitch.file(stateDir: try temporaryDirectory())
+        #expect(try KillSwitch.pauseUnlessPaused(file))
+        #expect(KillSwitch.reason(file) == nil)
+        try KillSwitch.pause(file, reason: "claude showed 'Pick?' and nothing answers it")
+        #expect(try !KillSwitch.pauseUnlessPaused(file))
+        #expect(KillSwitch.reason(file) == "claude showed 'Pick?' and nothing answers it")
+    }
+}
+
 @Suite struct NotifierTests {
     @Test func sendsTheMessageOnStdinAndDedupesPerKey() async throws {  // B99, B100
         let dir = try temporaryDirectory()
@@ -378,7 +390,7 @@ func temporaryDirectory() throws -> URL {
         #expect(s.contains("--strict-mcp-config --mcp-config '/s/0/mcp.json' --settings '/s/0/settings.json'"))
     }
 
-    @Test func settingsDenyWritesUnderClaudeAndTheResolvedMemoryDirectory() throws {  // B243
+    @Test func settingsDenyEditsUnderClaudeAndTheResolvedMemoryDirectory() throws {  // B243
         let root = FileManager.default.temporaryDirectory.appending(path: "lw-settings-\(UUID().uuidString)").resolvingSymlinksInPath()
         let synced = root.appending(path: "Synced/automemory")
         try FileManager.default.createDirectory(at: synced, withIntermediateDirectories: true)
@@ -387,10 +399,11 @@ func temporaryDirectory() throws -> URL {
         let json = WorkerLaunch.settings(home: root.appending(path: "home"), userSettings: Data(#"{"autoMemoryDirectory": "~/.claude/automemory"}"#.utf8))
         let object = try #require(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: [String: [String]]])
         let deny = try #require(object["permissions"]?["deny"])
-        #expect(deny.contains("Edit(~/.claude/**)") && deny.contains("Write(~/.claude/**)"))
+        #expect(deny.contains("Edit(~/.claude/**)"))
         #expect(deny.contains("Edit(/\(root.path)/home/.claude/**)"))
-        #expect(deny.contains("Write(/\(synced.path)/**)"))
-        #expect(WorkerLaunch.settings(home: nil, userSettings: nil) == #"{"permissions":{"deny":["Edit(~/.claude/**)","Write(~/.claude/**)"]}}"#)
+        #expect(deny.contains("Edit(/\(synced.path)/**)"))
+        #expect(!deny.contains { $0.hasPrefix("Write(") })
+        #expect(WorkerLaunch.settings(home: nil, userSettings: nil) == #"{"permissions":{"deny":["Edit(~/.claude/**)","AskUserQuestion","EnterPlanMode"]}}"#)
     }
 }
 
@@ -422,6 +435,20 @@ func temporaryDirectory() throws -> URL {
               INFO hello
 
             """)
+    }
+
+    @Test("B247: a running worker's frozen pane is shown on its slot line")
+    func frozenPaneIsShown() {
+        var s = status(updated: now)
+        s.projects[0].slots[0] = .init(index: 0, state: "busy", card: "g/app#12", runningFor: 600, port: 1, paneUnchangedFor: 185)
+        #expect(StatusReport.render(s, lockHolder: 7, now: now).text.contains("  slot 0: busy g/app#12 for 10m, pane unchanged for 3 min\n"))
+    }
+
+    @Test("B72, B247: a host paused for a reason shows it with the way out")
+    func pauseReasonIsShown() {
+        var s = status(updated: now)
+        s.pauseReason = "claude showed 'Pick?' and nothing answers it"
+        #expect(StatusReport.render(s, lockHolder: 7, now: now).text.contains("up 1h 01m, PAUSED (claude showed 'Pick?' and nothing answers it; `loopworker resume` clears it)\n"))
     }
 
     @Test("B230: cards held by other Managers are listed with their holder")

@@ -149,7 +149,7 @@ extension Manager {
             log.error("the backlog returned \(card.ref) for project \(card.project), which wasn't asked for; not claiming it")
         }
         for c in candidates {
-            guard let p = projects[c.key], !draining, !forceRequested,
+            guard let p = projects[c.key], !draining, !forceRequested, !hostPaused,
                   let card = cards.first(where: { $0.project.lowercased() == p.spec.path.lowercased() && !(claimBackoff[$0.ref.id].map { $0.until > now } ?? false) }),
                   let slot = p.slots.first(where: { $0.id == c.slot }), isFree(slot) else { continue }
             startWorker(card, on: SlotRef(key: c.key, id: c.slot))
@@ -177,6 +177,10 @@ extension Manager {
             $0.rebaseTarget = nil
             $0.spawnedAt = nil
             $0.pane = []
+            $0.paneText = nil
+            $0.paneChangedAt = nil
+            $0.frozenAlerted = false
+            $0.turnStarted = false
             $0.finishFailures = 0
             $0.finishRetryAt = nil
             $0.finishError = nil
@@ -227,6 +231,12 @@ extension Manager {
             return
         }
 
+        guard !hostPaused else {
+            log.info("\(label(spec)): the host was paused while \(card.ref) was being started; not claiming it")
+            try? fm.removeItem(at: cardRecordFile(spec))
+            free(ref)
+            return
+        }
         var claimed: Bool
         do { claimed = try await deps.backlog.claim(card, holder: holder) }
         catch {
@@ -395,15 +405,16 @@ extension Manager {
         }
 
         let model = card.model ?? spec.project.model
+        let spawnedAt = clock.now()
         update(ref) {
             $0.task = nil
-            $0.spawnedAt = clock.now()
+            $0.spawnedAt = spawnedAt
         }
         if fix != nil { unwatch(card.ref.id) }
         claimBackoff[card.ref.id] = nil
         let round = fix.map { " for \($0.name)" } ?? (resuming ? " resuming its pushed branch" : "")
         log.info("\(label(spec)): spawned worker\(round) for \(card.ref) on \(branch) at \(baseCommit.prefix(12)), base \(base), model \(model ?? "default")")
-        watchFolderTrust(spec.session)
+        watchStartupDialogs(ref, session: spec.session, spawnedAt: spawnedAt)
     }
 
     func writeWorkerFiles(_ spec: SlotSpec, card: Card, contract: ProjectContract, base: String, branch: String,
@@ -559,29 +570,61 @@ extension Manager {
         free(ref)
     }
 
-    /// Accepts claude's folder-trust dialog, which a fresh worktree shows once and which
-    /// would otherwise hang the unattended worker.
-    func watchFolderTrust(_ session: String) {
-        let tmux = deps.tmux, clock = self.clock, log = self.log, trustPromptKeys = deps.pane.trustPromptKeys
+    /// Answers each startup dialog (`Pane.startupDialog`) as claude shows it, until claude
+    /// reaches its input screen or `startupWindow` passes. A dialog is answered only when two
+    /// polls in a row show it the same, because claude ignores keys that arrive just after a
+    /// dialog appears. A dialog still up two polls after its keys is answered again from the
+    /// current capture, at most `startupTries` times in all. A dialog without a recognizable
+    /// answer, or one that outlasts its tries, is logged once and left to the dialog stall check.
+    /// Seeing the input screen marks the worker's first turn as started.
+    func watchStartupDialogs(_ ref: SlotRef, session: String, spawnedAt: Date) {
+        let tmux = deps.tmux, clock = self.clock, log = self.log, reading = deps.pane, socket = stateDir.appending(path: "tmux").path
         track {
-            for _ in 0..<15 {
-                try? await clock.sleep(seconds: 2)
+            var previous: Pane.DialogAnswer?
+            var tries: [String: Int] = [:], sentAt: [String: Int] = [:], reported: Set<String> = []
+            func report(_ dialog: String, _ why: String) {
+                if reported.insert("\(dialog)|\(why)").inserted {
+                    log.warning("\(session): claude shows its \(dialog) dialog \(why); pressing nothing more and leaving it to the dialog stall check (tmux -S \(socket) attach -t \(session) to see it)")
+                }
+            }
+            for poll in 0..<Int(Self.startupWindow / Self.startupPoll) {
+                try? await clock.sleep(seconds: Self.startupPoll)
                 if Task.isCancelled { return }
                 guard let pane = try? await tmux.capture(session, lines: 40) else { return }
-                guard let keys = trustPromptKeys(pane) else { continue }
-                guard !keys.isEmpty else {
-                    log.warning("\(session): claude shows a folder-trust dialog without a recognizable Yes option; leaving it for a human (tmux -S <home>/state/tmux attach -t \(session))")
-                    return
+                let dialog = reading.startupDialog(pane)
+                defer { previous = dialog }
+                guard let dialog else {
+                    if reading.showsInputScreen(pane) {
+                        await self.noteTurnStarted(ref, spawnedAt: spawnedAt)
+                        return
+                    }
+                    continue
                 }
+                guard dialog == previous else { continue }
+                if let sent = sentAt[dialog.dialog], poll - sent < 2 { continue }
+                guard let keys = dialog.keys else {
+                    if !dialog.drawing { report(dialog.dialog, "without a recognizable answer or cursor") }
+                    continue
+                }
+                guard tries[dialog.dialog, default: 0] < Self.startupTries else {
+                    report(dialog.dialog, "after \(Self.startupTries) answers")
+                    continue
+                }
+                tries[dialog.dialog, default: 0] += 1
+                sentAt[dialog.dialog] = poll
                 do {
                     try await tmux.sendKeys(session, keys)
-                    log.info("\(session): accepted claude's folder-trust dialog (\(keys.joined(separator: " ")))")
+                    log.info("\(session): answered claude's \(dialog.dialog) dialog (\(keys.joined(separator: " ")))\(tries[dialog.dialog]! > 1 ? ", try \(tries[dialog.dialog]!)" : "")")
                 } catch {
-                    log.warning("\(session): couldn't answer claude's folder-trust dialog: \(error)")
+                    log.warning("\(session): couldn't answer claude's \(dialog.dialog) dialog: \(error)")
                 }
-                return
             }
         }
+    }
+
+    /// Marks the worker spawned at `spawnedAt` as past its first turn's start; a later worker on the slot is left alone.
+    func noteTurnStarted(_ ref: SlotRef, spawnedAt: Date) {
+        update(ref) { if $0.spawnedAt == spawnedAt { $0.turnStarted = true } }
     }
 
     /// Returns a slot to idle and lets fill use it again, or retires it when a shrink or a
@@ -647,34 +690,69 @@ extension Manager {
         let spec = s.spec
         let alive: Bool
         let fresh: Card?
-        var pane = ""
+        let captured: String?
         do {
             alive = try await deps.tmux.isAlive(spec.session)
             // A dead pane is kept (remain-on-exit), so its last screen explains a crash.
-            pane = (try? await deps.tmux.capture(spec.session, lines: 40)) ?? ""
+            captured = try? await deps.tmux.capture(spec.session, lines: 40)
             fresh = try await deps.backlog.card(card.ref)
         } catch {
             log.error("\(label(spec)): can't observe \(card.ref): \(error); trying again next tick")
             return
         }
         guard let current = slot(ref), current.phase == .busy, current.task == nil, current.card?.ref == card.ref else { return }
+        let pane = captured ?? ""
         let outcomeAge = modificationDate(spec.outcomeFile).map { now.timeIntervalSince($0) }
         let lines = PaneReading.tail(pane, 15).map(deps.redact)
+        // A failed capture is no observation, so it neither changes the pane nor freezes it.
+        let changedAt = captured != nil && captured != current.paneText ? now : current.paneChangedAt ?? now
+        let turnStarted = current.turnStarted || deps.pane.showsInputScreen(pane)
         update(ref) {
+            $0.turnStarted = turnStarted
             if let fresh { $0.card = fresh }
             if !lines.isEmpty { $0.pane = lines }
+            if let captured { $0.paneText = captured }
+            $0.paneChangedAt = changedAt
         }
         let cap = (projects[ref.key]?.contract?.wallclockCapMinutes ?? 90) * 60
+        let unchanged = now.timeIntervalSince(changedAt)
         let observation = SlotObservation(
             cardState: fresh?.state, sessionAlive: alive, authFailed: deps.pane.showsAuthFailure(pane),
             outcomeAge: outcomeAge, runningFor: current.spawnedAt.map { now.timeIntervalSince($0) } ?? 0,
-            heldBy: fresh.flatMap(heldElsewhere))
-        let decision = Reconciler.decide(observation, policy: ReconcilePolicy(wallclockCap: cap))
+            heldBy: fresh.flatMap(heldElsewhere), paneUnchangedFor: unchanged, dialog: deps.pane.dialogTitle(pane).map { String(deps.redact($0).prefix(120)) },
+            turnStarted: turnStarted, hostDialog: deps.pane.showsHostDialog(pane))
+        let policy = ReconcilePolicy(wallclockCap: cap)
+        let decision = Reconciler.decide(observation, policy: policy)
         let target = fresh ?? card
 
         switch decision {
         case .keep:
-            return
+            guard unchanged >= policy.frozenPane, !current.frozenAlerted else { return }
+            update(ref) { $0.frozenAlerted = true }
+            let minutes = Int(unchanged / 60)
+            log.warning("\(label(spec)): \(card.ref)'s worker pane hasn't changed for \(minutes) min; it may wait for input (tmux -S \(stateDir.path)/tmux attach -t \(spec.session)). LoopWorker keeps it running. Its screen:\n\(lines.joined(separator: "\n"))")
+            notify(key: "frozen-\(card.ref.id)", "LoopWorker: the worker on \(card.ref) on \(hostName) has shown the same screen for \(minutes) min and may wait for input; see the Manager log")
+        case .stalledOnHostDialog(let title):
+            log.error("\(label(spec)): \(card.ref)'s worker shows a claude dialog that LoopWorker doesn't answer, unchanged for \(Int(unchanged / 60)) min, \(turnStarted ? "one that the host's claude shows" : "before its first turn"): \(title); reaping it, releasing the card and pausing new claims on this host. Its screen:\n\(lines.joined(separator: "\n"))")
+            pauseForDialog(title)  // before any await, so this tick's fill sees it
+            await reap(spec)
+            if finishWrittenOutcome(ref, card: target) { return }
+            update(ref) { $0.task = .releasing }
+            track { await self.releaseStalled(ref, card: target, title: title) }
+        case .stalledOnCardDialog(let title):
+            log.error("\(label(spec)): \(card.ref)'s worker shows a claude dialog that LoopWorker doesn't answer, unchanged for \(Int(unchanged / 60)) min, after its first turn started: \(title); reaping it and marking the card stuck. Its screen:\n\(lines.joined(separator: "\n"))")
+            await reap(spec)
+            if finishWrittenOutcome(ref, card: target) { return }
+            let blocker = "LoopWorker stopped the worker: during the work, claude showed a dialog that LoopWorker doesn't answer, unchanged for \(Int(policy.dialogStall / 60)) minutes: \(Self.inlineCode(title)). The Manager's log on \(hostName) has the screen. Change the card so that the work doesn't make claude ask this, then move it back to ready."
+            do {
+                // Written on the worker's behalf, so the finish pushes its commits and retries like any stuck outcome.
+                try JSONSerialization.data(withJSONObject: ["outcome": "stuck", "blocker": blocker]).write(to: spec.outcomeFile, options: .atomic)
+            } catch {
+                log.error("\(label(spec)): can't write the stuck outcome \(spec.outcomeFile.path): \(error); the next tick releases \(card.ref) as a crash")
+                return
+            }
+            update(ref) { $0.task = .finishing }
+            track { await self.finishTask(ref, card: target) }
         case .finish:
             if let retry = current.finishRetryAt, retry > now { return }
             await reap(spec)
@@ -702,9 +780,48 @@ extension Manager {
         }
     }
 
+    /// After a stall's reap: finishes the outcome that the worker wrote meanwhile, if any.
+    /// Returns whether one existed.
+    func finishWrittenOutcome(_ ref: SlotRef, card: Card) -> Bool {
+        guard let spec = slot(ref)?.spec, FileManager.default.fileExists(atPath: spec.outcomeFile.path) else { return false }
+        log.info("\(label(spec)): \(card.ref)'s worker wrote its outcome before the reap; finishing it instead")
+        update(ref) { $0.task = .finishing }
+        track { await self.finishTask(ref, card: card) }
+        return true
+    }
+
     func reap(_ spec: SlotSpec) async {
         do { try await deps.tmux.kill(spec.session) }
         catch { log.error("\(label(spec)): can't reap \(spec.session): \(error)") }
+    }
+
+    /// Pauses the host with `title` as the reason in `state/PAUSED`, alerting when that reason is new.
+    func pauseForDialog(_ title: String) {
+        let file = KillSwitch.file(stateDir: stateDir)
+        let reason = "claude showed '\(title)' and nothing answers it"
+        if KillSwitch.reason(file) != reason {
+            do {
+                try KillSwitch.pause(file, reason: reason)
+                log.error("paused new claims on this host: \(reason). Make claude stop asking, then run `loopworker resume`")
+            } catch {
+                log.error("can't pause new claims by writing \(file.path): \(error); workers that start will stall on '\(title)' too")
+            }
+            // Unique per pause: the reason check above dedupes, and a stall right after a resume must alert again.
+            notify(key: "dialog-stall-\(reason)-\(clock.now().timeIntervalSince1970)", "LoopWorker: claude on \(hostName) shows '\(title)'; new claims are paused. Make claude stop asking, then run `loopworker resume`")
+        }
+    }
+
+    /// After a host dialog stall: releases the card without counting an attempt and recycles.
+    func releaseStalled(_ ref: SlotRef, card: Card, title: String) async {
+        guard let spec = slot(ref)?.spec else { return }
+        let note = "LoopWorker released this card because claude on \(hostName) showed a dialog that LoopWorker doesn't answer: \(Self.inlineCode(title)). The card isn't at fault, so this isn't a failed attempt. New claims on \(hostName) are paused until an operator makes claude stop asking and runs `loopworker resume`."
+        do {
+            try await deps.backlog.release(card, reason: note, countsAsAttempt: false)
+            log.warning("\(label(spec)): released \(card.ref) after the dialog stall")
+        } catch {
+            log.error("\(label(spec)): can't release \(card.ref): \(error); the stranded-card sweep retries")
+        }
+        await recycle(ref, keepOutcome: false)
     }
 
     func releaseTask(_ ref: SlotRef, card: Card, reason: ReleaseReason, pane: [String], cap: TimeInterval) async {
