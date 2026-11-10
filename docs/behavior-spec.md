@@ -241,6 +241,7 @@ Status: `keep` ports the Python behavior as is; `fix` states the corrected behav
 | B110 | `state/status.json` is written atomically (temp file, then rename) every tick. It holds the pid, version, start and update times, host and project pause state, the auth gate state, and per slot: state, card ref and URL, running time, activity line (B18), port, last error and running task. | changed | `dashboard.py`, `manager.py:503-525`; `test_json_carries_version_stamps`, `test_health_host_shape` |
 | B111 | The version is single-sourced from the build and appears in `--version`, the status file and the startup log. | fix | D13, `__init__.py:16`, `pyproject.toml:3`; `test_version_flag` |
 | B228 | The Manager's holder id is `<host name>:<LOOPWORKER_HOME>`, saved in `state/holder` on first start and read from there afterwards, so it survives restarts and host renames and differs between installs. The startup log names it. A holder file that exists but can't be read stops startup with an error that names the file, because a fresh id would make the Manager leave its own cards alone. | changed | none; Swift `holderIDIsStableAcrossRestarts`, `unreadableHolderFileStopsStartup` |
+| B250 | `status.json` lists each failing backlog read (`failingReads`: read, project, since, the redacted latest error) and drops it at the read's next success. `loopworker status` prints a `backlog:` line under `auth:`: `ok`, or per run of failures `<read> cards for <projects> failing since <time> (<duration>): <error>`. | fix | none |
 
 ### Logging and redaction
 

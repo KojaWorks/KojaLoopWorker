@@ -466,6 +466,9 @@ public actor Manager {
             held: ([CardState.working, .verifying].flatMap { heldElsewhereCards[$0] ?? [] }).map {
                 .init(card: $0.ref.display, cardURL: $0.url, state: $0.state.rawValue, holder: $0.holder ?? "")
             },
+            failingReads: failingReads.failing
+                .map { .init(read: $0.key.read.rawValue, project: $0.key.project, since: $0.value.since, error: $0.value.error) }
+                .sorted { ($0.read, $0.project) < ($1.read, $1.project) },
             log: Array(deps.recentLines().suffix(50)))
         do {
             try status.write(to: ManagerStatus.file(stateDir: stateDir))

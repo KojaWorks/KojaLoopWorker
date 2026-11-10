@@ -35,6 +35,15 @@ public enum StatusReport {
         if let detail = s.auth.detail { auth += " (\(detail))" }
         if let until = s.auth.backoffUntil, until > now { auth += ", claims paused until \(stamp(until))" }
         out.append(auth)
+        if let failing = s.failingReads {
+            if failing.isEmpty { out.append("backlog: ok") }
+            // One line per run of failures; a backlog-wide failure hits every project at once.
+            let runs = Dictionary(grouping: failing) { [$0.read, StatusReport.stamp($0.since), $0.error] }
+            for (run, reads) in runs.sorted(by: { $0.key.lexicographicallyPrecedes($1.key) }) {
+                let since = reads[0].since
+                out.append("backlog: \(run[0]) cards for \(reads.map(\.project).joined(separator: ", ")) failing since \(run[1]) (\(duration(now.timeIntervalSince(since)))): \(run[2])")
+            }
+        }
         if s.projects.isEmpty { out.append("no projects configured") }
         for p in s.projects {
             var head = "\(p.path) (\(p.hot ? "hot" : "cold")"

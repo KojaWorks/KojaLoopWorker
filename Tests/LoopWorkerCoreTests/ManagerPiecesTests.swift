@@ -436,6 +436,27 @@ func temporaryDirectory() throws -> URL {
             """))
     }
 
+    @Test("B250: failing backlog reads print next to auth, one line per run of failures")
+    func failingReadsArePrinted() {
+        var s = status(updated: now)
+        s.failingReads = []
+        #expect(StatusReport.render(s, lockHolder: 7, now: now).text.contains("auth: failing (Invalid API key)\nbacklog: ok\n"))
+        let since = now.addingTimeInterval(-720)
+        s.failingReads = [
+            .init(read: "working", project: "g/app", since: now, error: "timeout"),
+            .init(read: "workable", project: "g/app", since: since, error: "GET /issues: 400 bad scope"),
+            .init(read: "workable", project: "g/lib", since: since, error: "GET /issues: 400 bad scope"),
+        ]
+        #expect(StatusReport.render(s, lockHolder: 7, now: now).text.contains("""
+            auth: failing (Invalid API key)
+            backlog: workable cards for g/app, g/lib failing since \(StatusReport.stamp(since)) (12m): GET /issues: 400 bad scope
+            backlog: working cards for g/app failing since \(StatusReport.stamp(now)) (0s): timeout
+            g/app (cold)
+            """))
+        s.failingReads = nil
+        #expect(!StatusReport.render(s, lockHolder: 7, now: now).text.contains("backlog:"))
+    }
+
     @Test func noLockHolderMeansNotRunning() {
         let r = StatusReport.render(status(updated: now), lockHolder: nil, now: now)
         #expect(!r.running)

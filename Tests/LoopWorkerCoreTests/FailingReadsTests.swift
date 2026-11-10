@@ -86,6 +86,25 @@ import Testing
         #expect(alerts(h, "can't read workable cards").count == 2)
     }
 
+    @Test("B250: status.json lists a failing read, redacted, and clears it on success")
+    func statusShowsAndClearsTheFailure() async throws {
+        let h = try ManagerHarness(projects: oneColdProject)
+        h.backlog.state {
+            $0.failWorkable = true
+            $0.workableError = "400 token SECRET rejected"
+        }
+        try await bootAndFill(h)
+        let start = h.clock.now()
+        await minutes(h, 2)
+        let failing = try #require(try h.status().failingReads?.only)
+        #expect(failing.read == "workable" && failing.project == "g/app" && failing.error == "400 token [REDACTED] rejected")
+        #expect(abs(failing.since.timeIntervalSince(start)) < 1)  // status.json keeps whole seconds
+
+        h.backlog.state { $0.failWorkable = false }
+        await minutes(h, 1)
+        #expect(try h.status().failingReads == [])
+    }
+
     @Test("B249: a success for one project doesn't clear another's failure")
     func successClearsOnlyItsProjects() {
         var reads = FailingReads()

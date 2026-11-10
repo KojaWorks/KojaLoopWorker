@@ -20,6 +20,9 @@ public struct ManagerStatus: Codable, Sendable, Equatable {
     /// `working` and `verifying` cards that another Manager holds, as the last sweeps saw them.
     /// Nil from a Manager that predates holder ids.
     public var held: [Held]?
+    /// Backlog reads that failed at their last attempt, by read and project; empty when every
+    /// read works. Nil from a Manager that predates tracking them.
+    public var failingReads: [FailingRead]?
     /// The most recent log lines, oldest first.
     public var log: [String]
 
@@ -150,9 +153,29 @@ public struct ManagerStatus: Codable, Sendable, Equatable {
         }
     }
 
+    /// A backlog read that keeps failing for one project. The Manager claims or sweeps nothing
+    /// for it meanwhile, and alerts once it has failed for 10 minutes.
+    public struct FailingRead: Codable, Sendable, Equatable {
+        /// `workable`, `working` or `verifying`.
+        public var read: String
+        public var project: String
+        /// The first failure in the current run of failures.
+        public var since: Date
+        /// The latest failure's error.
+        public var error: String
+
+        public init(read: String, project: String, since: Date, error: String) {
+            self.read = read
+            self.project = project
+            self.since = since
+            self.error = error
+        }
+    }
+
     public init(
         version: String = loopworkerVersion, pid: Int32, host: String, started: Date, updated: Date,
-        paused: Bool, draining: Bool, auth: Auth, projects: [Project], ci: [CI]? = nil, held: [Held]? = nil, log: [String]
+        paused: Bool, draining: Bool, auth: Auth, projects: [Project], ci: [CI]? = nil, held: [Held]? = nil,
+        failingReads: [FailingRead]? = nil, log: [String]
     ) {
         self.version = version
         self.pid = pid
@@ -165,6 +188,7 @@ public struct ManagerStatus: Codable, Sendable, Equatable {
         self.projects = projects
         self.ci = ci
         self.held = held
+        self.failingReads = failingReads
         self.log = log
     }
 
