@@ -737,3 +737,23 @@ private final class FailingSecondPage: @unchecked Sendable {
         }
     }
 }
+
+@Suite struct PatchDoctorTests {
+    @Test("B251: doctor's card query passes on a readable roadmap")
+    func cardQueryPasses() async throws {
+        let fake = FakePatch()
+        fake.rows["roadmap"] = [card(1)]
+        let checks = await Doctor.cardQueries(try make(fake), kind: "patch", projects: [app])
+        #expect(checks == [DoctorCheck("backlog patch cards owner/app", .ok, "the card query answered: 1 ready")])
+    }
+
+    @Test("B251: doctor's card query fails with the server's status and message")
+    func cardQueryFailsWithTheServersMessage() async throws {
+        let fake = FakePatch()
+        fake.restStatus = ["GET": [400]]
+        let check = try #require(await Doctor.cardQueries(try make(fake), kind: "patch", projects: [app]).first)
+        #expect(check.level == .fail)
+        #expect(check.detail == #"the card query failed: GET /rest/v1/roadmap: 400 {"message":"fake"}"#)
+        #expect(fake.requests.allSatisfy { $0.httpMethod == "GET" || $0.url!.path == "/functions/v1/pat-exchange" })
+    }
+}

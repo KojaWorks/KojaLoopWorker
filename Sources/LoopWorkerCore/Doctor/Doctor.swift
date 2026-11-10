@@ -287,6 +287,26 @@ public struct Doctor: Sendable {
             if let d = backend as? any Diagnosable { checks += await d.diagnose() }
             else { checks.append(DoctorCheck("\(role) \(kind)", .warn, "built, but this kind has no connection check", remedy: "watch the Manager log for its first read")) }
         }
+        return checks + (await Self.cardQueries(made.backlog, kind: config.backlogKind, projects: config.projects))
+    }
+
+    /// Runs, per project, the `workable` read that the Manager's fill makes, which only reads:
+    /// a token that the identity check accepts can still have its card query rejected.
+    /// - Returns: One check per project, named `backlog <kind> cards <path>`: `ok` with the
+    ///   number of ready cards, or `fail` with the error, which names the request and the
+    ///   server's status and message.
+    public static func cardQueries(_ backlog: any Backlog, kind: String, projects: [ProjectSpec]) async -> [DoctorCheck] {
+        var checks: [DoctorCheck] = []
+        for p in projects {
+            let name = "backlog \(kind) cards \(p.path)"
+            do {
+                let ready = try await backlog.workable(in: [p]).count
+                checks.append(DoctorCheck(name, .ok, "the card query answered: \(ready) ready"))
+            } catch {
+                checks.append(DoctorCheck(name, .fail, "the card query failed: \(error)",
+                                          remedy: "the Manager claims nothing for \(p.path) while this fails; fix what the message names, in config.toml's backlog section or the token's access to the project"))
+            }
+        }
         return checks
     }
 

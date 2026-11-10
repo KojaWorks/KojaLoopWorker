@@ -20,4 +20,20 @@ import Testing
         #expect(!check.detail.contains(Fixture.token))
         #expect(check.remedy?.contains("https://gitlab.example.com") == true)
     }
+
+    @Test("B251: doctor's card query passes on a readable backlog")
+    func cardQueryPasses() async throws {
+        let checks = await Doctor.cardQueries(try World().backlog(), kind: "gitlab", projects: [World.app])
+        #expect(checks == [DoctorCheck("backlog gitlab cards mygroup/app", .ok, "the card query answered: 1 ready")])
+    }
+
+    @Test("B251: doctor's card query fails with the server's status and message")
+    func cardQueryFailsWithTheServersMessage() async throws {
+        let w = World()
+        w.gitlab.on("GET", "/api/v4/issues", status: 400, json: ["message": "scope does not have a valid value"])
+        let check = try #require(await Doctor.cardQueries(try w.backlog(), kind: "gitlab", projects: [World.app]).first)
+        #expect(check.level == .fail)
+        #expect(check.detail.contains("GET /issues") && check.detail.contains("400") && check.detail.contains("scope does not have a valid value"))
+        #expect(w.gitlab.requests.allSatisfy { $0.method == "GET" })
+    }
 }

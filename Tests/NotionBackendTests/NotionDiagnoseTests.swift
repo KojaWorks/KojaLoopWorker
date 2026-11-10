@@ -81,4 +81,24 @@ import Testing
         let ok = try await make(fake, config: hostConfig(extraProjects: "finish = \"ci_then_merge\"")).diagnose()[2]
         #expect(ok.level == .ok)
     }
+
+    @Test("B251: doctor's card query passes on a readable database")
+    func cardQueryPasses() async throws {
+        let fake = FakeNotion()
+        fake.addDatabase()
+        fake.addPage(1)
+        let checks = await Doctor.cardQueries(try make(fake), kind: "notion", projects: [app])
+        #expect(checks == [DoctorCheck("backlog notion cards owner/app", .ok, "the card query answered: 1 ready")])
+    }
+
+    @Test("B251: doctor's card query fails with the server's status and message")
+    func cardQueryFailsWithTheServersMessage() async throws {
+        let fake = FakeNotion()
+        fake.addDatabase()
+        fake.queued["POST /v1/data_sources/\(dataSourceID)/query"] = [(400, [:], .object(["message": "body.filter.property should be defined"]))]
+        let check = try #require(await Doctor.cardQueries(try make(fake), kind: "notion", projects: [app]).first)
+        #expect(check.level == .fail)
+        #expect(check.detail.contains("query: 400 body.filter.property should be defined"))
+        #expect(fake.writes.isEmpty)
+    }
 }
